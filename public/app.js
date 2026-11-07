@@ -1,5 +1,6 @@
 // Entrada de la aplicación: instalador, login, inicio y ajustes. Cada módulo vive en su propio archivo.
-import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, navegacion, activar, ERROR } from "./comun.js";
+import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
+import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
 import { vistaFactura } from "./factura.js";
@@ -25,7 +26,7 @@ function vistaInstalar() {
       ${campo("clave", "🔒 Contraseña (mínimo 10 caracteres)", "", "password", 'required minlength="10" autocomplete="new-password"')}
       ${ERROR}<button class="boton" type="submit">CREAR SISTEMA Y ENTRAR ➔</button>
     </form></section>`;
-  enviar($("#f"), async (d) => { await api("instalar", "POST", d); await ruta(); });
+  enviar($("#f"), async (d) => { const r = await api("instalar", "POST", d); pantallaCodigo(r.codigo_recuperacion, { alContinuar: ruta }); });
 }
 
 function vistaLogin() {
@@ -34,7 +35,8 @@ function vistaLogin() {
       ${campo("email", "✉️ Correo", "", "email", 'required autocomplete="username"')}
       ${campo("clave", "🔒 Contraseña", "", "password", 'required autocomplete="current-password"')}
       ${ERROR}<button class="boton" type="submit">ENTRAR ➔</button>
-    </form></section>`;
+    </form><button class="boton contorno" id="olvide" type="button">¿Olvidaste tu contraseña?</button></section>`;
+  $("#olvide").addEventListener("click", () => vistaRecuperar(vistaLogin));
   enviar($("#f"), async (d) => { await api("login", "POST", d); await ruta(); });
 }
 
@@ -47,32 +49,32 @@ function vistaInicio() {
     <section class="tarjeta tasa">
       <div id="tasa-vista"><span class="etiqueta">🟢 TASA BCV</span><br><strong>${tasa ? `Bs. ${bs(tasa)}` : "Sin definir"}</strong><br>
         <small class="suave">${n.tasa_bcv_fecha ? `Actualizada: ${fechaLocal(n.tasa_bcv_fecha)}` : "Escribe la tasa de hoy"}</small></div>
-      <button class="boton chico verde" id="tasa-editar" data-ayuda="Cambia la tasa BCV del día">🔄 Actualizar</button>
+      ${puede("tasa") ? `<button class="boton chico verde" id="tasa-editar" data-ayuda="Cambia la tasa BCV del día">🔄 Actualizar</button>` : ""}
       <form id="tasa-form" hidden><span class="etiqueta">🟢 TASA BCV DE HOY (Bs por USD)</span>
         <input name="tasa_bcv" inputmode="decimal" placeholder="Ej: 123,45" required aria-label="Tasa BCV">
         <button class="boton chico verde" type="submit">Guardar</button>
         <button class="boton chico contorno" type="button" id="tasa-cancelar" aria-label="Cancelar">✕</button>${ERROR}</form>
     </section>
-    <section class="tarjeta ganancia" data-destino="#/informes" data-nombre="Informes" data-ayuda="Informes para el contador: ventas, compras, ganancias, por cobrar e inventario"><span class="etiqueta">💰 TU GANANCIA NETA (ESTE MES)</span><strong id="gan-total">$ 0,00</strong>
-      <small class="suave" id="gan-det">🟣 Servicios: $0 · 🔵 Productos: $0</small></section>
+    ${puede("admin") ? `<section class="tarjeta ganancia" data-destino="#/informes" data-nombre="Informes" data-ayuda="Informes para el contador: ventas, compras, ganancias, por cobrar e inventario"><span class="etiqueta">💰 TU GANANCIA NETA (ESTE MES)</span><strong id="gan-total">$ 0,00</strong>
+      <small class="suave" id="gan-det">🟣 Servicios: $0 · 🔵 Productos: $0</small></section>` : ""}
     <div class="rejilla">
-      <button class="accion azul" data-destino="#/factura" data-nombre="Factura" data-ayuda="Presupuestos y facturas"><span>🧾</span>Factura<small>Presupuestos y facturas</small></button>
+      ${puede("caja") ? `<button class="accion azul" data-destino="#/factura" data-nombre="Factura" data-ayuda="Presupuestos y facturas"><span>🧾</span>Factura<small>Presupuestos y facturas</small></button>
       <button class="accion ambar" data-destino="#/clientes" data-nombre="Clientes" data-ayuda="Tus clientes y su WhatsApp"><span>👥</span>Clientes<small>Tus clientes</small></button>
-      <button class="accion verde" data-destino="#/pagos" data-nombre="Pagos" data-ayuda="Por cobrar, pagos recibidos y tus datos de cobro"><span>💳</span>Pagos<small>Cobros y por cobrar</small></button>
-      <button class="accion morado" data-destino="#/inventario" data-nombre="Inventario" data-ayuda="Tus productos y servicios"><span>📦</span>Inventario<small>Productos y servicios</small></button>
+      <button class="accion verde" data-destino="#/pagos" data-nombre="Pagos" data-ayuda="Por cobrar, pagos recibidos y tus datos de cobro"><span>💳</span>Pagos<small>Cobros y por cobrar</small></button>` : ""}
+      ${puede("inventario") ? `<button class="accion morado" data-destino="#/inventario" data-nombre="Inventario" data-ayuda="Tus productos y servicios"><span>📦</span>Inventario<small>Productos y servicios</small></button>` : ""}
     </div>
     <section class="tarjeta"><span class="etiqueta">🔔 ALERTAS RÁPIDAS</span><p class="suave" id="alertas-txt">Todo en orden ✅</p></section>
     ${navegacion("inicio")}`;
   $("#ajustes").addEventListener("click", () => (location.hash = "#/ajustes"));
   const editando = (si) => { $("#tasa-vista").hidden = si; $("#tasa-editar").hidden = si; $("#tasa-form").hidden = !si; if (si) $("#tasa-form input").focus(); };
-  $("#tasa-editar").addEventListener("click", () => editando(true));
+  $("#tasa-editar")?.addEventListener("click", () => editando(true));
   $("#tasa-cancelar").addEventListener("click", () => editando(false));
   enviar($("#tasa-form"), async (d) => { await api("config", "PUT", { tasa_bcv: d.tasa_bcv }); aviso("Tasa actualizada ✅"); await ruta(); });
   activar();
-  api("documentos/resumen").then((r) => { // ganancia real del mes (facturas emitidas)
+  if (puede("admin")) api("documentos/resumen").then((r) => { // ganancia real del mes (facturas emitidas)
     $("#gan-total").textContent = usd(r.total); $("#gan-det").textContent = `🟣 Servicios: ${usd(r.servicios)} · 🔵 Productos: ${usd(r.productos)}`;
   }).catch(() => {});
-  Promise.all([api("pagos/resumen").catch(() => null), api("existencias/alertas").catch(() => null)]).then(([r, e]) => { // por cobrar, vencido y poco stock
+  Promise.all([puede("caja") ? api("pagos/resumen").catch(() => null) : null, puede("inventario") ? api("existencias/alertas").catch(() => null) : null]).then(([r, e]) => { // por cobrar, vencido y poco stock
     const t = $("#alertas-txt"); if (!t) return;
     const lineas = [];
     if (r?.vencidas_n) lineas.push([`⚠️ ${r.vencidas_n} factura(s) vencida(s): ${usd(r.vencidas_usd)}`, "#/pagos"]);
@@ -86,14 +88,19 @@ function vistaInicio() {
 }
 
 function vistaAjustes() {
-  const n = estado.negocio;
+  const n = estado.negocio, admin = puede("admin");
   raiz.innerHTML = `
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver al inicio" aria-label="Volver">←</button><h1>Ajustes</h1></header>
-    <form id="f" class="tarjeta">
+    <section class="tarjeta"><h2>🔑 Mi cuenta</h2><p class="suave">${esc(estado.usuario.nombre)} · ${esc(estado.usuario.rol_nombre)}<br>${esc(estado.usuario.email)}</p>
+      <button class="boton chico contorno" id="cambiar-clave" type="button">Cambiar mi contraseña</button></section>
+    ${admin ? `<form id="f" class="tarjeta">
       ${NEGOCIO.map(([id, et]) => campo(id, et, n[id])).join("")}
       <p class="pista">💳 Tus datos de cobro (pago móvil, Zelle, etc.) ahora se configuran en <b>Pagos → Mis datos</b>.</p>
       ${ERROR}<button class="boton verde" type="submit">GUARDAR CAMBIOS</button>
     </form>
+    <section class="tarjeta"><h2>👥 Usuarios</h2><p class="suave">Crea cuentas para tu personal (cajero, supervisor, bodega), cambia sus permisos o desactívalas.</p>
+      <button class="boton chico" id="usuarios" type="button">Administrar usuarios</button></section>
+    ${formularioCodigo()}
     ${estado.modo === "PRACTICA" ? `<section class="tarjeta"><h2>🧪 Modo práctica</h2>
       <p class="suave">Mientras estés en práctica, las facturas y presupuestos son de prueba: llevan marca de agua, no valen y se borran al salir en vivo. Cuando todo esté probado y revisado con tu contador, sal en vivo para empezar la numeración real.</p>
       <form id="vivo">
@@ -105,11 +112,14 @@ function vistaAjustes() {
         ${ERROR}<button class="boton rojo" type="submit">SALIR EN VIVO</button></form></section>`
       : `<section class="tarjeta"><h2>✅ En vivo</h2><p class="suave">El sistema está en modo real: las facturas emitidas no se pueden editar ni borrar, solo anular.</p></section>`}
     <section class="tarjeta"><h2>💾 Respaldo</h2><p class="suave">Descarga una copia de todos tus datos (clientes, inventario y documentos). Guárdala fuera del sistema, en un lugar seguro.</p>
-      <button class="boton" id="respaldo" type="button">⬇️ Exportar respaldo</button></section>
-    <p class="suave">Sesión: ${esc(estado.usuario.email)}</p>
+      <button class="boton" id="respaldo" type="button">⬇️ Exportar respaldo</button></section>` : ""}
     <button class="boton contorno" id="salir">Cerrar sesión</button>`;
   $("#atras").addEventListener("click", () => (location.hash = "#/inicio"));
+  $("#cambiar-clave").addEventListener("click", () => vistaCambiarClave(estado, { forzado: false, alTerminar: () => { if (location.hash !== "#/ajustes") location.hash = "#/ajustes"; return ruta(); } }));
   $("#salir").addEventListener("click", async () => { await api("logout", "POST"); history.replaceState(null, "", "/"); await ruta(); });
+  if (!admin) return;
+  $("#usuarios").addEventListener("click", () => (location.hash = "#/usuarios"));
+  enlazarCodigo(ruta);
   enviar($("#f"), async (d) => { await api("config", "PUT", d); aviso("Guardado ✅"); location.hash = "#/inicio"; });
   if ($("#vivo")) enviar($("#vivo"), async (d) => {
     await api("sistema/salir-en-vivo", "POST", { primer_factura: Number(d.primer_factura), primer_control: Number(d.primer_control),
@@ -130,8 +140,11 @@ async function ruta() {
     estado = await api("estado");
     if (!estado.instalado) return vistaInstalar();
     if (!estado.sesion) return vistaLogin();
+    fijarPermisos(estado.permisos);
+    if (estado.usuario.debe_cambiar_clave) return vistaCambiarClave(estado, { forzado: true, alTerminar: ruta }); // clave temporal: primero elige la suya
     const [seccion, id, extra] = location.hash.replace(/^#\/?/, "").split("/");
     if (seccion === "ajustes") return vistaAjustes();
+    if (seccion === "usuarios") return puede("admin") ? await vistaUsuarios(estado) : vistaInicio();
     if (seccion === "clientes") return await vistaClientes(estado, id);
     if (seccion === "factura") return await vistaFactura(estado, id, extra);
     if (seccion === "pagos") return await vistaPagos(estado, id, extra);

@@ -149,3 +149,11 @@ table.informe tr.anulada td { color: var(--rojo); text-decoration: line-through;
 .res strong { font-size: 18px; overflow-wrap: anywhere; }
 .dos-botones { display: flex; gap: 10px; margin-top: 8px; }
 .dos-botones .boton { flex: 1; }
+
+/* Usuarios y claves (Fase 7.1) */
+.codigo { font: 700 22px/1.3 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .06em; text-align: center; padding: 14px 8px; margin: 8px 0; background: var(--fondo); border: 1px dashed var(--borde); border-radius: 12px; overflow-wrap: anywhere; user-select: all; }
+.secreto { border-left: 4px solid var(--ambar, #f59e0b); }
+.fila-usuario { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.fila-usuario .dato { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.acciones-usuario { display: grid; gap: 8px; margin-top: 10px; }
+.usuario.inactivo { opacity: .6; }

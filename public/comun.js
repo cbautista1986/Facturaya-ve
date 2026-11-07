@@ -50,11 +50,15 @@ export function enviar(form, accion) {
 
 // Barra inferior: destino "#/ruta" = pantalla lista; "Fase N" = todavía no existe
 const NAV = [
-  ["inicio", "🏠", "Inicio", "#/inicio"], ["factura", "🧾", "Factura", "#/factura"], ["clientes", "👥", "Clientes", "#/clientes"],
-  ["pagos", "💳", "Pagos", "#/pagos"], ["inventario", "📦", "Inventario", "#/inventario"],
+  ["inicio", "🏠", "Inicio", "#/inicio"], ["factura", "🧾", "Factura", "#/factura", "caja"], ["clientes", "👥", "Clientes", "#/clientes", "caja"],
+  ["pagos", "💳", "Pagos", "#/pagos", "caja"], ["inventario", "📦", "Inventario", "#/inventario", "inventario"],
 ];
+// Permisos de quien tiene la sesión (los manda el servidor en /api/estado). Solo sirven para MOSTRAR u ocultar: el servidor es quien los hace cumplir.
+let PERMISOS = [];
+export const fijarPermisos = (p) => { PERMISOS = Array.isArray(p) ? p : []; };
+export const puede = (p) => PERMISOS.includes(p);
 export function navegacion(activo) {
-  return `<nav class="nav">${NAV.map(([id, icono, nombre, destino]) =>
+  return `<nav class="nav">${NAV.filter(([, , , , req]) => !req || puede(req)).map(([id, icono, nombre, destino]) =>
     `<button data-nombre="${nombre}" data-destino="${destino}" data-ayuda="${nombre}" class="${id === activo ? "activo" : ""}"><span>${icono}</span>${nombre}</button>`).join("")}</nav>`;
 }
 // Enlaza todos los botones con data-destino de la pantalla actual

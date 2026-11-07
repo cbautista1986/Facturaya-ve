@@ -12,6 +12,8 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
 - **Fase 6:** informes para el contador (solo lectura): libro de ventas y libro de compras (ambos en Bs, por alícuota), resumen mensual de IVA
   (débito menos crédito fiscal), ganancias, cuentas por cobrar con antigüedad e inventario valorizado. Las compras guardan la tasa BCV de la fecha
   de su factura (las anteriores a la migración 0007 quedan sin Bs, no se les inventa tasa). Se abren desde la tarjeta de ganancia de Inicio y se descargan en CSV (Excel) y PDF.
+- **Fase 7.1:** usuarios con roles (dueño, supervisor, cajero, bodega) y permisos aplicados en el servidor, costos ocultos para caja, clave temporal
+  obligatoria de cambiar, desactivar usuarios y código de recuperación de la clave del dueño (se muestra una sola vez).
 
 ## Dónde editar cada cosa (un módulo = pantallas en `public/` + API en `src/rutas/`)
 | Módulo | Pantallas | API |
@@ -23,6 +25,7 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
 | Pagos, por cobrar, recibos, datos de cobro | `pagos.js`, `pdf.js` | `pagos.ts` |
 | Compras, proveedores y existencias | `compras.js`, `catalogo.js` | `compras.ts`, `proveedores.ts`, `existencias.ts`, `src/stock.ts` |
 | Informes (libros, ganancias, por cobrar, inventario) | `informes.js`, `informe-tabla.js` | `informes.ts` |
+| Usuarios, roles y recuperación de clave | `usuarios.js` | `usuarios.ts`, `permisos.ts` (la tabla de quién puede qué) |
 | Modo práctica y respaldo | `app.js` (Ajustes) | `sistema.ts` |
 
 - `public/dinero.js` → **toda** la matemática del dinero; la usan el servidor y el navegador (una sola fuente de verdad).
@@ -44,6 +47,8 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
    (se corrigen con otro movimiento). Costo = promedio ponderado (valor ÷ existencias). Solo las facturas mueven existencias.
 10. Un producto con **control de existencias** no se factura por encima de lo que hay; uno sin control se vende sin límite.
     Anular una factura devuelve lo que salió, al mismo costo. Una compra solo se anula si después no hubo otros movimientos de sus productos.
+11. Los **permisos viven en `src/permisos.ts`** y los aplica el servidor en cada petición (no solo se esconden botones). Una ruta nueva que no esté en esa tabla
+    es solo del administrador. Siempre debe quedar al menos un administrador activo. Cajero y supervisor no reciben costos ni ganancias.
 11. Los lotes críticos usan la tabla `verificaciones` como "freno de emergencia": si algo cambió mientras se guardaba, se deshace todo el lote.
 12. El **IGTF no se calcula** todavía: espera la confirmación del contador. Cada pago guarda su método y moneda para poder activarlo después.
 

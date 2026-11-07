@@ -2,7 +2,7 @@
 // Las existencias se calculan sumando movimientos (nunca se guardan sueltas). Cargar y ajustar es solo del administrador.
 import { Hono } from "hono";
 import { aCantidadMilli, aCentavos, redondear } from "../../public/dinero.js";
-import { auditar, falla, fechaCaracas, idParam, leerJson, modoActual, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
+import { auditar, falla, fechaCaracas, idParam, leerJson, modoActual, requiereSesion, texto, type Env } from "../comun";
 import { costoPromedio, guardaSaldo, movimiento, saldos, valorEntradaAlPromedio, valorSalida } from "../stock";
 
 const existencias = new Hono<Env>();
@@ -40,7 +40,7 @@ existencias.get("/:id/movimientos", async (c) => {
 });
 
 // Carga directa: existencias que entran SIN factura de compra (inventario inicial, producción propia, etc.)
-existencias.post("/carga", requiereAdmin, async (c) => {
+existencias.post("/carga", async (c) => {
   const db = c.env.DB, u = c.get("usuario"), b = await leerJson(c), id = Number(b.producto_id) || 0;
   const cant = aCantidadMilli(b.cantidad), costo = aCentavos(b.costo_usd);
   if (cant === null || Number.isNaN(cant)) return falla(c, 400, "Escribe la cantidad (ejemplos: 10 o 2,5).");
@@ -58,7 +58,7 @@ existencias.post("/carga", requiereAdmin, async (c) => {
   return c.json({ ok: true, stock_milli: s.stock + cant, activado: !p.controla_stock });
 });
 
-existencias.post("/ajuste", requiereAdmin, async (c) => {
+existencias.post("/ajuste", async (c) => {
   const db = c.env.DB, u = c.get("usuario"), b = await leerJson(c), id = Number(b.producto_id) || 0, motivo = texto(b.motivo, 20);
   const signo = MOTIVOS[motivo], cant = aCantidadMilli(b.cantidad), nota = texto(b.nota, 200);
   if (!signo) return falla(c, 400, "Elige el motivo del ajuste.");

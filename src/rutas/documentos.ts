@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import { aCantidadMilli, aTasaE8, calcular, cantidadTexto } from "../../public/dinero.js";
 import { guardaSaldo, movimiento, saldos, valorSalida } from "../stock";
+import { veCostos } from "../permisos";
 import { PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
 
 const documentos = new Hono<Env>();
@@ -151,7 +152,18 @@ documentos.put("/:id", async (c) => {
   const d = await db.prepare(`SELECT estado, tipo FROM documentos WHERE id = ?`).bind(id).first<{ estado: string; tipo: string }>();
   if (!d) return falla(c, 404, "Documento no encontrado.");
   if (d.estado !== "BORRADOR") return falla(c, 409, "Solo se puede editar un borrador: un documento emitido no se modifica.");
-  const v = await validarBorrador(c, await leerJson(c), d.tipo);
+  const cuerpo = await leerJson(c);
+  // Quien no ve costos (caja, supervisor) no los recibe ni los manda: al editar, un producto «al vuelo» conserva el costo que ya tenía el borrador.
+  if (!veCostos(c.get("usuario").rol) && Array.isArray(cuerpo.lineas)) {
+    const { results } = await db.prepare(`SELECT descripcion, costo_usd FROM documento_renglones WHERE documento_id = ? AND catalogo_id IS NULL AND tipo = 'PRODUCTO' AND costo_usd IS NOT NULL ORDER BY orden`).bind(id).all<{ descripcion: string; costo_usd: number }>();
+    for (const l of cuerpo.lineas as Record<string, unknown>[]) {
+      if (l && !l.catalogo_id && l.tipo === "PRODUCTO" && !String(l.costo_usd ?? "").trim()) {
+        const k = results.findIndex((r) => r.descripcion === texto(l.descripcion, 200));
+        if (k >= 0) l.costo_usd = (results.splice(k, 1)[0].costo_usd / 100).toFixed(2).replace(".", ",");
+      }
+    }
+  }
+  const v = await validarBorrador(c, cuerpo, d.tipo);
   if (typeof v === "string") return falla(c, 400, v);
   const t = v.calculo;
   await db.batch([

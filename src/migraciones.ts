@@ -431,6 +431,16 @@ export const MIGRACIONES: Migracion[] = [
         BEGIN SELECT RAISE(ABORT, 'Compra registrada: solo se puede anular.'); END`,
     ],
   },
+  {
+    // Fase 7.1: usuarios con roles (ADMIN / SUPERVISOR / CAJERO / BODEGA), desactivar sin borrar, cambio obligatorio de clave y código de recuperación.
+    // El rol 'ADMIN' de siempre sigue siendo el dueño: ninguna cuenta existente cambia ni pierde acceso.
+    id: "0008_usuarios_roles",
+    sql: [
+      `ALTER TABLE usuarios ADD COLUMN activo INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE usuarios ADD COLUMN debe_cambiar_clave INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE usuarios ADD COLUMN codigo_recuperacion_hash TEXT`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

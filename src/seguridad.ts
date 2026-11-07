@@ -40,3 +40,16 @@ export async function sha256(texto: string) {
 export function tokenAleatorio() {
   return aB64(crypto.getRandomValues(new Uint8Array(32))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
+
+// Códigos que una persona copia o teclea (recuperación de clave, claves temporales): letras y números sin confusiones (sin 0/O, 1/I/L).
+const ALFABETO = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // 31 símbolos
+function sorteo(largo: number) {
+  let s = "";
+  while (s.length < largo) for (const b of crypto.getRandomValues(new Uint8Array(32))) { if (b < 248 && s.length < largo) s += ALFABETO[b % 31]; } // 248 = 31 × 8: sin sesgo
+  return s;
+}
+// Código de recuperación: 20 símbolos (≈ 99 bits), se muestra UNA sola vez, ejemplo: K7QM-2XTA-9RBD-HW4P-N6ZC
+export const codigoRecuperacion = () => sorteo(20).match(/.{4}/g)!.join("-");
+export const normalizarCodigo = (t: string) => t.toUpperCase().replace(/[^A-Z0-9]/g, "");
+// Clave temporal para un usuario nuevo o restablecido: 12 símbolos, ejemplo: H7KQ-2MXA-9RBD (debe cambiarla al entrar)
+export const claveTemporal = () => sorteo(12).match(/.{4}/g)!.join("-");

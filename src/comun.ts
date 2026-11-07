@@ -4,7 +4,7 @@ import { createMiddleware } from "hono/factory";
 import { getCookie } from "hono/cookie";
 import { sha256 } from "./seguridad";
 
-export type Usuario = { id: number; nombre: string; email: string; rol: string };
+export type Usuario = { id: number; nombre: string; email: string; rol: string; debe_cambiar_clave: number };
 export type Env = { Bindings: { DB: D1Database }; Variables: { usuario: Usuario } };
 export type Ctx = Context<Env>;
 export type Estado = 400 | 401 | 403 | 404 | 409 | 429;
@@ -34,13 +34,14 @@ export async function usuarioActual(c: Ctx) {
   const token = getCookie(c, "sid");
   if (!token) return null;
   return c.env.DB.prepare(
-    `SELECT u.id, u.nombre, u.email, u.rol FROM sesiones s JOIN usuarios u ON u.id = s.usuario_id
-     WHERE s.token_hash = ? AND s.expira_en > ?`
+    `SELECT u.id, u.nombre, u.email, u.rol, u.debe_cambiar_clave FROM sesiones s JOIN usuarios u ON u.id = s.usuario_id
+     WHERE s.token_hash = ? AND s.expira_en > ? AND u.activo = 1`
   ).bind(await sha256(token), ahora()).first<Usuario>();
 }
 
 // Úsalo en cada módulo nuevo: router.use("*", requiereSesion)
 export const requiereSesion = createMiddleware<Env>(async (c, next) => {
+  if (c.get("usuario")) return next(); // ya la comprobó el control central de permisos (index.ts)
   const u = await usuarioActual(c);
   if (!u) return falla(c, 401, "Inicia sesión para continuar.");
   c.set("usuario", u);

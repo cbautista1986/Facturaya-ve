@@ -1,5 +1,6 @@
 // Entrada de la aplicación: instalador, login, inicio y ajustes. Cada módulo vive en su propio archivo.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
+import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
@@ -101,6 +102,7 @@ function vistaAjustes() {
     <section class="tarjeta"><h2>👥 Usuarios</h2><p class="suave">Crea cuentas para tu personal (cajero, supervisor, bodega), cambia sus permisos o desactívalas.</p>
       <button class="boton chico" id="usuarios" type="button">Administrar usuarios</button></section>
     ${formularioCodigo()}
+    ${tarjetaRestaurar()}
     ${estado.modo === "PRACTICA" ? `<section class="tarjeta"><h2>🧪 Modo práctica</h2>
       <p class="suave">Mientras estés en práctica, las facturas y presupuestos son de prueba: llevan marca de agua, no valen y se borran al salir en vivo. Cuando todo esté probado y revisado con tu contador, sal en vivo para empezar la numeración real.</p>
       <form id="vivo">
@@ -120,6 +122,7 @@ function vistaAjustes() {
   if (!admin) return;
   $("#usuarios").addEventListener("click", () => (location.hash = "#/usuarios"));
   enlazarCodigo(ruta);
+  $("#restaurar-ir").addEventListener("click", () => (location.hash = "#/restaurar"));
   enviar($("#f"), async (d) => { await api("config", "PUT", d); aviso("Guardado ✅"); location.hash = "#/inicio"; });
   if ($("#vivo")) enviar($("#vivo"), async (d) => {
     await api("sistema/salir-en-vivo", "POST", { primer_factura: Number(d.primer_factura), primer_control: Number(d.primer_control),
@@ -141,8 +144,11 @@ async function ruta() {
     if (!estado.instalado) return vistaInstalar();
     if (!estado.sesion) return vistaLogin();
     fijarPermisos(estado.permisos);
+    if (estado.restaurando && !puede("admin")) return pantallaOcupado(ruta); // se está restaurando un respaldo: solo el dueño puede hacer algo
     if (estado.usuario.debe_cambiar_clave) return vistaCambiarClave(estado, { forzado: true, alTerminar: ruta }); // clave temporal: primero elige la suya
     const [seccion, id, extra] = location.hash.replace(/^#\/?/, "").split("/");
+    if (estado.restaurando && seccion !== "restaurar") return vistaRestaurar(estado, ruta); // el dueño debe terminar o cancelar la restauración a medias
+    if (seccion === "restaurar") return puede("admin") ? vistaRestaurar(estado, ruta) : vistaInicio();
     if (seccion === "ajustes") return vistaAjustes();
     if (seccion === "usuarios") return puede("admin") ? await vistaUsuarios(estado) : vistaInicio();
     if (seccion === "clientes") return await vistaClientes(estado, id);

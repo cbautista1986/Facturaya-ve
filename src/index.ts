@@ -4,6 +4,7 @@ import { migrar } from "./migraciones";
 import { CLAVE_FALSA, codigoRecuperacion, hashClave, normalizarCodigo, sha256, tokenAleatorio, verificarClave } from "./seguridad";
 import { NOMBRE_ROL, permisosDe, permitido, sinCostos, tiene, veCostos } from "./permisos";
 import { usuarios, cuenta } from "./rutas/usuarios";
+import { restaurar } from "./rutas/restaurar";
 import { EMAIL, RIF, ahora, auditar, falla, ip, leerJson, modoActual, usuarioActual, type Ctx, type Env } from "./comun";
 import clientes from "./rutas/clientes";
 import catalogo from "./rutas/catalogo";
@@ -51,6 +52,9 @@ app.use("/api/*", async (c, next) => {
   c.set("usuario", u);
   if (!permitido(u.rol, c.req.method, ruta)) return falla(c, 403, "Tu usuario no tiene permiso para esto.");
   if (u.debe_cambiar_clave && ruta !== "/api/cuenta/clave") return c.json({ ok: false, error: "Debes cambiar tu clave temporal antes de continuar.", cambiar_clave: true }, 403);
+  // Mientras se restaura un respaldo nadie guarda nada (la restauración la hace UNA persona de principio a fin)
+  if (c.req.method !== "GET" && !ruta.startsWith("/api/sistema/restaurar/") && (await c.env.DB.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first()))
+    return c.json({ ok: false, error: "El sistema está restaurando un respaldo. Espera a que el administrador termine.", restaurando: true }, 423);
   await next();
   if (!veCostos(u.rol) && (c.res.headers.get("content-type") ?? "").includes("application/json")) { // quien no ve costos tampoco los recibe, aunque la pantalla no los pida
     const datos = await c.res.clone().json().catch(() => null);
@@ -64,7 +68,7 @@ app.get("/api/estado", async (c) => {
   const usuario = await usuarioActual(c);
   if (!usuario) return c.json({ instalado: true, sesion: false });
   const negocio = await c.env.DB.prepare(`SELECT ${COLUMNAS_NEGOCIO} FROM perfil_emisor WHERE id = 1`).first();
-  return c.json({ instalado: true, sesion: true, usuario: { ...usuario, rol_nombre: NOMBRE_ROL[usuario.rol] ?? usuario.rol }, permisos: permisosDe(usuario.rol), ve_costos: veCostos(usuario.rol), negocio, modo: await modoActual(c.env.DB) });
+  return c.json({ instalado: true, sesion: true, usuario: { ...usuario, rol_nombre: NOMBRE_ROL[usuario.rol] ?? usuario.rol }, permisos: permisosDe(usuario.rol), ve_costos: veCostos(usuario.rol), restaurando: !!(await c.env.DB.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first()), negocio, modo: await modoActual(c.env.DB) });
 });
 
 // Instalador tipo WordPress: solo funciona UNA vez; después responde 409 (nadie puede crear otro admin).
@@ -205,6 +209,7 @@ app.route("/api/existencias", existencias);
 app.route("/api/informes", informes);
 app.route("/api/usuarios", usuarios);
 app.route("/api/cuenta", cuenta);
+app.route("/api/sistema/restaurar", restaurar);
 
 app.notFound((c) => c.json({ ok: false, error: "No encontrado." }, 404));
 app.onError((e, c) => {

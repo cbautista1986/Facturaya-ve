@@ -14,6 +14,8 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
   de su factura (las anteriores a la migración 0007 quedan sin Bs, no se les inventa tasa). Se abren desde la tarjeta de ganancia de Inicio y se descargan en CSV (Excel) y PDF.
 - **Fase 7.1:** usuarios con roles (dueño, supervisor, cajero, bodega) y permisos aplicados en el servidor, costos ocultos para caja, clave temporal
   obligatoria de cambiar, desactivar usuarios y código de recuperación de la clave del dueño (se muestra una sola vez).
+- **Fase 7.2:** respaldo completo y verificable (todas las tablas, con conteos, sumas y huella) y **restauración de respaldo** en un sistema recién instalado y vacío,
+  con avance, verificación final, cancelar y reintentar; los candados contables nunca se apagan (se carga como práctica y se pasa a real al final).
 
 ## Dónde editar cada cosa (un módulo = pantallas en `public/` + API en `src/rutas/`)
 | Módulo | Pantallas | API |
@@ -26,6 +28,7 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
 | Compras, proveedores y existencias | `compras.js`, `catalogo.js` | `compras.ts`, `proveedores.ts`, `existencias.ts`, `src/stock.ts` |
 | Informes (libros, ganancias, por cobrar, inventario) | `informes.js`, `informe-tabla.js` | `informes.ts` |
 | Usuarios, roles y recuperación de clave | `usuarios.js` | `usuarios.ts`, `permisos.ts` (la tabla de quién puede qué) |
+| Restaurar respaldo | `restaurar.js`, `restaurar-nucleo.js` | `restaurar.ts` (el `PLAN` de tablas), `sistema.ts` (exportación) |
 | Modo práctica y respaldo | `app.js` (Ajustes) | `sistema.ts` |
 
 - `public/dinero.js` → **toda** la matemática del dinero; la usan el servidor y el navegador (una sola fuente de verdad).
@@ -49,6 +52,8 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
     Anular una factura devuelve lo que salió, al mismo costo. Una compra solo se anula si después no hubo otros movimientos de sus productos.
 11. Los **permisos viven en `src/permisos.ts`** y los aplica el servidor en cada petición (no solo se esconden botones). Una ruta nueva que no esté en esa tabla
     es solo del administrador. Siempre debe quedar al menos un administrador activo. Cajero y supervisor no reciben costos ni ganancias.
+12. **Tabla nueva = actualizar `PLAN` en `src/rutas/restaurar.ts`** (o ponerla en `NO_RESTAURAR`). Si no, la restauración se niega a correr (así nunca se pierden datos en silencio).
+    El respaldo exporta todas las tablas solo, pero restaurar necesita saber en qué orden y con qué sumas de control cargarlas.
 11. Los lotes críticos usan la tabla `verificaciones` como "freno de emergencia": si algo cambió mientras se guardaba, se deshace todo el lote.
 12. El **IGTF no se calcula** todavía: espera la confirmación del contador. Cada pago guarda su método y moneda para poder activarlo después.
 

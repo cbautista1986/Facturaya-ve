@@ -22,6 +22,7 @@ export const PLAN: Plan[] = [
   { tabla: "ajustes", tipo: "ajustes" },
   { tabla: "contadores", tipo: "upsert" },
   { tabla: "metodos_cobro", tipo: "upsert" },
+  { tabla: "medio_historial", tipo: "insertar", usuarios: ["cambiado_por"] },
   { tabla: "clientes", tipo: "insertar" },
   { tabla: "proveedores", tipo: "insertar" },
   { tabla: "catalogo", tipo: "insertar" },

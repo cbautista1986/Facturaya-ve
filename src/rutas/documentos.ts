@@ -13,7 +13,7 @@ documentos.use("*", requiereSesion);
 type Linea = { catalogo_id: number | null; tipo: "SERVICIO" | "PRODUCTO"; descripcion: string; cantidad_milli: number; precio_usd: number; costo_usd: number | null; alicuota_cent: number };
 type Fila = Record<string, any>;
 
-const COLUMNAS = `id, tipo, estado, modo, numero, control_interno, control_fiscal, presupuesto_id, cliente_id, cliente_rif, cliente_nombre,
+const COLUMNAS = `id, tipo, estado, modo, numero, control_interno, control_fiscal, fiscal_serial, medio, presupuesto_id, cliente_id, cliente_rif, cliente_nombre,
   cliente_direccion, cliente_whatsapp, cliente_email, nota, fecha_emision, emitido_en, tasa_e8, tasa_cargada_en, subtotal_usd, iva_usd, total_usd,
   subtotal_bs, iva_bs, total_bs, costo_total_usd, parametros_json, emisor_json, anulado_en, motivo_anulacion, creado_en, condicion, dias_credito, vence_el`;
 
@@ -198,7 +198,7 @@ documentos.post("/:id/emitir", async (c) => {
   if (!lineas.length) return falla(c, 400, "Agrega al menos un renglón.");
   if (lineas.some((l) => l.precio_usd <= 0)) return falla(c, 400, "Todos los renglones deben tener un precio mayor que 0.");
 
-  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion FROM perfil_emisor WHERE id = 1`).first<Fila>();
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? ""));
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV de hoy en el Inicio antes de emitir.");
   const cli = await db.prepare(`SELECT rif_cedula, nombre_apellido, direccion, whatsapp, email FROM clientes WHERE id = ?`).bind(doc.cliente_id).first<Fila>();
@@ -246,12 +246,12 @@ documentos.post("/:id/emitir", async (c) => {
        cliente_rif = ?, cliente_nombre = ?, cliente_direccion = ?, cliente_whatsapp = ?, cliente_email = ?,
        fecha_emision = ?, emitido_en = ?, tasa_e8 = ?, tasa_cargada_en = ?,
        subtotal_usd = ?, iva_usd = ?, total_usd = ?, subtotal_bs = ?, iva_bs = ?, total_bs = ?, costo_total_usd = ?,
-       parametros_json = ?, emisor_json = ?, vence_el = ?
+       parametros_json = ?, emisor_json = ?, vence_el = ?, medio = ?
      WHERE id = ? AND estado = 'BORRADOR'`
   ).bind(...[claveNum, ...(esFactura ? [claveCtl] : []), cli.rif_cedula, cli.nombre_apellido, cli.direccion, cli.whatsapp, cli.email,
     fecha, new Date().toISOString(), tasa, perfil!.tasa_bcv_fecha,
     calc.subtotal_usd, calc.iva_usd, calc.total_usd, calc.subtotal_bs, calc.iva_bs, calc.total_bs, calc.costo_total_usd,
-    JSON.stringify(reglas), JSON.stringify(emisor), vence, id]));
+    JSON.stringify(reglas), JSON.stringify(emisor), vence, esFactura && perfil!.medio_facturacion !== "SIN_DEFINIR" ? perfil!.medio_facturacion : null, id]));
   if (esFactura && doc.presupuesto_id)
     pasos.push(db.prepare(`UPDATE documentos SET estado = 'FACTURADO' WHERE id = ? AND estado = 'EMITIDO'`).bind(doc.presupuesto_id));
 
@@ -306,6 +306,29 @@ async function clonar(c: Ctx, origenId: number, tipo: "FACTURA" | "PRESUPUESTO",
   ).bind(nuevo!.id, origenId).run();
   return nuevo!.id;
 }
+
+// Registrar el número fiscal de una factura ya emitida (el que imprimió la máquina fiscal, o el control que dio la imprenta digital).
+// Se puede poner UNA sola vez (el candado de la base de datos lo impide después) y solo en facturas emitidas bajo un medio definido.
+documentos.post("/:id/fiscal", async (c) => {
+  const id = idParam(c), b = await leerJson(c), db = c.env.DB, u = c.get("usuario");
+  const d = await db.prepare(`SELECT tipo, estado, medio, control_fiscal FROM documentos WHERE id = ?`).bind(id).first<Fila>();
+  if (!d) return falla(c, 404, "Documento no encontrado.");
+  if (d.tipo !== "FACTURA" || d.estado !== "EMITIDO") return falla(c, 409, "El número fiscal se registra en una factura emitida y vigente.");
+  if (!d.medio) return falla(c, 409, "Esta factura se emitió antes de definir el medio de facturación: no se le puede registrar número fiscal aquí.");
+  if (d.control_fiscal) return falla(c, 409, "Esta factura ya tiene su número fiscal; no se puede cambiar.");
+  const numero = texto(b.numero, 30).toUpperCase(), serial = texto(b.serial, 30).toUpperCase();
+  if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(numero)) return falla(c, 400, "Escribe el número fiscal (solo letras, números y guiones).");
+  if (d.medio === "MAQUINA_FISCAL" && !/^[0-9A-Z][0-9A-Z-]{2,29}$/.test(serial)) return falla(c, 400, "Escribe el serial de la máquina fiscal (el que sale impreso en la factura).");
+  try {
+    const r = await db.prepare(`UPDATE documentos SET control_fiscal = ?, fiscal_serial = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`).bind(numero, d.medio === "MAQUINA_FISCAL" ? serial : null, id).run();
+    if (!r.meta.changes) return falla(c, 409, "Esta factura ya tiene su número fiscal; no se puede cambiar.");
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) return falla(c, 409, "Ese número fiscal ya está registrado en otra factura.");
+    throw e;
+  }
+  await auditar(c, u.id, "FISCAL_REGISTRAR", `${id} ${d.medio} ${numero}`);
+  return c.json({ ok: true });
+});
 
 documentos.post("/:id/convertir", async (c) => {
   const id = idParam(c);

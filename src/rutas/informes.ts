@@ -27,7 +27,7 @@ informes.get("/ventas", async (c) => {
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
   const [docs, imp] = await Promise.all([
-    db.prepare(`SELECT id, numero, control_interno, control_fiscal, fecha_emision, cliente_rif, cliente_nombre, estado, tasa_e8, total_usd, total_bs
+    db.prepare(`SELECT id, numero, control_interno, control_fiscal, fiscal_serial, medio, fecha_emision, cliente_rif, cliente_nombre, estado, tasa_e8, total_usd, total_bs
         FROM documentos WHERE tipo = 'FACTURA' AND modo = ? AND estado IN ('EMITIDO', 'ANULADO') AND fecha_emision BETWEEN ? AND ? ORDER BY numero, id`)
       .bind(modo, r.desde, r.hasta).all<Fila>(),
     db.prepare(`SELECT i.documento_id, i.alicuota_cent, i.base_bs, i.iva_bs FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
@@ -45,6 +45,7 @@ informes.get("/ventas", async (c) => {
   }
   const alicuotas = [...porAlicuota].sort((a, b) => a[0] - b[0]).map(([alicuota_cent, t]) => ({ alicuota_cent, ...t }));
   return c.json({ ok: true, modo, desde: r.desde, hasta: r.hasta, filas, alicuotas, n_vigentes: vigentes.length, n_anuladas: filas.length - vigentes.length,
+    n_sin_fiscal: vigentes.filter((f) => f.medio && !f.control_fiscal).length, // emitidas con un medio definido y sin número fiscal registrado todavía
     total_bs: suma(vigentes, "total_bs"), total_usd: suma(vigentes, "total_usd") });
 });
 

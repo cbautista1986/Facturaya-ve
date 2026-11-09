@@ -1,6 +1,7 @@
 // Entrada de la aplicación: instalador, login, inicio y ajustes. Cada módulo vive en su propio archivo.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
+import { tarjetaMedio, enlazarMedio } from "./medio.js";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
@@ -47,6 +48,7 @@ function vistaInicio() {
     <header class="encabezado"><span class="logo">🖼️</span><h1>Hola, ${esc(n.nombre_razon_social)}</h1>
       <button class="icono" id="ajustes" data-ayuda="Ajustes del negocio, datos de cobro y cerrar sesión" aria-label="Ajustes">⚙️</button></header>
     ${estado.modo === "PRACTICA" ? `<section class="aviso-practica"><b>🧪 MODO PRÁCTICA</b> · los documentos son de prueba y se borran al salir en vivo (Ajustes).</section>` : ""}
+    ${estado.modo === "REAL" && estado.negocio.medio_facturacion === "SIN_DEFINIR" && puede("admin") ? `<section class="aviso-control" data-destino="#/ajustes">⚠️ Elige tu <b>medio de facturación</b> (máquina fiscal o imprenta digital) en Ajustes.</section>` : ""}
     <section class="tarjeta tasa">
       <div id="tasa-vista"><span class="etiqueta">🟢 TASA BCV</span><br><strong>${tasa ? `Bs. ${bs(tasa)}` : "Sin definir"}</strong><br>
         <small class="suave">${n.tasa_bcv_fecha ? `Actualizada: ${fechaLocal(n.tasa_bcv_fecha)}` : "Escribe la tasa de hoy"}</small></div>
@@ -101,6 +103,7 @@ function vistaAjustes() {
     </form>
     <section class="tarjeta"><h2>👥 Usuarios</h2><p class="suave">Crea cuentas para tu personal (cajero, supervisor, bodega), cambia sus permisos o desactívalas.</p>
       <button class="boton chico" id="usuarios" type="button">Administrar usuarios</button></section>
+    ${tarjetaMedio()}
     ${formularioCodigo()}
     ${tarjetaRestaurar()}
     ${estado.modo === "PRACTICA" ? `<section class="tarjeta"><h2>🧪 Modo práctica</h2>
@@ -122,6 +125,7 @@ function vistaAjustes() {
   if (!admin) return;
   $("#usuarios").addEventListener("click", () => (location.hash = "#/usuarios"));
   enlazarCodigo(ruta);
+  enlazarMedio(ruta).catch((e) => aviso(e.message));
   $("#restaurar-ir").addEventListener("click", () => (location.hash = "#/restaurar"));
   enviar($("#f"), async (d) => { await api("config", "PUT", d); aviso("Guardado ✅"); location.hash = "#/inicio"; });
   if ($("#vivo")) enviar($("#vivo"), async (d) => {

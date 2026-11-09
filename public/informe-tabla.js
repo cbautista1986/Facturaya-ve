@@ -10,6 +10,7 @@ const nroFactura = (n) => (n == null ? "" : String(n).padStart(8, "0"));
 const alicuota = (cent) => (cent === 0 ? "Exento" : `${cent / 100}%`);
 const MOV = { COMPRA: "Compra", CARGA: "Carga", VENTA: "Venta", DEVOLUCION_VENTA: "Devolución de venta", ANULACION_COMPRA: "Anulación de compra", AJUSTE: "Ajuste" };
 const MOTIVO = { DANADO: "Dañado", PERDIDO: "Perdido", GARANTIA: "Garantía", USO_INTERNO: "Uso interno", SOBRANTE: "Sobrante" };
+const MEDIO = { MAQUINA_FISCAL: "Máquina fiscal", IMPRENTA_DIGITAL: "Imprenta digital" };
 const izq = (t) => ({ t }), der = (t) => ({ t, der: true });
 const periodo = (r) => `Del ${fecha(r.desde)} al ${fecha(r.hasta)}`;
 
@@ -26,19 +27,21 @@ export const INFORMES = [
 
 function modeloVentas(r) {
   const alic = r.alicuotas.map((a) => a.alicuota_cent);
-  const columnas = [izq("Fecha"), izq("N.º factura"), izq("Control interno"), izq("Control fiscal"), izq("RIF / Cédula"), izq("Cliente"), izq("Estado"),
+  const columnas = [izq("Fecha"), izq("N.º factura"), izq("Control interno"), izq("Control fiscal"), izq("Serial máquina fiscal"), izq("Medio"), izq("RIF / Cédula"), izq("Cliente"), izq("Estado"),
     ...alic.flatMap((a) => [der(`Base ${alicuota(a)} (Bs)`), ...(a === 0 ? [] : [der(`IVA ${alicuota(a)} (Bs)`)])]), der("Total (Bs)"), der("Total (USD)")];
   const celdasImp = (f) => alic.flatMap((a) => { const i = f.impuestos.find((x) => x.alicuota_cent === a); return [num(i?.base_bs ?? 0), ...(a === 0 ? [] : [num(i?.iva_bs ?? 0)])]; });
   const filas = r.filas.map((f) => {
     const anulada = f.estado === "ANULADO";
-    return [fecha(f.fecha_emision), nroFactura(f.numero), f.control_interno == null ? "" : nroFactura(f.control_interno), f.control_fiscal || "", f.cliente_rif || "", f.cliente_nombre || "",
+    return [fecha(f.fecha_emision), nroFactura(f.numero), f.control_interno == null ? "" : nroFactura(f.control_interno), f.control_fiscal || "", f.fiscal_serial || "", MEDIO[f.medio] || "", f.cliente_rif || "", f.cliente_nombre || "",
       anulada ? "ANULADA" : "Emitida", ...(anulada ? [...alic.flatMap((a) => (a === 0 ? [""] : ["", ""])), "", ""] : [...celdasImp(f), num(f.total_bs), num(f.total_usd)])];
   });
-  const totales = [["TOTAL", "", "", "", "", "", `${r.n_vigentes} emitida(s)`, ...alic.flatMap((a) => { const t = r.alicuotas.find((x) => x.alicuota_cent === a); return [num(t.base_bs), ...(a === 0 ? [] : [num(t.iva_bs)])]; }), num(r.total_bs), num(r.total_usd)]];
+  const totales = [["TOTAL", "", "", "", "", "", "", "", `${r.n_vigentes} emitida(s)`, ...alic.flatMap((a) => { const t = r.alicuotas.find((x) => x.alicuota_cent === a); return [num(t.base_bs), ...(a === 0 ? [] : [num(t.iva_bs)])]; }), num(r.total_bs), num(r.total_usd)]];
   return { clave: "ventas", titulo: "Libro de ventas", periodo: periodo(r),
-    resumen: [["Facturas emitidas", String(r.n_vigentes)], ["Anuladas (no suman)", String(r.n_anuladas)], ["Total en Bs", num(r.total_bs)], ["Total en USD", num(r.total_usd)]],
+    resumen: [["Facturas emitidas", String(r.n_vigentes)], ["Anuladas (no suman)", String(r.n_anuladas)], ["Total en Bs", num(r.total_bs)], ["Total en USD", num(r.total_usd)],
+      ...(r.n_sin_fiscal ? [["Sin número fiscal", String(r.n_sin_fiscal)]] : [])],
     notas: ["Montos en bolívares: son los montos legales de cada factura. Las facturas anuladas se listan para que la numeración no tenga saltos, pero no suman.",
-      "Las facturas no tienen N.º de control fiscal mientras no haya imprenta digital autorizada."],
+      "Medio: con máquina fiscal la factura legal es la de la máquina (aquí va su número fiscal y su serial); con imprenta digital, el control lo da la imprenta. Las facturas emitidas antes de definir el medio no lo traen.",
+      ...(r.n_sin_fiscal ? [`${r.n_sin_fiscal} factura(s) emitida(s) todavía no tienen su número fiscal registrado.`] : [])],
     secciones: [{ titulo: "Facturas", columnas, filas, totales }] };
 }
 

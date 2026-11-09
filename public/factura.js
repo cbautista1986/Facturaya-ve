@@ -269,8 +269,10 @@ async function ver(estado, id) {
   const datos = await api(`documentos/${encodeURIComponent(id)}`), { documento: D, lineas, impuestos, pagos = [], pagado_usd = 0, saldo_usd = null } = datos;
   const [estTxt, estColor] = ESTADOS[D.estado], emitido = D.estado !== "BORRADOR", reglas = JSON.parse(D.parametros_json || "{}");
   const cliente = D.cliente_nombre ? { nombre: D.cliente_nombre, rif: D.cliente_rif } : D.cliente_id ? await api(`clientes/${D.cliente_id}`).then((r) => ({ nombre: r.cliente.nombre_apellido, rif: r.cliente.rif_cedula })) : null;
-  const sinControl = D.tipo === "FACTURA" && emitido && !D.control_fiscal;
-  const titulo = D.tipo === "FACTURA" && emitido && !D.control_fiscal ? (reglas.titulo_sin_control || "Factura") : NOMBRE[D.tipo];
+  const maquina = D.tipo === "FACTURA" && emitido && D.medio === "MAQUINA_FISCAL"; // con máquina fiscal la factura legal es la de la máquina: la del sistema es un comprobante interno
+  const sinControl = D.tipo === "FACTURA" && emitido && !D.control_fiscal && !maquina;
+  const titulo = maquina ? "COMPROBANTE INTERNO" : D.tipo === "FACTURA" && emitido && !D.control_fiscal ? (reglas.titulo_sin_control || "Factura") : NOMBRE[D.tipo];
+  const pideFiscal = D.tipo === "FACTURA" && D.estado === "EMITIDO" && !!D.medio && !D.control_fiscal;
   const botones = D.estado === "BORRADOR"
     ? [["editar", "✏️ Editar", ""], ["emitir", `EMITIR ${NOMBRE[D.tipo].toUpperCase()}`, "verde"], ["borrar", "Eliminar borrador", "contorno"]]
     : [["pdf", "📄 Descargar PDF", ""], ["compartir", "📤 Compartir PDF", "verde"],
@@ -282,13 +284,15 @@ async function ver(estado, id) {
       <h1>${esc(titulo)} ${emitido ? esc(numeroDoc(D)) : "(borrador)"}</h1><span class="insignia ${estColor}">${estTxt}</span></header>
     ${D.modo === "PRACTICA" ? bannerPractica({ modo: "PRACTICA" }) : ""}
     ${D.estado === "ANULADO" ? `<section class="aviso-anulado">⛔ ANULADO el ${fechaDoc(D.anulado_en)} · Motivo: ${esc(D.motivo_anulacion)}</section>` : ""}
+    ${maquina ? `<section class="aviso-control">🖨️ COMPROBANTE INTERNO · No es la factura fiscal. La factura fiscal es la que imprime tu máquina fiscal.</section>` : ""}
     ${sinControl ? `<section class="aviso-control">⚠️ ${esc(reglas.leyenda_sin_control || "Documento sin N.º de control fiscal")}</section>` : ""}
     <section class="tarjeta">
       <div class="tot"><span>Cliente</span><b>${cliente ? esc(cliente.nombre) : "(sin elegir)"}</b></div>
       ${cliente ? `<div class="tot"><span>RIF / C.I.</span><b>${esc(cliente.rif)}</b></div>` : ""}
       ${emitido ? `<div class="tot"><span>Fecha de emisión</span><b>${fechaDoc(D.fecha_emision)}</b></div>` : ""}
       ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>Control interno</span><b>${String(D.control_interno).padStart(8, "0")}</b></div>
-        <div class="tot"><span>N.º de control fiscal</span><b>${esc(D.control_fiscal || "No asignado")}</b></div>` : ""}
+        <div class="tot"><span>${maquina ? "Factura fiscal N.º" : "N.º de control fiscal"}</span><b>${esc(D.control_fiscal || (maquina ? "Pendiente de registrar" : "No asignado"))}</b></div>
+        ${D.fiscal_serial ? `<div class="tot"><span>Serial de la máquina fiscal</span><b>${esc(D.fiscal_serial)}</b></div>` : ""}` : ""}
       ${emitido ? `<div class="tot"><span>Tasa BCV usada</span><b>Bs. ${bs(D.tasa_e8 / 1e8)}</b></div>` : ""}
     </section>
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span>${lineas.map((l) => `<div class="reng-ver"><div><b>${esc(l.descripcion)}</b><br><small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.precio_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : "Exento"}</small></div><b>${usd(l.monto_usd)}</b></div>`).join("")}</section>
@@ -298,6 +302,10 @@ async function ver(estado, id) {
       <div class="tot grande"><span>TOTAL</span><b>${usd(D.total_usd)}</b></div>
       ${emitido ? `<div class="tot"><span>Total en Bs.</span><b>Bs. ${bs(D.total_bs / 100)}</b></div>` : `<small class="suave">Los montos en Bs. se fijan al emitir, con la tasa BCV de ese momento.</small>`}
       ${D.costo_total_usd ? `<small class="ganancia-txt">🔒 Ganancia: ${usd(D.subtotal_usd - D.costo_total_usd)} (solo la ves tú)</small>` : ""}</section>
+    ${pideFiscal ? `<section class="tarjeta"><span class="etiqueta">🧾 REGISTRAR NÚMERO FISCAL</span>
+      <p class="suave">${maquina ? "Imprime la factura en tu máquina fiscal y anota aquí su número y el serial de la máquina." : "Anota aquí el número de control que te dio la imprenta digital."} Solo se puede registrar una vez.</p>
+      <form id="fiscal-form">${campo("numero", "Número fiscal", "", "text", 'required maxlength="30" autocomplete="off"')}${maquina ? campo("serial", "Serial de la máquina fiscal", "", "text", 'required maxlength="30" autocomplete="off"') : ""}
+        ${ERROR}<button class="boton chico" type="submit">REGISTRAR</button></form></section>` : ""}
     ${emitido ? seccionPagos(D, pagos, pagado_usd, saldo_usd) : ""}
     ${D.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(D.nota)}</p></section>` : ""}
     <p class="error" id="error" role="alert" hidden></p>
@@ -328,6 +336,7 @@ async function ver(estado, id) {
     anular: () => { $("#anular-form").hidden = false; $("#motivo").focus(); },
   };
   raiz.querySelectorAll("[data-acc]").forEach((b) => b.addEventListener("click", () => accion[b.dataset.acc]()));
+  if ($("#fiscal-form")) enviar($("#fiscal-form"), async (d) => { await api(`documentos/${id}/fiscal`, "POST", d); aviso("Número fiscal registrado ✅"); await ver(estado, id); });
   raiz.querySelectorAll("[data-recibo]").forEach((el) => el.addEventListener("click", () => (location.hash = `#/pagos/recibo/${el.dataset.recibo}`)));
   enviar($("#anular-form"), async (v) => { await api(`documentos/${id}/anular`, "POST", { motivo: v.motivo }); aviso("Documento anulado"); await ver(estado, id); });
 }

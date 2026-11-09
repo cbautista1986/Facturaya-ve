@@ -23,8 +23,9 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
   const permitido = new Set(f.getCharacterSet());
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
   const emisor = JSON.parse(D.emisor_json), reglas = JSON.parse(D.parametros_json || "{}");
-  const esFactura = D.tipo === "FACTURA", sinControl = esFactura && !D.control_fiscal;
-  const titulo = esFactura ? (D.control_fiscal ? "FACTURA" : reglas.titulo_sin_control || "FACTURA") : "PRESUPUESTO";
+  const esFactura = D.tipo === "FACTURA", maquina = esFactura && D.medio === "MAQUINA_FISCAL", sinControl = esFactura && !D.control_fiscal && !maquina;
+  // Con máquina fiscal la factura legal es la que imprime la máquina: este PDF es un comprobante interno, NO una factura fiscal
+  const titulo = maquina ? "COMPROBANTE INTERNO" : esFactura ? (D.control_fiscal ? "FACTURA" : reglas.titulo_sin_control || "FACTURA") : "PRESUPUESTO";
 
   const paginas = []; let pag, y;
   // marcas de agua en diagonal, centradas en la hoja (se miden con la fuente para que nunca se corten)
@@ -67,13 +68,18 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
   T(titulo, R, dy, { s: titulo.length > 12 ? 17 : 22, b: true, der: true }); dy += 28;
   T(`N.º: ${numeroDoc(D)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
   if (esFactura) { T(`Control interno: ${String(D.control_interno).padStart(8, "0")}`, R, dy, { s: 9, der: true }); dy += 13;
-    T(`N.º de control fiscal: ${D.control_fiscal || "No asignado"}`, R, dy, { s: 9, der: true }); dy += 13; }
+    T(maquina ? `Factura fiscal N.º: ${D.control_fiscal || "pendiente de registrar"}` : `N.º de control fiscal: ${D.control_fiscal || "No asignado"}`, R, dy, { s: 9, der: true }); dy += 13;
+    if (D.fiscal_serial) { T(`Serial de la máquina fiscal: ${D.fiscal_serial}`, R, dy, { s: 9, der: true }); dy += 13; } }
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
   y = Math.max(ey, dy) + 8;
 
   if (sinControl) { // aviso visible: el documento todavía no tiene N.º de control fiscal
     const ls = envolver(reglas.leyenda_sin_control || "DOCUMENTO SIN NÚMERO DE CONTROL FISCAL", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
+    caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
+  }
+  if (maquina) {
+    const ls = envolver("COMPROBANTE INTERNO. NO ES LA FACTURA FISCAL: la factura fiscal es la que imprime la máquina fiscal.", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
     caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
   }
   if (D.estado === "ANULADO") {

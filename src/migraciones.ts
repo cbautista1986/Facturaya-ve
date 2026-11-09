@@ -441,6 +441,63 @@ export const MIGRACIONES: Migracion[] = [
       `ALTER TABLE usuarios ADD COLUMN codigo_recuperacion_hash TEXT`,
     ],
   },
+  {
+    // Fase 7.3: medio de facturación (máquina fiscal o imprenta digital, uno solo a la vez) y registro del número fiscal de cada factura.
+    // El interruptor lo cambia solo el dueño y queda en un historial; cada factura guarda con qué medio se emitió y ese dato ya no se puede cambiar.
+    id: "0009_medio_facturacion",
+    sql: [
+      `ALTER TABLE perfil_emisor ADD COLUMN medio_facturacion TEXT NOT NULL DEFAULT 'SIN_DEFINIR'`,
+      `CREATE TABLE medio_historial (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        medio_anterior TEXT NOT NULL, medio_nuevo TEXT NOT NULL, motivo TEXT,
+        cambiado_por INTEGER, cambiado_en TEXT NOT NULL)`,
+      `ALTER TABLE documentos ADD COLUMN medio TEXT`,        // NULL = emitida antes de definir el medio
+      `ALTER TABLE documentos ADD COLUMN fiscal_serial TEXT`, // serial de la máquina fiscal (solo máquina fiscal)
+      // Un mismo número fiscal (de una misma máquina) no puede estar en dos facturas
+      `CREATE UNIQUE INDEX documentos_fiscal_unico ON documentos (COALESCE(fiscal_serial, ''), control_fiscal) WHERE control_fiscal IS NOT NULL`,
+      // El candado de facturas emitidas ahora también protege el medio y el número fiscal: el número fiscal solo se puede poner UNA vez (de vacío a un valor)
+      `DROP TRIGGER doc_inmutable`,
+      `CREATE TRIGGER doc_inmutable BEFORE UPDATE ON documentos
+        WHEN old.modo = 'REAL' AND old.estado <> 'BORRADOR' AND (
+          old.estado = 'ANULADO'
+          OR new.estado NOT IN ('EMITIDO', 'FACTURADO', 'ANULADO')
+          OR (old.estado = 'FACTURADO' AND new.estado <> 'FACTURADO')
+          OR new.tipo IS NOT old.tipo
+          OR new.modo IS NOT old.modo
+          OR new.numero IS NOT old.numero
+          OR new.control_interno IS NOT old.control_interno
+          OR new.presupuesto_id IS NOT old.presupuesto_id
+          OR new.cliente_id IS NOT old.cliente_id
+          OR new.cliente_rif IS NOT old.cliente_rif
+          OR new.cliente_nombre IS NOT old.cliente_nombre
+          OR new.cliente_direccion IS NOT old.cliente_direccion
+          OR new.cliente_whatsapp IS NOT old.cliente_whatsapp
+          OR new.cliente_email IS NOT old.cliente_email
+          OR new.nota IS NOT old.nota
+          OR new.fecha_emision IS NOT old.fecha_emision
+          OR new.emitido_en IS NOT old.emitido_en
+          OR new.tasa_e8 IS NOT old.tasa_e8
+          OR new.tasa_cargada_en IS NOT old.tasa_cargada_en
+          OR new.subtotal_usd IS NOT old.subtotal_usd
+          OR new.iva_usd IS NOT old.iva_usd
+          OR new.total_usd IS NOT old.total_usd
+          OR new.subtotal_bs IS NOT old.subtotal_bs
+          OR new.iva_bs IS NOT old.iva_bs
+          OR new.total_bs IS NOT old.total_bs
+          OR new.costo_total_usd IS NOT old.costo_total_usd
+          OR new.parametros_json IS NOT old.parametros_json
+          OR new.emisor_json IS NOT old.emisor_json
+          OR new.creado_en IS NOT old.creado_en
+          OR new.creado_por IS NOT old.creado_por
+          OR new.condicion IS NOT old.condicion
+          OR new.dias_credito IS NOT old.dias_credito
+          OR new.vence_el IS NOT old.vence_el
+          OR new.medio IS NOT old.medio
+          OR (new.control_fiscal IS NOT old.control_fiscal AND (old.control_fiscal IS NOT NULL OR old.medio IS NULL))
+          OR (new.fiscal_serial IS NOT old.fiscal_serial AND (old.fiscal_serial IS NOT NULL OR old.medio IS NOT 'MAQUINA_FISCAL')))
+        BEGIN SELECT RAISE(ABORT, 'Documento emitido: no se puede modificar, solo anular.'); END`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

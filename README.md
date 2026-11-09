@@ -16,6 +16,9 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
   obligatoria de cambiar, desactivar usuarios y código de recuperación de la clave del dueño (se muestra una sola vez).
 - **Fase 7.2:** respaldo completo y verificable (todas las tablas, con conteos, sumas y huella) y **restauración de respaldo** en un sistema recién instalado y vacío,
   con avance, verificación final, cancelar y reintentar; los candados contables nunca se apagan (se carga como práctica y se pasa a real al final).
+- **Fase 7.3:** medio de facturación (**máquina fiscal o imprenta digital, uno solo a la vez**) con interruptor en Ajustes (solo el dueño, con contraseña, motivo y historial);
+  cada factura guarda con qué medio se emitió; con máquina fiscal la factura del sistema es un «comprobante interno» y se registra el número fiscal y el serial de la máquina (una sola vez).
+  Hay que elegir el medio antes de salir en vivo.
 
 ## Dónde editar cada cosa (un módulo = pantallas en `public/` + API en `src/rutas/`)
 | Módulo | Pantallas | API |
@@ -29,6 +32,7 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
 | Informes (libros, ganancias, por cobrar, inventario) | `informes.js`, `informe-tabla.js` | `informes.ts` |
 | Usuarios, roles y recuperación de clave | `usuarios.js` | `usuarios.ts`, `permisos.ts` (la tabla de quién puede qué) |
 | Restaurar respaldo | `restaurar.js`, `restaurar-nucleo.js` | `restaurar.ts` (el `PLAN` de tablas), `sistema.ts` (exportación) |
+| Medio de facturación y número fiscal | `medio.js`, `factura.js`, `pdf.js` | `sistema.ts` (`/medio`), `documentos.ts` (`/:id/fiscal`) |
 | Modo práctica y respaldo | `app.js` (Ajustes) | `sistema.ts` |
 
 - `public/dinero.js` → **toda** la matemática del dinero; la usan el servidor y el navegador (una sola fuente de verdad).

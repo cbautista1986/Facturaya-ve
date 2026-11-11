@@ -284,7 +284,7 @@ async function ver(estado, id) {
       <h1>${esc(titulo)} ${emitido ? esc(numeroDoc(D)) : "(borrador)"}</h1><span class="insignia ${estColor}">${estTxt}</span></header>
     ${D.modo === "PRACTICA" ? bannerPractica({ modo: "PRACTICA" }) : ""}
     ${D.estado === "ANULADO" ? `<section class="aviso-anulado">⛔ ANULADO el ${fechaDoc(D.anulado_en)} · Motivo: ${esc(D.motivo_anulacion)}</section>` : ""}
-    ${maquina ? `<section class="aviso-control">🖨️ COMPROBANTE INTERNO · No es la factura fiscal. La factura fiscal es la que imprime tu máquina fiscal.</section>` : ""}
+    ${maquina && !D.control_fiscal ? `<section class="aviso-control">🖨️ Falta registrar el número fiscal que imprimió tu máquina fiscal. Mientras tanto este es un comprobante interno, no la factura fiscal.</section>` : ""}
     ${sinControl ? `<section class="aviso-control">⚠️ ${esc(reglas.leyenda_sin_control || "Documento sin N.º de control fiscal")}</section>` : ""}
     <section class="tarjeta">
       <div class="tot"><span>Cliente</span><b>${cliente ? esc(cliente.nombre) : "(sin elegir)"}</b></div>
@@ -303,9 +303,10 @@ async function ver(estado, id) {
       ${emitido ? `<div class="tot"><span>Total en Bs.</span><b>Bs. ${bs(D.total_bs / 100)}</b></div>` : `<small class="suave">Los montos en Bs. se fijan al emitir, con la tasa BCV de ese momento.</small>`}
       ${D.costo_total_usd ? `<small class="ganancia-txt">🔒 Ganancia: ${usd(D.subtotal_usd - D.costo_total_usd)} (solo la ves tú)</small>` : ""}</section>
     ${pideFiscal ? `<section class="tarjeta"><span class="etiqueta">🧾 REGISTRAR NÚMERO FISCAL</span>
-      <p class="suave">${maquina ? "Imprime la factura en tu máquina fiscal y anota aquí su número y el serial de la máquina." : "Anota aquí el número de control que te dio la imprenta digital."} Solo se puede registrar una vez.</p>
-      <form id="fiscal-form">${campo("numero", "Número fiscal", "", "text", 'required maxlength="30" autocomplete="off"')}${maquina ? campo("serial", "Serial de la máquina fiscal", "", "text", 'required maxlength="30" autocomplete="off"') : ""}
-        ${ERROR}<button class="boton chico" type="submit">REGISTRAR</button></form></section>` : ""}
+      ${maquina && !estado.negocio.maquina_serial ? `<p class="suave">Primero hay que configurar tu máquina fiscal (serial y último número) en <b>Ajustes → Medio de facturación</b>. Solo el dueño puede hacerlo.</p>` : `
+      <p class="suave">${maquina ? `Imprime la factura en tu máquina fiscal (serial <b>${esc(estado.negocio.maquina_serial)}</b>) y confirma el número que salió.` : "Anota aquí el número de control que te dio la imprenta digital."} Solo se puede registrar una vez.</p>
+      <form id="fiscal-form">${campo("numero", maquina ? "Número fiscal (propuesto: el siguiente)" : "Número de control", maquina ? String((estado.negocio.maquina_ultimo ?? 0) + 1).padStart(7, "0") : "", "text", `required maxlength="30" autocomplete="off"${maquina ? ' inputmode="numeric"' : ""}`)}
+        ${ERROR}<button class="boton chico" type="submit">REGISTRAR</button></form>`}</section>` : ""}
     ${emitido ? seccionPagos(D, pagos, pagado_usd, saldo_usd) : ""}
     ${D.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(D.nota)}</p></section>` : ""}
     <p class="error" id="error" role="alert" hidden></p>
@@ -336,7 +337,12 @@ async function ver(estado, id) {
     anular: () => { $("#anular-form").hidden = false; $("#motivo").focus(); },
   };
   raiz.querySelectorAll("[data-acc]").forEach((b) => b.addEventListener("click", () => accion[b.dataset.acc]()));
-  if ($("#fiscal-form")) enviar($("#fiscal-form"), async (d) => { await api(`documentos/${id}/fiscal`, "POST", d); aviso("Número fiscal registrado ✅"); await ver(estado, id); });
+  if ($("#fiscal-form")) enviar($("#fiscal-form"), async (d) => {
+    try { await api(`documentos/${id}/fiscal`, "POST", { numero: d.numero }); }
+    catch (e) { if (/Se salta del/.test(e.message) && confirm(e.message)) await api(`documentos/${id}/fiscal`, "POST", { numero: d.numero, confirmar_salto: true }); else throw e; }
+    estado.negocio = (await api("estado")).negocio; // el «último número» avanzó: la próxima factura propone el siguiente
+    aviso("Número fiscal registrado ✅"); await ver(estado, id);
+  });
   raiz.querySelectorAll("[data-recibo]").forEach((el) => el.addEventListener("click", () => (location.hash = `#/pagos/recibo/${el.dataset.recibo}`)));
   enviar($("#anular-form"), async (v) => { await api(`documentos/${id}/anular`, "POST", { motivo: v.motivo }); aviso("Documento anulado"); await ver(estado, id); });
 }

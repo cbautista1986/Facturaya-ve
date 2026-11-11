@@ -78,8 +78,8 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
     const ls = envolver(reglas.leyenda_sin_control || "DOCUMENTO SIN NÚMERO DE CONTROL FISCAL", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
     caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
   }
-  if (maquina) {
-    const ls = envolver("COMPROBANTE INTERNO. NO ES LA FACTURA FISCAL: la factura fiscal es la que imprime la máquina fiscal.", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
+  if (maquina && !D.control_fiscal) { // con el número fiscal ya registrado, el aviso rojo se retira: el título y la referencia fiscal bastan
+    const ls = envolver("Pendiente: falta registrar el número fiscal que imprimió la máquina fiscal. Mientras tanto este es un comprobante interno.", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
     caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
   }
   if (D.estado === "ANULADO") {

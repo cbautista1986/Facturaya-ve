@@ -19,6 +19,8 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
 - **Fase 7.3:** medio de facturación (**máquina fiscal o imprenta digital, uno solo a la vez**) con interruptor en Ajustes (solo el dueño, con contraseña, motivo y historial);
   cada factura guarda con qué medio se emitió; con máquina fiscal la factura del sistema es un «comprobante interno» y se registra el número fiscal y el serial de la máquina (una sola vez).
   Hay que elegir el medio antes de salir en vivo.
+- **Fase 7.3.1:** la máquina fiscal se configura una vez en Ajustes (serial fijo y último número usado): el sistema propone el siguiente número fiscal (correlativo, avisa si se salta uno)
+  y retira el aviso rojo cuando el número ya está registrado. Con imprenta digital, Ajustes guarda los datos de su API (la clave no sale en los respaldos).
 
 ## Dónde editar cada cosa (un módulo = pantallas en `public/` + API en `src/rutas/`)
 | Módulo | Pantallas | API |
@@ -32,7 +34,7 @@ Cloudflare Workers + Hono + D1. Todo funciona en el plan gratis de Cloudflare.
 | Informes (libros, ganancias, por cobrar, inventario) | `informes.js`, `informe-tabla.js` | `informes.ts` |
 | Usuarios, roles y recuperación de clave | `usuarios.js` | `usuarios.ts`, `permisos.ts` (la tabla de quién puede qué) |
 | Restaurar respaldo | `restaurar.js`, `restaurar-nucleo.js` | `restaurar.ts` (el `PLAN` de tablas), `sistema.ts` (exportación) |
-| Medio de facturación y número fiscal | `medio.js`, `factura.js`, `pdf.js` | `sistema.ts` (`/medio`), `documentos.ts` (`/:id/fiscal`) |
+| Medio de facturación, máquina fiscal, imprenta y número fiscal | `medio.js`, `factura.js`, `pdf.js` | `sistema.ts` (`/medio`, `/medio/maquina`, `/imprenta`), `documentos.ts` (`/:id/fiscal`) |
 | Modo práctica y respaldo | `app.js` (Ajustes) | `sistema.ts` |
 
 - `public/dinero.js` → **toda** la matemática del dinero; la usan el servidor y el navegador (una sola fuente de verdad).

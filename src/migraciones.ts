@@ -498,6 +498,16 @@ export const MIGRACIONES: Migracion[] = [
         BEGIN SELECT RAISE(ABORT, 'Documento emitido: no se puede modificar, solo anular.'); END`,
     ],
   },
+  {
+    // Fase 7.3.1: la máquina fiscal se configura UNA vez (serial fijo + último número usado, para que el número fiscal sea correlativo) y la imprenta digital
+    // guarda sus datos de conexión (la clave va aparte y NO sale en los respaldos).
+    id: "0010_maquina_y_imprenta",
+    sql: [
+      `ALTER TABLE perfil_emisor ADD COLUMN maquina_serial TEXT`,
+      `ALTER TABLE perfil_emisor ADD COLUMN maquina_ultimo INTEGER NOT NULL DEFAULT 0`,
+      `CREATE TABLE integraciones (clave TEXT PRIMARY KEY, valor TEXT NOT NULL, actualizado_en TEXT NOT NULL)`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

@@ -22,7 +22,7 @@ const SESION_SEGUNDOS = 60 * 60 * 24 * 7;
 // Campos del negocio que el administrador puede editar (lista blanca: nada más se puede tocar)
 const OBLIGATORIOS = ["nombre_razon_social", "rif", "direccion_fiscal"];
 const OPCIONALES = ["telefono", "email", "datos_pago_movil", "datos_transferencia", "datos_zelle", "datos_binance", "datos_paypal"];
-const COLUMNAS_NEGOCIO = [...OBLIGATORIOS, ...OPCIONALES, "tasa_bcv", "tasa_bcv_fecha", "medio_facturacion"].join(", ");
+const COLUMNAS_NEGOCIO = [...OBLIGATORIOS, ...OPCIONALES, "tasa_bcv", "tasa_bcv_fecha", "medio_facturacion", "maquina_serial", "maquina_ultimo"].join(", ");
 
 async function abrirSesion(c: Ctx, usuarioId: number) {
   const token = tokenAleatorio();

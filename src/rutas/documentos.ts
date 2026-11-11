@@ -316,12 +316,24 @@ documentos.post("/:id/fiscal", async (c) => {
   if (d.tipo !== "FACTURA" || d.estado !== "EMITIDO") return falla(c, 409, "El número fiscal se registra en una factura emitida y vigente.");
   if (!d.medio) return falla(c, 409, "Esta factura se emitió antes de definir el medio de facturación: no se le puede registrar número fiscal aquí.");
   if (d.control_fiscal) return falla(c, 409, "Esta factura ya tiene su número fiscal; no se puede cambiar.");
-  const numero = texto(b.numero, 30).toUpperCase(), serial = texto(b.serial, 30).toUpperCase();
-  if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(numero)) return falla(c, 400, "Escribe el número fiscal (solo letras, números y guiones).");
-  if (d.medio === "MAQUINA_FISCAL" && !/^[0-9A-Z][0-9A-Z-]{2,29}$/.test(serial)) return falla(c, 400, "Escribe el serial de la máquina fiscal (el que sale impreso en la factura).");
+  let numero = texto(b.numero, 30).toUpperCase(), serial: string | null = null;
+  if (d.medio === "MAQUINA_FISCAL") {
+    // El serial es el de la máquina configurada en Ajustes y el número debe ser correlativo (mayor que el último registrado)
+    const p = await db.prepare(`SELECT maquina_serial AS serial, maquina_ultimo AS ultimo FROM perfil_emisor WHERE id = 1`).first<{ serial: string | null; ultimo: number }>();
+    if (!p?.serial) return falla(c, 409, "Primero configura el serial de tu máquina fiscal en Ajustes (solo el dueño puede).");
+    if (!/^[0-9]{1,10}$/.test(numero)) return falla(c, 400, "El número fiscal de la máquina fiscal son solo números.");
+    const n = Number(numero), pad = (x: number) => String(x).padStart(7, "0");
+    if (n <= p.ultimo) return falla(c, 409, `El número fiscal debe ser mayor que el último registrado (${pad(p.ultimo)}).`);
+    if (n > p.ultimo + 1 && b.confirmar_salto !== true) return c.json({ ok: false, error: `Se salta del ${pad(p.ultimo)} al ${pad(n)}. Si la máquina anuló o reimprimió facturas, confirma el salto.`, salto: true, esperado: p.ultimo + 1 }, 409);
+    numero = pad(n); serial = p.serial;
+  } else if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(numero)) return falla(c, 400, "Escribe el número de control (solo letras, números y guiones).");
   try {
-    const r = await db.prepare(`UPDATE documentos SET control_fiscal = ?, fiscal_serial = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`).bind(numero, d.medio === "MAQUINA_FISCAL" ? serial : null, id).run();
-    if (!r.meta.changes) return falla(c, 409, "Esta factura ya tiene su número fiscal; no se puede cambiar.");
+    const r = await db.batch([
+      db.prepare(`UPDATE documentos SET control_fiscal = ?, fiscal_serial = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`).bind(numero, serial, id),
+      // el «último número» de la máquina avanza solo si este número quedó realmente registrado
+      db.prepare(`UPDATE perfil_emisor SET maquina_ultimo = ? WHERE id = 1 AND ? IS NOT NULL AND maquina_ultimo < ? AND EXISTS (SELECT 1 FROM documentos WHERE id = ? AND control_fiscal = ?)`).bind(Number(numero) || 0, serial, Number(numero) || 0, id, numero),
+    ]);
+    if (!r[0].meta.changes) return falla(c, 409, "Esta factura ya tiene su número fiscal; no se puede cambiar.");
   } catch (e) {
     if (String(e).includes("UNIQUE")) return falla(c, 409, "Ese número fiscal ya está registrado en otra factura.");
     throw e;

@@ -114,9 +114,12 @@ function editor(estado, existente, tipoNuevo) {
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span><div id="lineas"></div>
       <div class="dos-botones"><button type="button" class="boton chico morado" id="add-inv">🏷️ Del inventario</button><button type="button" class="boton chico" id="add-srv">🛠️ Servicio al momento</button><button type="button" class="boton chico" id="add-prod">📦 Producto al vuelo</button></div>
       <div id="picker" hidden></div></section>
-    ${d.tipo === "FACTURA" ? `<section class="tarjeta"><span class="etiqueta">💱 IGTF (DIVISAS / CRIPTOACTIVOS)</span>
-      <label class="opcion"><input type="checkbox" id="aplica_igtf" ${d.aplica_igtf ? "checked" : ""}> Aplicar IGTF (3%) en esta factura</label>
-      <p class="pista">Actívalo cuando el cliente pague en divisas o criptoactivos distintos al bolívar (Efectivo USD, Zelle, Binance, PayPal) y corresponda percibir el 3% de IGTF.</p></section>` : ""}
+    ${d.tipo === "FACTURA" ? `<section class="tarjeta"><div class="reng-cab"><span class="etiqueta">💱 IGTF · NORMATIVA VENEZOLANA (3%)</span><span id="igtf-insignia" class="insignia ${d.aplica_igtf ? "verde" : "gris"}">${d.aplica_igtf ? "Activo · 3%" : "Desactivado"}</span></div>
+      <label class="conmutador" for="aplica_igtf">
+        <span class="conmutador-txt"><span>Calcular IGTF (3%) sobre el total</span><small id="igtf-subtxt">${d.aplica_igtf ? "Se percibe 3% sobre Subtotal + IVA (pagos en divisas / cripto)." : "No se suma IGTF (solo Subtotal + IVA en Bs.)."}</small></span>
+        <span class="switch"><input type="checkbox" role="switch" id="aplica_igtf" aria-checked="${d.aplica_igtf ? "true" : "false"}" ${d.aplica_igtf ? "checked" : ""}><span class="switch-pista" aria-hidden="true"></span></span>
+      </label>
+      <p class="pista">Según la Ley de IGTF (Providencia SNAT/2022/000013), el 3% aplica únicamente sobre el monto pagado en divisas o criptoactivos distintos al bolívar cuando el emisor es sujeto pasivo especial (agente de percepción).</p></section>` : ""}
     <section class="tarjeta" id="sec-totales"></section>
     ${d.tipo === "FACTURA" ? `<section class="tarjeta"><span class="etiqueta">🗓️ CONDICIÓN DE PAGO</span>
       <label class="opcion"><input type="radio" name="condicion" value="CONTADO" ${d.condicion !== "CREDITO" ? "checked" : ""}> Contado</label>
@@ -244,7 +247,14 @@ function editor(estado, existente, tipoNuevo) {
       ${hayCosto ? `<small class="ganancia-txt">🔒 Ganancia: ${usd(r.subtotal_usd - r.costo_total_usd)} (solo la ves tú)</small>` : ""}`;
   }
 
-  $("#aplica_igtf")?.addEventListener("change", (e) => { d.aplica_igtf = e.target.checked; refrescar(); });
+  $("#aplica_igtf")?.addEventListener("change", (e) => {
+    d.aplica_igtf = e.target.checked;
+    e.target.setAttribute("aria-checked", d.aplica_igtf ? "true" : "false");
+    const ins = $("#igtf-insignia"), sub = $("#igtf-subtxt");
+    if (ins) { ins.textContent = d.aplica_igtf ? "Activo · 3%" : "Desactivado"; ins.className = `insignia ${d.aplica_igtf ? "verde" : "gris"}`; }
+    if (sub) sub.textContent = d.aplica_igtf ? "Se percibe 3% sobre Subtotal + IVA (pagos en divisas / cripto)." : "No se suma IGTF (solo Subtotal + IVA en Bs.).";
+    refrescar();
+  });
 
   // ---- guardar y emitir
   const cuerpo = () => ({

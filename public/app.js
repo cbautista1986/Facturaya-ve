@@ -103,7 +103,10 @@ function vistaAjustes() {
       <button class="boton chico contorno" id="cambiar-clave" type="button">Cambiar mi contraseña</button></section>
     ${admin ? `<form id="f" class="tarjeta">
       ${NEGOCIO.map(([id, et]) => campo(id, et, n[id])).join("")}
-      <label class="opcion"><input type="checkbox" id="igtf_activo" name="igtf_activo" ${n.igtf_activo ? "checked" : ""}> 💱 Activar IGTF (3%) por defecto en facturas nuevas (también puedes activarlo o desactivarlo en cada factura)</label>
+      <label class="conmutador" for="igtf_activo">
+        <span class="conmutador-txt"><span>💱 Activar IGTF (3%) por defecto</span><small>Se aplicará al crear nuevas facturas; puedes encenderlo o apagarlo en cada factura.</small></span>
+        <span class="switch"><input type="checkbox" role="switch" id="igtf_activo" name="igtf_activo" ${n.igtf_activo ? "checked" : ""}><span class="switch-pista" aria-hidden="true"></span></span>
+      </label>
       <p class="pista">💳 Tus datos de cobro (pago móvil, Zelle, etc.) ahora se configuran en <b>Pagos → Mis datos</b>.</p>
       ${ERROR}<button class="boton verde" type="submit">GUARDAR CAMBIOS</button>
     </form>

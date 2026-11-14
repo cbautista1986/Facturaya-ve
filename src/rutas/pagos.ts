@@ -2,7 +2,7 @@
 // Reglas: el saldo NUNCA se guarda (se calcula: total del documento - pagos vigentes), un pago no se edita ni se borra (se anula con
 // motivo), los bolívares se convierten a dólares con la tasa del día del pago y cada pago lleva su recibo con correlativo propio.
 import { Hono } from "hono";
-import { aCentavos, aTasaE8, bsAUsd } from "../../public/dinero.js";
+import { aCentavos, aRifSeniat, aTasaE8, bsAUsd } from "../../public/dinero.js";
 import { PAGADO, RIF, auditar, comodin, falla, fechaCaracas, idParam, leerJson, normalizarWhatsapp, parametrosVigentes, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
 
 const pagos = new Hono<Env>();
@@ -130,6 +130,19 @@ pagos.get("/:id", async (c) => {
   if (!p) return falla(c, 404, "Pago no encontrado.");
   const d = await c.env.DB.prepare(
     `SELECT id, tipo, numero, estado, modo, cliente_nombre, cliente_rif, cliente_whatsapp, emisor_json, total_usd, fecha_emision FROM documentos WHERE id = ?`).bind(p.documento_id).first<Fila>();
+  const perfilActual = await c.env.DB.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  if (d && perfilActual) {
+    let emisorPrevio: Fila = {};
+    try { emisorPrevio = JSON.parse(d.emisor_json || "{}"); } catch {}
+    d.emisor_json = JSON.stringify({
+      ...emisorPrevio,
+      nombre_razon_social: perfilActual.nombre_razon_social || emisorPrevio.nombre_razon_social,
+      rif: aRifSeniat(perfilActual.rif || emisorPrevio.rif || ""),
+      direccion_fiscal: perfilActual.direccion_fiscal || emisorPrevio.direccion_fiscal,
+      telefono: perfilActual.telefono ?? emisorPrevio.telefono,
+      email: perfilActual.email ?? emisorPrevio.email,
+    });
+  }
   return c.json({ ok: true, pago: p, documento: d });
 });
 

@@ -3,7 +3,7 @@
 // Un presupuesto emitido pasa a FACTURADO cuando se emite la factura creada desde él.
 // Una factura emitida puede recibir Devoluciones mediante Nota de Crédito (es_nota_credito = 1) conforme a la Providencia SENIAT SNAT/2011/0071.
 import { Hono } from "hono";
-import { aCantidadMilli, aTasaE8, calcular, cantidadTexto, redondear } from "../../public/dinero.js";
+import { aCantidadMilli, aRifSeniat, aTasaE8, calcular, cantidadTexto, redondear } from "../../public/dinero.js";
 import { costoPromedio, guardaSaldo, movimiento, saldos, valorSalida } from "../stock";
 import { veCostos } from "../permisos";
 import { PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
@@ -162,6 +162,19 @@ documentos.get("/:id", async (c) => {
     : { results: [] as { orden: number; devuelto_milli: number }[] };
   const mapaDev = new Map(rengsDev.map((x) => [x.orden, x.devuelto_milli]));
   const lineasConDev = r.lineas.map((l) => ({ ...l, devuelto_milli: mapaDev.get(l.orden) ?? 0 }));
+  const perfilActual = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  if (perfilActual) {
+    let emisorPrevio: Fila = {};
+    try { emisorPrevio = JSON.parse(r.doc.emisor_json || "{}"); } catch {}
+    r.doc.emisor_json = JSON.stringify({
+      ...emisorPrevio,
+      nombre_razon_social: perfilActual.nombre_razon_social || emisorPrevio.nombre_razon_social,
+      rif: aRifSeniat(perfilActual.rif || emisorPrevio.rif || ""),
+      direccion_fiscal: perfilActual.direccion_fiscal || emisorPrevio.direccion_fiscal,
+      telefono: perfilActual.telefono ?? emisorPrevio.telefono,
+      email: perfilActual.email ?? emisorPrevio.email,
+    });
+  }
   const pagadoEfectivo = results.filter((p) => p.estado === "VIGENTE").reduce((s, p) => s + p.monto_usd, 0);
   const acreditadoNc = notasCredito.filter((n) => n.estado === "EMITIDO").reduce((s, n) => s + (n.total_usd ?? 0), 0);
   const pagadoTotal = pagadoEfectivo + acreditadoNc;
@@ -254,7 +267,7 @@ documentos.post("/:id/emitir", async (c) => {
   const esFactura = doc.tipo === "FACTURA", vence = esFactura ? (doc.condicion === "CREDITO" ? masDias(fecha, Number(doc.dias_credito)) : fecha) : null;
   const claveNum = `${doc.es_nota_credito ? "NOTA_CREDITO" : doc.tipo}:${doc.modo}`, claveCtl = `CONTROL:${doc.modo}`;
   const sigueBorrador = `EXISTS (SELECT 1 FROM documentos WHERE id = ? AND estado = 'BORRADOR')`;
-  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: perfil!.rif, direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email };
+  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: aRifSeniat(perfil!.rif), direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email };
   const reglas = {
     iva_alicuotas_cent: params.iva_alicuotas_cent, igtf_alicuota_cent: params.igtf_alicuota_cent ?? "300",
     titulo_sin_control: params.titulo_sin_control, leyenda_sin_control: params.leyenda_sin_control,
@@ -373,7 +386,7 @@ documentos.post("/:id/devolver", async (c) => {
   const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? F.igtf_alicuota_cent ?? 300) || 300;
   const calc = calcular(lineasNc, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf });
 
-  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: perfil!.rif, direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email };
+  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: aRifSeniat(perfil!.rif), direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email };
   const reglas = {
     iva_alicuotas_cent: params.iva_alicuotas_cent, igtf_alicuota_cent: String(alicuotaIgtf),
     titulo_sin_control: "NOTA DE CRÉDITO", leyenda_sin_control: params.leyenda_sin_control,

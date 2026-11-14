@@ -1,4 +1,4 @@
-name = "facturaya"  # debe ser igual al nombre del Worker en Cloudflare
+name = "sistema-crm-free-cloudflare-ve"  # debe ser igual al nombre del Worker en Cloudflare
 main = "src/index.ts"
 compatibility_date = "2025-10-20"
 

@@ -575,6 +575,14 @@ export const MIGRACIONES: Migracion[] = [
         BEGIN SELECT RAISE(ABORT, 'Documento emitido: no se puede modificar, solo anular.'); END`,
     ],
   },
+  {
+    // Fase 9: Eliminación de máquina fiscal; solo dos metodologías digitales: APP_SENIAT (Aplicación SENIAT) e IMPRENTA_DIGITAL (API Imprenta Digital).
+    id: "0012_solo_facturacion_digital",
+    sql: [
+      `UPDATE perfil_emisor SET medio_facturacion = 'APP_SENIAT', maquina_serial = NULL, maquina_ultimo = 0 WHERE medio_facturacion IN ('MAQUINA_FISCAL', 'SIN_DEFINIR')`,
+      `UPDATE parametros_fiscales SET valor = 'FACTURA' WHERE clave = 'titulo_sin_control'`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

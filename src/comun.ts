@@ -5,7 +5,7 @@ import { getCookie } from "hono/cookie";
 import { sha256 } from "./seguridad";
 
 export type Usuario = { id: number; nombre: string; email: string; rol: string; debe_cambiar_clave: number };
-export type Env = { Bindings: { DB: D1Database }; Variables: { usuario: Usuario } };
+export type Env = { Bindings: { DB: D1Database }; Variables: { usuario: Usuario; rawDb?: D1Database; inquilinoCodigo?: string } };
 export type Ctx = Context<Env>;
 export type Estado = 400 | 401 | 403 | 404 | 409 | 429;
 
@@ -86,7 +86,8 @@ export async function parametrosVigentes(db: D1Database, fecha: string) {
 }
 
 export const requiereAdmin = createMiddleware<Env>(async (c, next) => {
-  if (c.get("usuario").rol !== "ADMIN") return falla(c, 403, "Solo el administrador puede hacer esto.");
+  const u = c.get("usuario");
+  if (u.rol !== "ADMIN" && u.rol !== "SUPER_ADMIN") return falla(c, 403, "Solo el administrador puede hacer esto.");
   await next();
 });
 

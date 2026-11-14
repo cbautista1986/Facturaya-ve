@@ -17,9 +17,58 @@ const NEGOCIO = [
 let estado = {};
 
 const esEntornoPreview = location.hostname.endsWith(".run.app") || location.hostname === "localhost" || location.hostname === "127.0.0.1";
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta"><span class="etiqueta">📦 PAQUETE LISTO PARA GITHUB / CLOUDFLARE</span>
-  <p class="suave">Descarga el archivo <b>.zip</b> revisado y listo con las carpetas <code>src/</code>, <code>public/</code> y configuración de Cloudflare Workers para descomprimir y subir en GitHub (<b>Add file → Upload files</b>) sin perder ningún dato de tu base D1.</p>
-  <a class="boton verde" href="/facturaya-ve-github.zip" download="facturaya-ve-github.zip">⬇️ Descargar paquete para GitHub (.zip)</a></section>` : "";
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta"><span class="etiqueta">📦 DESCARGA CON NOMBRE Y EXTENSIÓN EXACTOS (GITHUB / CLOUDFLARE)</span>
+  <p class="suave">Pulsa cualquiera de estos botones para descargar el archivo con su <b>nombre y terminación exactos</b> listo para subir a GitHub:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip</button>
+  <div class="dos-botones">
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="package.json">⬇️ package.json</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="tsconfig.json">⬇️ tsconfig.json</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="_headers">⬇️ _headers</button>
+  </div>
+  <div class="dos-botones">
+    <button type="button" class="boton chico" data-copy-cf="package.json">📋 Copiar package.json</button>
+    <button type="button" class="boton chico" data-copy-cf="tsconfig.json">📋 Copiar tsconfig.json</button>
+    <button type="button" class="boton chico" data-copy-cf="_headers">📋 Copiar _headers</button>
+  </div></section>` : "";
+
+document.addEventListener("click", async (e) => {
+  const btnDl = e.target.closest("[data-dl-cf]");
+  if (btnDl) {
+    const nombre = btnDl.dataset.dlCf;
+    btnDl.disabled = true;
+    try {
+      const r = await fetch(`/descargar-cf/${encodeURIComponent(nombre)}`);
+      if (!r.ok) throw new Error("No se pudo descargar el archivo.");
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = nombre;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      aviso(`Descargado: ${nombre} ✅`);
+    } catch (err) {
+      aviso(err.message);
+    } finally {
+      btnDl.disabled = false;
+    }
+    return;
+  }
+  const btnCopy = e.target.closest("[data-copy-cf]");
+  if (btnCopy) {
+    const nombre = btnCopy.dataset.copyCf;
+    try {
+      const r = await fetch(`/descargar-cf/${encodeURIComponent(nombre)}`);
+      const txt = await r.text();
+      await navigator.clipboard.writeText(txt);
+      aviso(`Contenido de ${nombre} copiado al portapapeles 📋`);
+    } catch {
+      aviso("No se pudo copiar automáticamente.");
+    }
+  }
+});
 
 function vistaInstalar() {
   raiz.innerHTML = `<section class="tarjeta"><h1>🛡️ Bienvenido</h1>

@@ -6,6 +6,7 @@ import { NOMBRE_ROL, permisosDe, permitido, sinCostos, tiene, veCostos } from ".
 import { usuarios, cuenta } from "./rutas/usuarios";
 import { restaurar } from "./rutas/restaurar";
 import { EMAIL, RIF, ahora, auditar, falla, ip, leerJson, modoActual, usuarioActual, type Ctx, type Env } from "./comun";
+import { aRifSeniat } from "../public/dinero.js";
 import clientes from "./rutas/clientes";
 import catalogo from "./rutas/catalogo";
 import documentos from "./rutas/documentos";
@@ -70,7 +71,14 @@ app.get("/api/estado", async (c) => {
   if (!hayAdmin) return c.json({ instalado: false });
   const usuario = await usuarioActual(c);
   if (!usuario) return c.json({ instalado: true, sesion: false });
-  const negocio = await c.env.DB.prepare(`SELECT ${COLUMNAS_NEGOCIO} FROM perfil_emisor WHERE id = 1`).first();
+  const negocio = await c.env.DB.prepare(`SELECT ${COLUMNAS_NEGOCIO} FROM perfil_emisor WHERE id = 1`).first<Record<string, unknown>>();
+  if (negocio && typeof negocio.rif === "string") {
+    const rifFormateado = aRifSeniat(negocio.rif);
+    if (rifFormateado && rifFormateado !== negocio.rif) {
+      negocio.rif = rifFormateado;
+      await c.env.DB.prepare(`UPDATE perfil_emisor SET rif = ? WHERE id = 1`).bind(rifFormateado).run().catch(() => {});
+    }
+  }
   return c.json({ instalado: true, sesion: true, usuario: { ...usuario, rol_nombre: NOMBRE_ROL[usuario.rol] ?? usuario.rol }, permisos: permisosDe(usuario.rol), ve_costos: veCostos(usuario.rol), restaurando: !!(await c.env.DB.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first()), negocio, modo: await modoActual(c.env.DB) });
 });
 
@@ -80,11 +88,12 @@ app.post("/api/instalar", async (c) => {
   if (await db.prepare(`SELECT 1 FROM usuarios LIMIT 1`).first()) return falla(c, 409, "El sistema ya está instalado.");
   const b = await leerJson(c);
   const t = (k: string) => String(b[k] ?? "").trim();
-  const nombre = t("nombre").slice(0, 120), rif = t("rif").toUpperCase(), direccion = t("direccion").slice(0, 200);
+  const nombre = t("nombre").slice(0, 120), rifBruto = t("rif").toUpperCase(), direccion = t("direccion").slice(0, 200);
   const telefono = t("telefono").slice(0, 40) || null, email = t("email").toLowerCase();
   const clave = String(b.clave ?? "");
   if (nombre.length < 2) return falla(c, 400, "Escribe el nombre del negocio.");
-  if (!RIF.test(rif)) return falla(c, 400, "RIF o cédula no válido (ejemplo: J-12345678-9).");
+  if (!RIF.test(rifBruto)) return falla(c, 400, "RIF no válido (ejemplo: V-18529773-6 o J-12345678-9).");
+  const rif = aRifSeniat(rifBruto);
   if (direccion.length < 5) return falla(c, 400, "Escribe la dirección fiscal.");
   if (!EMAIL.test(email)) return falla(c, 400, "El correo no es válido.");
   if (clave.length < 10) return falla(c, 400, "La contraseña debe tener al menos 10 caracteres.");
@@ -184,7 +193,8 @@ app.put("/api/config", async (c) => {
     if (!(campo in b)) continue;
     const v = String(b[campo] ?? "").trim().slice(0, 200);
     if (!v) return falla(c, 400, "Nombre, RIF y dirección fiscal no pueden quedar vacíos.");
-    sets.push(`${campo} = ?`); valores.push(campo === "rif" ? v.toUpperCase() : v);
+    if (campo === "rif" && !RIF.test(v.toUpperCase())) return falla(c, 400, "RIF no válido (ejemplo: V-18529773-6 o J-12345678-9).");
+    sets.push(`${campo} = ?`); valores.push(campo === "rif" ? aRifSeniat(v.toUpperCase()) : v);
   }
   for (const campo of OPCIONALES) {
     if (!(campo in b)) continue;

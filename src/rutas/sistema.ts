@@ -1,6 +1,9 @@
-// Módulo SISTEMA (solo administrador): salir del modo práctica y respaldo completo.
+// Módulo SISTEMA (solo administrador): salir del modo práctica, servicio de correo, respaldo completo y reinicio de fábrica (solo Super Admin).
 import { Hono } from "hono";
-import { auditar, falla, fechaCaracas, leerJson, modoActual, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
+import { EMAIL, auditar, falla, fechaCaracas, leerJson, modoActual, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
+import { enviarCorreo, leerConfigCorreo } from "../correo";
+import { migrar } from "../migraciones";
+import { esSuperAdmin } from "../permisos";
 import { verificarClave } from "../seguridad";
 import { calcularSumas } from "./restaurar";
 
@@ -13,7 +16,7 @@ const entero = (v: unknown) => { const n = Number(v); return Number.isInteger(n)
 sistema.post("/salir-en-vivo", async (c) => {
   const db = c.env.DB, b = await leerJson(c);
   const medio = await db.prepare(`SELECT medio_facturacion AS m FROM perfil_emisor WHERE id = 1`).first<{ m: string }>();
-  if (medio?.m === "SIN_DEFINIR") return falla(c, 400, "Antes de salir en vivo elige tu medio de facturación (máquina fiscal o imprenta digital) en Ajustes.");
+  if (medio?.m === "SIN_DEFINIR") return falla(c, 400, "Antes de salir en vivo elige tu modalidad de facturación digital (App SENIAT o Imprenta Digital) en Ajustes.");
   const f = entero(b.primer_factura), k = entero(b.primer_control), p = entero(b.primer_presupuesto), rec = entero(b.primer_recibo ?? 1), nc = entero(b.primer_nota_credito ?? 1);
   if (!f || !k || !p || !rec || !nc) return falla(c, 400, "Escribe los números iniciales (mínimo 1).");
   if (b.confirmo !== true) return falla(c, 400, "Marca la casilla para confirmar.");
@@ -40,36 +43,13 @@ sistema.post("/salir-en-vivo", async (c) => {
   return c.json({ ok: true });
 });
 
-// MEDIO DE FACTURACIÓN: máquina fiscal o imprenta digital, uno solo a la vez. Solo el dueño lo cambia, con su contraseña y un motivo; queda en un historial.
-// El cambio vale para las facturas NUEVAS: cada factura emitida guarda con qué medio se emitió y eso no se toca.
-const MEDIOS = ["MAQUINA_FISCAL", "IMPRENTA_DIGITAL"];
+// MODALIDAD DE FACTURACIÓN DIGITAL: Aplicación Digital SENIAT (APP_SENIAT) o Imprenta Digital Autorizada (IMPRENTA_DIGITAL).
+// Solo el dueño lo cambia, con su contraseña y un motivo; queda en el historial.
+const MEDIOS = ["APP_SENIAT", "IMPRENTA_DIGITAL"];
 sistema.get("/medio", async (c) => {
   const db = c.env.DB, p = await db.prepare(`SELECT medio_facturacion AS medio FROM perfil_emisor WHERE id = 1`).first<{ medio: string }>();
   const { results } = await db.prepare(`SELECT h.medio_anterior, h.medio_nuevo, h.motivo, h.cambiado_en, u.nombre AS por FROM medio_historial h LEFT JOIN usuarios u ON u.id = h.cambiado_por ORDER BY h.id DESC LIMIT 10`).all();
-  const pm = await db.prepare(`SELECT maquina_serial, maquina_ultimo FROM perfil_emisor WHERE id = 1`).first<{ maquina_serial: string | null; maquina_ultimo: number }>();
-  return c.json({ ok: true, medio: p?.medio ?? "SIN_DEFINIR", historial: results, maquina: { serial: pm?.maquina_serial ?? null, ultimo: pm?.maquina_ultimo ?? 0 }, imprenta: await leerImprenta(db) });
-});
-
-// MÁQUINA FISCAL: se configura UNA vez. El serial es siempre el mismo y el número fiscal debe ser correlativo, así que se guarda el ÚLTIMO número usado
-// (si la máquina ya imprimió facturas, aquí se anota hasta cuál va). Solo el dueño, con su contraseña.
-sistema.post("/medio/maquina", async (c) => {
-  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario");
-  const serial = texto(b.serial, 30).toUpperCase(), ultimo = Number(b.ultimo ?? 0);
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
-  const p = await db.prepare(`SELECT medio_facturacion AS m, maquina_serial AS s, maquina_ultimo AS u FROM perfil_emisor WHERE id = 1`).first<{ m: string; s: string | null; u: number }>();
-  if (p?.m !== "MAQUINA_FISCAL") return falla(c, 409, "Primero elige «Máquina fiscal» como tu medio de facturación.");
-  if (!/^[0-9A-Z][0-9A-Z-]{2,29}$/.test(serial)) return falla(c, 400, "Escribe el serial de la máquina fiscal (el que sale impreso en sus facturas).");
-  if (!Number.isInteger(ultimo) || ultimo < 0 || ultimo > 9999999999) return falla(c, 400, "El último número fiscal usado debe ser un número entero (0 si la máquina es nueva).");
-  const reg = await db.prepare(`SELECT COALESCE(MAX(CAST(control_fiscal AS INTEGER)), 0) AS m FROM documentos WHERE fiscal_serial = ? AND control_fiscal GLOB '[0-9]*'`).bind(serial).first<{ m: number }>();
-  if (ultimo < (reg?.m ?? 0)) return falla(c, 409, `Con ese serial ya hay facturas registradas hasta el N.º ${reg!.m}: el último usado no puede ser menor.`);
-  const cambio = p.s && p.s !== serial ? `Serial de la máquina: ${p.s} -> ${serial}` : p.s ? `Último número fiscal: ${p.u} -> ${ultimo}` : `Máquina configurada: serial ${serial}, último N.º ${ultimo}`;
-  await db.batch([
-    db.prepare(`UPDATE perfil_emisor SET maquina_serial = ?, maquina_ultimo = ? WHERE id = 1`).bind(serial, ultimo),
-    db.prepare(`INSERT INTO medio_historial (medio_anterior, medio_nuevo, motivo, cambiado_por, cambiado_en) VALUES ('MAQUINA_FISCAL', 'MAQUINA_FISCAL', ?, ?, ?)`).bind(cambio, yo.id, new Date().toISOString()),
-  ]);
-  await auditar(c, yo.id, "MAQUINA_FISCAL_CONFIG", cambio);
-  return c.json({ ok: true, serial, ultimo });
+  return c.json({ ok: true, medio: p?.medio ?? "APP_SENIAT", historial: results, imprenta: await leerImprenta(db) });
 });
 
 // IMPRENTA DIGITAL: datos de conexión (proveedor, dirección de su API, usuario, clave, ambiente). La clave se guarda aparte, NO sale en los respaldos
@@ -97,16 +77,77 @@ sistema.post("/imprenta", async (c) => {
   await auditar(c, yo.id, "IMPRENTA_CONFIG", `${v.proveedor} ${v.ambiente}${v.clave ? " (clave nueva)" : ""}`);
   return c.json({ ok: true, ...(await leerImprenta(db)) });
 });
+
+// SERVICIO DE CORREO ELECTRÓNICO (Resend / Brevo) para enviar facturas a clientes y recuperación jerárquica de claves.
+sistema.get("/correo", async (c) => {
+  const cfg = await leerConfigCorreo(c.env.DB, c.env as unknown as Record<string, string>);
+  return c.json({
+    ok: true,
+    proveedor: cfg.proveedor,
+    remitente: cfg.remitente,
+    nombre_remitente: cfg.nombre_remitente,
+    clave_configurada: !!cfg.clave,
+    clave_final: cfg.clave ? cfg.clave.slice(-4) : "",
+  });
+});
+
+sistema.post("/correo", async (c) => {
+  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario");
+  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
+  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
+  const proveedor = texto(b.proveedor, 20).toUpperCase() === "BREVO" ? "BREVO" : "RESEND";
+  const remitente = texto(b.remitente, 120).toLowerCase();
+  const nombre_remitente = texto(b.nombre_remitente, 80);
+  const clave = texto(b.clave, 200);
+  if (!EMAIL.test(remitente)) return falla(c, 400, "Escribe un correo remitente válido (ejemplo: facturacion@tudominio.com o onboarding@resend.dev).");
+  const previa = (await db.prepare(`SELECT valor FROM integraciones WHERE clave = 'correo_clave'`).first<{ valor: string }>())?.valor;
+  if (!clave && !previa) return falla(c, 400, `Escribe la API Key de ${proveedor}.`);
+  const ahora = new Date().toISOString();
+  const pares: [string, string][] = [
+    ["correo_proveedor", proveedor],
+    ["correo_remitente", remitente],
+    ["correo_nombre_remitente", nombre_remitente],
+  ];
+  if (clave) pares.push(["correo_clave", clave]);
+  await db.batch(
+    pares.map(([k, val]) =>
+      db.prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES (?, ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`).bind(k, val, ahora)
+    )
+  );
+  await auditar(c, yo.id, "CORREO_CONFIG", `${proveedor} <${remitente}>${clave ? " (API key actualizada)" : ""}`);
+  const cfg = await leerConfigCorreo(db, c.env as unknown as Record<string, string>);
+  return c.json({ ok: true, proveedor: cfg.proveedor, remitente: cfg.remitente, nombre_remitente: cfg.nombre_remitente, clave_configurada: !!cfg.clave, clave_final: cfg.clave ? cfg.clave.slice(-4) : "" });
+});
+
+sistema.post("/correo/probar", async (c) => {
+  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario");
+  const destino = texto(b.para || yo.email, 120).toLowerCase();
+  if (!EMAIL.test(destino)) return falla(c, 400, "Escribe un correo de destino válido.");
+  const r = await enviarCorreo(db, c.env as unknown as Record<string, string>, {
+    para: destino,
+    asunto: "✅ Prueba de correo · FacturaYa Venezuela",
+    html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:24px;border:1px solid #dde3ec;border-radius:16px">
+      <h2 style="margin:0 0 12px;color:#1A73E8">✉️ Servicio de correo activo</h2>
+      <p>Tu configuración de correo en <b>FacturaYa Venezuela</b> funciona correctamente.</p>
+      <p style="font-size:13px;color:#5f6b7a">Ya puedes enviar facturas, presupuestos y notas de crédito con PDF adjunto a tus clientes, así como recibir recuperaciones de contraseña.</p>
+    </div>`,
+    texto: "Servicio de correo activo en FacturaYa Venezuela. Ya puedes enviar facturas a tus clientes y recuperar contraseñas por correo.",
+  });
+  if (!r.ok) return falla(c, 400, r.error);
+  await auditar(c, yo.id, "CORREO_PRUEBA", destino);
+  return c.json({ ok: true, destino });
+});
+
 sistema.post("/medio", async (c) => {
   const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario");
   const medio = texto(b.medio, 20), motivo = texto(b.motivo, 300);
-  if (!MEDIOS.includes(medio)) return falla(c, 400, "Elige máquina fiscal o imprenta digital.");
+  if (!MEDIOS.includes(medio)) return falla(c, 400, "Elige Aplicación Digital SENIAT o Imprenta Digital.");
   const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
   if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
   if (motivo.length < 5) return falla(c, 400, "Escribe el motivo del cambio (mínimo 5 letras).");
   if (b.confirmo !== true) return falla(c, 400, "Confirma que entiendes el cambio.");
-  const actual = (await db.prepare(`SELECT medio_facturacion AS m FROM perfil_emisor WHERE id = 1`).first<{ m: string }>())?.m ?? "SIN_DEFINIR";
-  if (actual === medio) return falla(c, 409, "Ese ya es tu medio de facturación.");
+  const actual = (await db.prepare(`SELECT medio_facturacion AS m FROM perfil_emisor WHERE id = 1`).first<{ m: string }>())?.m ?? "APP_SENIAT";
+  if (actual === medio) return falla(c, 409, "Esa ya es tu modalidad de facturación.");
   await db.batch([
     db.prepare(`UPDATE perfil_emisor SET medio_facturacion = ? WHERE id = 1 AND medio_facturacion = ?`).bind(medio, actual),
     db.prepare(`INSERT INTO medio_historial (medio_anterior, medio_nuevo, motivo, cambiado_por, cambiado_en) VALUES (?, ?, ?, ?, ?)`).bind(actual, medio, motivo, yo.id, new Date().toISOString()),
@@ -115,14 +156,51 @@ sistema.post("/medio", async (c) => {
   return c.json({ ok: true, medio });
 });
 
-// Copia completa de los datos (sin contraseñas ni sesiones) para guardarla fuera del sistema. FORMATO 2 (Fase 7.2):
-// exporta TODAS las tablas que existan (una tabla nueva nunca se queda fuera) y lleva conteos, sumas de control y una huella para detectar archivos dañados o editados.
+// REINICIAR BASE DE DATOS DE FÁBRICA (EXCLUSIVO DEL SÚPER ADMINISTRADOR CRISTIAN):
+// elimina triggers y tablas del inquilino actual y vuelve a correr las migraciones desde cero para dejar el negocio recién instalado.
+sistema.post("/reiniciar-fabrica", async (c) => {
+  const db = c.env.DB, rawDb = c.get("rawDb") || db, inqCod = c.get("inquilinoCodigo") || "principal";
+  const b = await leerJson(c), yo = c.get("usuario");
+  if (!esSuperAdmin(yo.rol, yo.email)) {
+    return falla(c, 403, "Solo el Súper Administrador del sistema tiene permiso para reiniciar la base de datos de fábrica.");
+  }
+  if (b.confirmo !== true) return falla(c, 400, "Marca la casilla de confirmación para borrar toda la base de datos.");
+  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
+  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash))) return falla(c, 400, "La contraseña del Súper Administrador no es correcta.");
+  const triggersConocidos = [
+    "doc_no_borrar", "doc_inmutable", "renglon_no_cambiar", "renglon_no_borrar",
+    "impuesto_no_cambiar", "impuesto_no_borrar", "pago_no_borrar", "pago_inmutable",
+    "mov_no_cambiar", "mov_no_borrar", "compra_no_borrar", "compra_inmutable",
+    "compra_impuestos_no_cambiar", "compra_impuestos_no_borrar",
+  ];
+  await db.batch(triggersConocidos.map((t) => db.prepare(`DROP TRIGGER IF EXISTS ${t}`)));
+  const ordenTablas = [
+    "pagos", "movimientos_stock", "compra_impuestos", "compras", "compras_vieja",
+    "documento_impuestos", "documento_renglones", "documentos", "catalogo", "clientes", "proveedores",
+    "medio_historial", "metodos_cobro", "integraciones", "parametros_fiscales", "contadores", "ajustes",
+    "verificaciones", "auditoria", "intentos_login", "sesiones", "usuarios", "perfil_emisor", "_migraciones",
+  ];
+  await db.batch(ordenTablas.map((t) => db.prepare(`DROP TABLE IF EXISTS ${t}`)));
+  await migrar(db);
+  if (inqCod === "principal") {
+    await rawDb.prepare(`DELETE FROM _mt_inquilinos WHERE codigo = 'principal'`).run().catch(() => {});
+    await rawDb.prepare(`DELETE FROM _mt_directorio WHERE inquilino_codigo = 'principal'`).run().catch(() => {});
+  }
+  return c.json({ ok: true });
+});
+
+// Copia completa de los datos del negocio actual (sin contraseñas ni sesiones) para guardarla fuera del sistema.
 const huellaHex = async (t: string) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t)))].map((b) => b.toString(16).padStart(2, "0")).join("");
-const NO_EXPORTAR = new Set(["_migraciones", "sesiones", "intentos_login", "verificaciones", "usuarios", "integraciones"]); // integraciones guarda claves: nunca salen en un respaldo
+const TABLAS_EXPORTAR = [
+  "ajustes", "auditoria", "catalogo", "clientes", "compra_impuestos", "compras",
+  "contadores", "documento_impuestos", "documento_renglones", "documentos",
+  "medio_historial", "metodos_cobro", "movimientos_stock", "pagos", "perfil_emisor", "proveedores",
+];
 sistema.get("/respaldo", async (c) => {
   const db = c.env.DB, datos: Record<string, Record<string, unknown>[]> = {};
-  const { results } = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name`).all<{ name: string }>();
-  for (const { name } of results) if (/^[a-z_]+$/.test(name) && !NO_EXPORTAR.has(name)) datos[name] = (await db.prepare(`SELECT * FROM ${name}`).all()).results;
+  for (const name of TABLAS_EXPORTAR) {
+    datos[name] = (await db.prepare(`SELECT * FROM ${name}`).all()).results;
+  }
   datos.usuarios = (await db.prepare(`SELECT id, nombre, email, rol, activo, creado_en FROM usuarios`).all()).results;
   const conteos = Object.fromEntries(Object.entries(datos).map(([t, f]) => [t, f.length]));
   const cuerpo = JSON.stringify({ formato: "respaldo-facturacion", version: 2, generado_en: new Date().toISOString(), huella: await huellaHex(JSON.stringify(datos)),

@@ -130,7 +130,7 @@ pagos.get("/:id", async (c) => {
   if (!p) return falla(c, 404, "Pago no encontrado.");
   const d = await c.env.DB.prepare(
     `SELECT id, tipo, numero, estado, modo, cliente_nombre, cliente_rif, cliente_whatsapp, emisor_json, total_usd, fecha_emision FROM documentos WHERE id = ?`).bind(p.documento_id).first<Fila>();
-  const perfilActual = await c.env.DB.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfilActual = await c.env.DB.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
   if (d && perfilActual) {
     let emisorPrevio: Fila = {};
     try { emisorPrevio = JSON.parse(d.emisor_json || "{}"); } catch {}
@@ -141,6 +141,7 @@ pagos.get("/:id", async (c) => {
       direccion_fiscal: perfilActual.direccion_fiscal || emisorPrevio.direccion_fiscal,
       telefono: perfilActual.telefono ?? emisorPrevio.telefono,
       email: perfilActual.email ?? emisorPrevio.email,
+      logo_base64: perfilActual.logo_base64 ?? emisorPrevio.logo_base64 ?? null,
     });
   }
   return c.json({ ok: true, pago: p, documento: d });

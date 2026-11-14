@@ -4,9 +4,10 @@
 // Una factura emitida puede recibir Devoluciones mediante Nota de Crédito (es_nota_credito = 1) conforme a la Providencia SENIAT SNAT/2011/0071.
 import { Hono } from "hono";
 import { aCantidadMilli, aRifSeniat, aTasaE8, calcular, cantidadTexto, redondear } from "../../public/dinero.js";
+import { enviarCorreo } from "../correo";
 import { costoPromedio, guardaSaldo, movimiento, saldos, valorSalida } from "../stock";
 import { veCostos } from "../permisos";
-import { PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
+import { EMAIL, PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
 
 const documentos = new Hono<Env>();
 documentos.use("*", requiereSesion);
@@ -14,7 +15,7 @@ documentos.use("*", requiereSesion);
 type Linea = { catalogo_id: number | null; tipo: "SERVICIO" | "PRODUCTO"; descripcion: string; cantidad_milli: number; precio_usd: number; costo_usd: number | null; alicuota_cent: number };
 type Fila = Record<string, any>;
 
-const COLUMNAS = `id, tipo, es_nota_credito, factura_afectada_id, motivo_nc, estado, modo, numero, control_interno, control_fiscal, fiscal_serial, medio,
+const COLUMNAS = `id, tipo, es_nota_credito, factura_afectada_id, motivo_nc, estado, modo, numero, control_interno, control_fiscal, medio,
   presupuesto_id, cliente_id, cliente_rif, cliente_nombre, cliente_direccion, cliente_whatsapp, cliente_email, nota, fecha_emision, emitido_en,
   tasa_e8, tasa_cargada_en, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd,
   subtotal_bs, iva_bs, igtf_bs, total_bs, costo_total_usd, parametros_json, emisor_json, anulado_en, motivo_anulacion, creado_en, condicion, dias_credito, vence_el`;
@@ -150,7 +151,7 @@ documentos.get("/:id", async (c) => {
                         FROM documentos WHERE factura_afectada_id = ? AND es_nota_credito = 1 ORDER BY id`).bind(id).all<Fila>()
     : { results: [] as Fila[] };
   const facturaAfectada = r.doc.factura_afectada_id
-    ? await db.prepare(`SELECT id, numero, control_interno, control_fiscal, fiscal_serial, fecha_emision, total_usd, total_bs, tasa_e8
+    ? await db.prepare(`SELECT id, numero, control_interno, control_fiscal, fecha_emision, total_usd, total_bs, tasa_e8
                         FROM documentos WHERE id = ?`).bind(r.doc.factura_afectada_id).first<Fila>()
     : null;
   // Cantidades ya devueltas por renglón (orden) en notas de crédito vigentes
@@ -162,7 +163,7 @@ documentos.get("/:id", async (c) => {
     : { results: [] as { orden: number; devuelto_milli: number }[] };
   const mapaDev = new Map(rengsDev.map((x) => [x.orden, x.devuelto_milli]));
   const lineasConDev = r.lineas.map((l) => ({ ...l, devuelto_milli: mapaDev.get(l.orden) ?? 0 }));
-  const perfilActual = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfilActual = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
   if (perfilActual) {
     let emisorPrevio: Fila = {};
     try { emisorPrevio = JSON.parse(r.doc.emisor_json || "{}"); } catch {}
@@ -173,6 +174,7 @@ documentos.get("/:id", async (c) => {
       direccion_fiscal: perfilActual.direccion_fiscal || emisorPrevio.direccion_fiscal,
       telefono: perfilActual.telefono ?? emisorPrevio.telefono,
       email: perfilActual.email ?? emisorPrevio.email,
+      logo_base64: perfilActual.logo_base64 ?? emisorPrevio.logo_base64 ?? null,
     });
   }
   const pagadoEfectivo = results.filter((p) => p.estado === "VIGENTE").reduce((s, p) => s + p.monto_usd, 0);
@@ -252,7 +254,7 @@ documentos.post("/:id/emitir", async (c) => {
   if (!lineas.length) return falla(c, 400, "Agrega al menos un renglón.");
   if (lineas.some((l) => l.precio_usd <= 0)) return falla(c, 400, "Todos los renglones deben tener un precio mayor que 0.");
 
-  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? ""));
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV de hoy en el Inicio antes de emitir.");
   const cli = await db.prepare(`SELECT rif_cedula, nombre_apellido, direccion, whatsapp, email FROM clientes WHERE id = ?`).bind(doc.cliente_id).first<Fila>();
@@ -267,7 +269,7 @@ documentos.post("/:id/emitir", async (c) => {
   const esFactura = doc.tipo === "FACTURA", vence = esFactura ? (doc.condicion === "CREDITO" ? masDias(fecha, Number(doc.dias_credito)) : fecha) : null;
   const claveNum = `${doc.es_nota_credito ? "NOTA_CREDITO" : doc.tipo}:${doc.modo}`, claveCtl = `CONTROL:${doc.modo}`;
   const sigueBorrador = `EXISTS (SELECT 1 FROM documentos WHERE id = ? AND estado = 'BORRADOR')`;
-  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: aRifSeniat(perfil!.rif), direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email };
+  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: aRifSeniat(perfil!.rif), direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email, logo_base64: perfil!.logo_base64 ?? null };
   const reglas = {
     iva_alicuotas_cent: params.iva_alicuotas_cent, igtf_alicuota_cent: params.igtf_alicuota_cent ?? "300",
     titulo_sin_control: params.titulo_sin_control, leyenda_sin_control: params.leyenda_sin_control,
@@ -377,7 +379,7 @@ documentos.post("/:id/devolver", async (c) => {
   }
   if (!lineasNc.length) return falla(c, 400, "Indica al menos un renglón con cantidad a devolver mayor que 0.");
 
-  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? "")) || F.tasa_e8;
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV en el Inicio antes de emitir la Nota de Crédito.");
 
@@ -386,7 +388,7 @@ documentos.post("/:id/devolver", async (c) => {
   const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? F.igtf_alicuota_cent ?? 300) || 300;
   const calc = calcular(lineasNc, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf });
 
-  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: aRifSeniat(perfil!.rif), direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email };
+  const emisor = { nombre_razon_social: perfil!.nombre_razon_social, rif: aRifSeniat(perfil!.rif), direccion_fiscal: perfil!.direccion_fiscal, telefono: perfil!.telefono, email: perfil!.email, logo_base64: perfil!.logo_base64 ?? null };
   const reglas = {
     iva_alicuotas_cent: params.iva_alicuotas_cent, igtf_alicuota_cent: String(alicuotaIgtf),
     titulo_sin_control: "NOTA DE CRÉDITO", leyenda_sin_control: params.leyenda_sin_control,
@@ -485,9 +487,6 @@ documentos.post("/:id/anular", async (c) => {
   if (conNc && conNc.n > 0) return falla(c, 409, "Esta factura ya tiene Notas de Crédito emitidas: según la normativa SENIAT no se puede anular directamente.");
 
   if (doc.tipo === "FACTURA" && !doc.es_nota_credito) {
-    if (doc.medio === "MAQUINA_FISCAL" && doc.control_fiscal) {
-      return falla(c, 409, "Según la Providencia SENIAT SNAT/2011/0071, una factura ya impresa en Máquina Fiscal no puede anularse directamente: debes emitir una Nota de Crédito («↩️ Devolver»).");
-    }
     const mesDoc = String(doc.fecha_emision ?? "").slice(0, 7), mesActual = fechaCaracas().slice(0, 7);
     if (mesDoc && mesDoc !== mesActual) {
       return falla(c, 409, "Según la normativa SENIAT, una factura de un período fiscal anterior no puede anularse directamente porque altera el Libro de Ventas cerrado: debes emitir una Nota de Crédito («↩️ Devolver»).");
@@ -561,27 +560,16 @@ documentos.post("/:id/fiscal", async (c) => {
   const id = idParam(c), b = await leerJson(c), db = c.env.DB, u = c.get("usuario");
   const d = await db.prepare(`SELECT tipo, es_nota_credito, estado, medio, control_fiscal FROM documentos WHERE id = ?`).bind(id).first<Fila>();
   if (!d) return falla(c, 404, "Documento no encontrado.");
-  if (d.tipo !== "FACTURA" || d.estado !== "EMITIDO") return falla(c, 409, "El número fiscal se registra en una factura o nota de crédito emitida y vigente.");
-  if (!d.medio) return falla(c, 409, "Este documento se emitió antes de definir el medio de facturación: no se le puede registrar número fiscal aquí.");
-  if (d.control_fiscal) return falla(c, 409, "Este documento ya tiene su número fiscal; no se puede cambiar.");
-  let numero = texto(b.numero, 30).toUpperCase(), serial: string | null = null;
-  if (d.medio === "MAQUINA_FISCAL") {
-    const p = await db.prepare(`SELECT maquina_serial AS serial, maquina_ultimo AS ultimo FROM perfil_emisor WHERE id = 1`).first<{ serial: string | null; ultimo: number }>();
-    if (!p?.serial) return falla(c, 409, "Primero configura el serial de tu máquina fiscal en Ajustes (solo el dueño puede).");
-    if (!/^[0-9]{1,10}$/.test(numero)) return falla(c, 400, "El número fiscal de la máquina fiscal son solo números.");
-    const n = Number(numero), pad = (x: number) => String(x).padStart(7, "0");
-    if (n <= p.ultimo) return falla(c, 409, `El número fiscal debe ser mayor que el último registrado (${pad(p.ultimo)}).`);
-    if (n > p.ultimo + 1 && b.confirmar_salto !== true) return c.json({ ok: false, error: `Se salta del ${pad(p.ultimo)} al ${pad(n)}. Si la máquina anuló o reimprimió documentos, confirma el salto.`, salto: true, esperado: p.ultimo + 1 }, 409);
-    numero = pad(n); serial = p.serial;
-  } else if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(numero)) return falla(c, 400, "Escribe el número de control (solo letras, números y guiones).");
+  if (d.tipo !== "FACTURA" || d.estado !== "EMITIDO") return falla(c, 409, "El número de control se registra en una factura o nota de crédito emitida y vigente.");
+  if (!d.medio) return falla(c, 409, "Este documento se emitió antes de definir el medio de facturación.");
+  if (d.control_fiscal) return falla(c, 409, "Este documento ya tiene su número de control definitivo asignado; no se puede cambiar.");
+  const numero = texto(b.numero, 30).toUpperCase();
+  if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(numero)) return falla(c, 400, "Escribe el número de control (ejemplo: 00-00000001).");
   try {
-    const r = await db.batch([
-      db.prepare(`UPDATE documentos SET control_fiscal = ?, fiscal_serial = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`).bind(numero, serial, id),
-      db.prepare(`UPDATE perfil_emisor SET maquina_ultimo = ? WHERE id = 1 AND ? IS NOT NULL AND maquina_ultimo < ? AND EXISTS (SELECT 1 FROM documentos WHERE id = ? AND control_fiscal = ?)`).bind(Number(numero) || 0, serial, Number(numero) || 0, id, numero),
-    ]);
-    if (!r[0].meta.changes) return falla(c, 409, "Este documento ya tiene su número fiscal; no se puede cambiar.");
+    const r = await db.prepare(`UPDATE documentos SET control_fiscal = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`).bind(numero, id).run();
+    if (!r.meta.changes) return falla(c, 409, "Este documento ya tiene su número de control asignado; no se puede cambiar.");
   } catch (e) {
-    if (String(e).includes("UNIQUE")) return falla(c, 409, "Ese número fiscal ya está registrado en otro documento.");
+    if (String(e).includes("UNIQUE")) return falla(c, 409, "Ese número de control ya está registrado en otro documento.");
     throw e;
   }
   await auditar(c, u.id, "FISCAL_REGISTRAR", `${id} ${d.medio} ${numero}`);
@@ -609,6 +597,83 @@ documentos.post("/:id/copiar", async (c) => {
   const nuevo = await clonar(c, id, o.tipo, null);
   await auditar(c, c.get("usuario").id, "DOC_COPIAR", `${id} -> ${nuevo}`);
   return c.json({ ok: true, id: nuevo });
+});
+
+// Enviar factura, nota de crédito o presupuesto por correo electrónico al cliente (con detalle HTML y PDF adjunto)
+documentos.post("/:id/enviar-correo", async (c) => {
+  const id = idParam(c), db = c.env.DB, b = await leerJson(c), u = c.get("usuario");
+  const cargado = await cargar(c, id);
+  if (!cargado) return falla(c, 404, "Documento no encontrado.");
+  const { doc, lineas } = cargado;
+  if (doc.estado === "BORRADOR") return falla(c, 409, "Emite el documento antes de enviarlo por correo.");
+  const destino = texto(b.email || doc.cliente_email, 120).toLowerCase();
+  if (!EMAIL.test(destino)) return falla(c, 400, "Escribe un correo electrónico válido del cliente.");
+  if (doc.cliente_id && destino !== doc.cliente_email) {
+    await db.prepare(`UPDATE clientes SET email = ? WHERE id = ? AND (email IS NULL OR email = '')`).bind(destino, doc.cliente_id).run();
+    await db.prepare(`UPDATE documentos SET cliente_email = ? WHERE id = ?`).bind(destino, id).run();
+  }
+  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, telefono, email FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const nombreNegocio = perfil?.nombre_razon_social || "FacturaYa Venezuela";
+  const rifNegocio = aRifSeniat(perfil?.rif || "");
+  const esNc = !!doc.es_nota_credito;
+  const tituloDoc = esNc ? "Nota de Crédito" : doc.tipo === "FACTURA" ? "Factura" : "Presupuesto";
+  const nroDoc = esNc
+    ? `NC-${String(doc.numero ?? 1).padStart(8, "0")}`
+    : doc.tipo === "FACTURA"
+      ? String(doc.numero ?? 1).padStart(8, "0")
+      : `P-${String(doc.numero ?? 1).padStart(6, "0")}`;
+  const nroControl = doc.tipo === "FACTURA" ? (doc.control_fiscal || `00-${String(doc.control_interno ?? doc.numero ?? 1).padStart(8, "0")}`) : null;
+  const fmtBs = (cent: number) => `Bs. ${(Number(cent || 0) / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtUsd = (cent: number) => `$ ${(Number(cent || 0) / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const escHtml = (s: unknown) => String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch] || ch);
+
+  const filasHtml = lineas.map((l) => `<tr>
+    <td style="padding:8px;border-bottom:1px solid #e5e7eb">${escHtml(l.descripcion)}</td>
+    <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${escHtml(cantidadTexto(l.cantidad_milli))}</td>
+    <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(l.monto_bs)}<br><small style="color:#6b7280">${fmtUsd(l.monto_usd)}</small></td>
+  </tr>`).join("");
+
+  const html = `<div style="font-family:system-ui,-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:24px;border:1px solid #dde3ec;border-radius:16px;color:#1f2933">
+    <div style="border-bottom:2px solid #1A73E8;padding-bottom:12px;margin-bottom:16px">
+      <h2 style="margin:0;color:#1A73E8">${escHtml(nombreNegocio)}</h2>
+      <p style="margin:4px 0 0;font-size:13px;color:#5f6b7a">RIF: ${escHtml(rifNegocio)}${perfil?.telefono ? ` · Tel: ${escHtml(perfil.telefono)}` : ""}</p>
+    </div>
+    <h3 style="margin:0 0 8px">${tituloDoc} N.º ${escHtml(nroDoc)}${nroControl ? ` <span style="font-weight:normal;color:#5f6b7a">(Control: ${escHtml(nroControl)})</span>` : ""}</h3>
+    <p style="margin:0 0 16px;font-size:14px;color:#4b5563">
+      <b>Cliente:</b> ${escHtml(doc.cliente_nombre)} (${escHtml(doc.cliente_rif)})<br>
+      <b>Fecha de emisión:</b> ${escHtml(doc.fecha_emision)} · <b>Tasa BCV:</b> Bs. ${(Number(doc.tasa_e8 || 0) / 1e8).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+    </p>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:16px">
+      <thead><tr style="background:#f8fafd;text-align:left">
+        <th style="padding:8px;border-bottom:2px solid #dde3ec">Descripción</th>
+        <th style="padding:8px;border-bottom:2px solid #dde3ec;text-align:right">Cant.</th>
+        <th style="padding:8px;border-bottom:2px solid #dde3ec;text-align:right">Monto</th>
+      </tr></thead>
+      <tbody>${filasHtml}</tbody>
+    </table>
+    <div style="background:#f8fafd;padding:14px;border-radius:12px;font-size:14px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Subtotal:</span><b>${fmtBs(doc.subtotal_bs)} (${fmtUsd(doc.subtotal_usd)})</b></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>IVA:</span><b>${fmtBs(doc.iva_bs)} (${fmtUsd(doc.iva_usd)})</b></div>
+      ${doc.aplica_igtf && doc.igtf_usd > 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>IGTF (3%):</span><b>${fmtBs(doc.igtf_bs)} (${fmtUsd(doc.igtf_usd)})</b></div>` : ""}
+      <div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:2px solid #dde3ec;font-size:16px"><span><b>TOTAL:</b></span><b>${fmtBs(doc.total_bs)} (${fmtUsd(doc.total_usd)})</b></div>
+    </div>
+    ${doc.nota ? `<p style="margin:14px 0 0;font-size:13px;color:#5f6b7a"><b>Nota:</b> ${escHtml(doc.nota)}</p>` : ""}
+  </div>`;
+
+  const textoPlano = `${nombreNegocio} (RIF ${rifNegocio})\n${tituloDoc} N.º ${nroDoc}${nroControl ? ` | Control: ${nroControl}` : ""}\nCliente: ${doc.cliente_nombre} (${doc.cliente_rif})\nTotal: ${fmtBs(doc.total_bs)} (${fmtUsd(doc.total_usd)})`;
+  const pdfBase64 = typeof b.pdf_base64 === "string" && b.pdf_base64.length > 50 && b.pdf_base64.length < 4_000_000 ? b.pdf_base64 : null;
+  const nombrePdf = texto(b.nombre_archivo, 80) || `${tituloDoc.replace(/\s+/g, "-")}-${nroDoc}.pdf`;
+
+  const res = await enviarCorreo(db, c.env as unknown as Record<string, string>, {
+    para: destino,
+    asunto: `${tituloDoc} ${nroDoc} · ${nombreNegocio}`,
+    html,
+    texto: textoPlano,
+    adjuntos: pdfBase64 ? [{ filename: nombrePdf, content: pdfBase64 }] : undefined,
+  });
+  if (!res.ok) return falla(c, 400, res.error);
+  await auditar(c, u.id, "DOC_CORREO", `${tituloDoc} ${nroDoc} -> ${destino}`);
+  return c.json({ ok: true, email: destino });
 });
 
 export default documentos;

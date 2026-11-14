@@ -27,7 +27,7 @@ informes.get("/ventas", async (c) => {
   const [docs, imp] = await Promise.all([
     db.prepare(`SELECT d.id, d.es_nota_credito, d.factura_afectada_id,
           (SELECT fa.numero FROM documentos fa WHERE fa.id = d.factura_afectada_id) AS factura_afectada_numero,
-          d.numero, d.control_interno, d.control_fiscal, d.fiscal_serial, d.medio, d.fecha_emision,
+          d.numero, d.control_interno, d.control_fiscal, d.medio, d.fecha_emision,
           d.cliente_rif, d.cliente_nombre, d.estado, d.tasa_e8, d.aplica_igtf, d.igtf_usd, d.igtf_bs, d.total_usd, d.total_bs
         FROM documentos d WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO') AND d.fecha_emision BETWEEN ? AND ? ORDER BY d.fecha_emision, d.id`)
       .bind(modo, r.desde, r.hasta).all<Fila>(),

@@ -63,10 +63,9 @@ async function razonesNo(db: D1Database): Promise<string[]> {
   for (const t of VACIO_SI) { const c = await n(db, t); if (c > 0) r.push(`El sistema ya tiene datos (${t}: ${c}). Solo se restaura en un sistema vacío.`); }
   const cont = await db.prepare(`SELECT COALESCE(SUM(valor), 0) AS s FROM contadores`).first<{ s: number }>();
   if ((cont?.s ?? 0) > 0) r.push("El sistema ya numeró documentos.");
-  // Si el sistema tiene una tabla que este restaurador no conoce, no se arriesga a perder datos en silencio
-  const { results } = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'`).all<{ name: string }>();
+  const { results } = await db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE '_mt_%'`).all<{ name: string }>();
   const conocidas = new Set([...PLAN.map((p) => p.tabla), ...NO_RESTAURAR]);
-  const raras = results.map((x) => x.name).filter((t) => !conocidas.has(t));
+  const raras = results.map((x) => x.name).filter((t) => !conocidas.has(t) && !/^t\d+_/.test(t));
   if (raras.length) r.push(`Este sistema tiene tablas que el restaurador no conoce (${raras.join(", ")}): hay que actualizarlo antes de restaurar.`);
   return r;
 }

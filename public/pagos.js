@@ -34,13 +34,15 @@ export function lineasCobro(metodos) {
   });
 }
 export function mensajeDocumento({ D, pagado, saldo, metodos }) {
-  const emisor = JSON.parse(D.emisor_json || "{}"), esF = D.tipo === "FACTURA";
+  const emisor = JSON.parse(D.emisor_json || "{}"), esNC = !!D.es_nota_credito, esF = D.tipo === "FACTURA" && !esNC;
   const formas = lineasCobro(metodos);
-  return `Hola ${D.cliente_nombre} 👋\nTe envío ${esF ? "tu factura" : "tu presupuesto"} ${numeroDoc(D)} de ${emisor.nombre_razon_social}.\n`
-    + `Total: ${usd(D.total_usd)} (Bs. ${bs(D.total_bs / 100)})`
-    + (pagado > 0 ? `\nPagado: ${usd(pagado)} · Saldo: ${usd(Math.max(saldo, 0))}` : "")
+  const nombreDoc = esNC ? "tu nota de crédito" : esF ? "tu factura" : "tu presupuesto";
+  return `Hola ${D.cliente_nombre} 👋\nTe envío ${nombreDoc} ${numeroDoc(D)} de ${emisor.nombre_razon_social}.\n`
+    + `Total${esNC ? " acreditado" : ""}: ${usd(D.total_usd)} (Bs. ${bs(D.total_bs / 100)})`
+    + (D.aplica_igtf && D.igtf_usd > 0 ? `\nIncluye IGTF (3%): ${usd(D.igtf_usd)} (Bs. ${bs(D.igtf_bs / 100)})` : "")
+    + (!esNC && pagado > 0 ? `\nPagado / acreditado: ${usd(pagado)} · Saldo: ${usd(Math.max(saldo, 0))}` : "")
     + (esF && D.condicion === "CREDITO" ? `\nVence: ${fechaDoc(D.vence_el)}` : "")
-    + (saldo > 0 && formas.length ? `\n\nFormas de pago:\n${formas.map((l) => "• " + l).join("\n")}` : "") + "\n\nGracias 🙏";
+    + (!esNC && saldo > 0 && formas.length ? `\n\nFormas de pago:\n${formas.map((l) => "• " + l).join("\n")}` : "") + "\n\nGracias 🙏";
 }
 export const enlaceWhatsApp = (numero, texto) => `https://wa.me/${telefono(numero)?.digitos ?? String(numero).replace(/\D/g, "")}?text=${encodeURIComponent(texto)}`;
 

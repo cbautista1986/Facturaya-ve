@@ -36,8 +36,9 @@ export function armarManifiesto(resp, plan) {
   return { version: resp.version, modo_origen: resp.modo_origen, conteos, sumas };
 }
 
-// Los presupuestos (sin presupuesto_id) van antes que las facturas que salieron de ellos
-const ordenar = (tabla, filas) => (tabla !== "documentos" ? filas : [...filas].sort((a, b) => (a.presupuesto_id == null ? 0 : 1) - (b.presupuesto_id == null ? 0 : 1) || a.id - b.id));
+// Los presupuestos van antes que las facturas que salieron de ellos, y las facturas antes que sus notas de crédito
+const pesoDoc = (d) => (d.factura_afectada_id != null ? 2 : d.presupuesto_id != null ? 1 : 0);
+const ordenar = (tabla, filas) => (tabla !== "documentos" ? filas : [...filas].sort((a, b) => pesoDoc(a) - pesoDoc(b) || a.id - b.id));
 
 // llamar(ruta, cuerpo?, metodo?) -> JSON de la respuesta; lanza Error con el mensaje del servidor si falla
 export async function restaurar(llamar, resp, clave, progreso = () => {}) {

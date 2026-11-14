@@ -14,8 +14,8 @@ sistema.post("/salir-en-vivo", async (c) => {
   const db = c.env.DB, b = await leerJson(c);
   const medio = await db.prepare(`SELECT medio_facturacion AS m FROM perfil_emisor WHERE id = 1`).first<{ m: string }>();
   if (medio?.m === "SIN_DEFINIR") return falla(c, 400, "Antes de salir en vivo elige tu medio de facturación (máquina fiscal o imprenta digital) en Ajustes.");
-  const f = entero(b.primer_factura), k = entero(b.primer_control), p = entero(b.primer_presupuesto), rec = entero(b.primer_recibo ?? 1);
-  if (!f || !k || !p || !rec) return falla(c, 400, "Escribe los tres números iniciales (mínimo 1).");
+  const f = entero(b.primer_factura), k = entero(b.primer_control), p = entero(b.primer_presupuesto), rec = entero(b.primer_recibo ?? 1), nc = entero(b.primer_nota_credito ?? 1);
+  if (!f || !k || !p || !rec || !nc) return falla(c, 400, "Escribe los números iniciales (mínimo 1).");
   if (b.confirmo !== true) return falla(c, 400, "Marca la casilla para confirmar.");
   if ((await modoActual(db)) !== "PRACTICA") return falla(c, 409, "El sistema ya está en vivo.");
   await db.batch([
@@ -25,17 +25,18 @@ sistema.post("/salir-en-vivo", async (c) => {
     db.prepare(`DELETE FROM compras WHERE modo = 'PRACTICA'`),
     db.prepare(`DELETE FROM documento_impuestos WHERE documento_id IN (SELECT id FROM documentos WHERE modo = 'PRACTICA')`),
     db.prepare(`DELETE FROM documento_renglones WHERE documento_id IN (SELECT id FROM documentos WHERE modo = 'PRACTICA')`),
-    db.prepare(`UPDATE documentos SET presupuesto_id = NULL WHERE modo = 'PRACTICA'`),
+    db.prepare(`UPDATE documentos SET presupuesto_id = NULL, factura_afectada_id = NULL WHERE modo = 'PRACTICA'`),
     db.prepare(`DELETE FROM documentos WHERE modo = 'PRACTICA'`),
     db.prepare(`UPDATE contadores SET valor = 0 WHERE clave LIKE '%:PRACTICA'`),
     db.prepare(`UPDATE contadores SET valor = ? WHERE clave = 'FACTURA:REAL'`).bind(f - 1),
     db.prepare(`UPDATE contadores SET valor = ? WHERE clave = 'CONTROL:REAL'`).bind(k - 1),
     db.prepare(`UPDATE contadores SET valor = ? WHERE clave = 'PRESUPUESTO:REAL'`).bind(p - 1),
     db.prepare(`UPDATE contadores SET valor = ? WHERE clave = 'RECIBO:REAL'`).bind(rec - 1),
+    db.prepare(`UPDATE contadores SET valor = ? WHERE clave = 'NOTA_CREDITO:REAL'`).bind(nc - 1),
     db.prepare(`UPDATE catalogo SET controla_stock = 0 WHERE controla_stock = 1 AND NOT EXISTS (SELECT 1 FROM movimientos_stock m WHERE m.producto_id = catalogo.id)`),
     db.prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`),
   ]);
-  await auditar(c, c.get("usuario").id, "SALIR_EN_VIVO", `factura ${f}, control ${k}, presupuesto ${p}`);
+  await auditar(c, c.get("usuario").id, "SALIR_EN_VIVO", `factura ${f}, control ${k}, presupuesto ${p}, nc ${nc}`);
   return c.json({ ok: true });
 });
 

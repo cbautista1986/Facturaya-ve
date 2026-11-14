@@ -16,6 +16,11 @@ const NEGOCIO = [
 ];
 let estado = {};
 
+const esEntornoPreview = location.hostname.endsWith(".run.app") || location.hostname === "localhost" || location.hostname === "127.0.0.1";
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta"><span class="etiqueta">📦 PAQUETE LISTO PARA GITHUB / CLOUDFLARE</span>
+  <p class="suave">Descarga el archivo <b>.zip</b> revisado y listo con las carpetas <code>src/</code>, <code>public/</code> y configuración de Cloudflare Workers para descomprimir y subir en GitHub (<b>Add file → Upload files</b>) sin perder ningún dato de tu base D1.</p>
+  <a class="boton verde" href="/facturaya-ve-github.zip" download="facturaya-ve-github.zip">⬇️ Descargar paquete para GitHub (.zip)</a></section>` : "";
+
 function vistaInstalar() {
   raiz.innerHTML = `<section class="tarjeta"><h1>🛡️ Bienvenido</h1>
     <p class="suave">Crea tu cuenta de administrador. Esta pantalla se bloquea después.</p>
@@ -27,7 +32,7 @@ function vistaInstalar() {
       ${campo("email", "✉️ Tu correo (será tu usuario)", "", "email", 'required autocomplete="username"')}
       ${campo("clave", "🔒 Contraseña (mínimo 10 caracteres)", "", "password", 'required minlength="10" autocomplete="new-password"')}
       ${ERROR}<button class="boton" type="submit">CREAR SISTEMA Y ENTRAR ➔</button>
-    </form></section>`;
+    </form></section>${TARJETA_GITHUB_ZIP}`;
   enviar($("#f"), async (d) => { const r = await api("instalar", "POST", d); pantallaCodigo(r.codigo_recuperacion, { alContinuar: ruta }); });
 }
 
@@ -37,7 +42,7 @@ function vistaLogin() {
       ${campo("email", "✉️ Correo", "", "email", 'required autocomplete="username"')}
       ${campo("clave", "🔒 Contraseña", "", "password", 'required autocomplete="current-password"')}
       ${ERROR}<button class="boton" type="submit">ENTRAR ➔</button>
-    </form><button class="boton contorno" id="olvide" type="button">¿Olvidaste tu contraseña?</button></section>`;
+    </form><button class="boton contorno" id="olvide" type="button">¿Olvidaste tu contraseña?</button></section>${TARJETA_GITHUB_ZIP}`;
   $("#olvide").addEventListener("click", () => vistaRecuperar(vistaLogin));
   enviar($("#f"), async (d) => { await api("login", "POST", d); await ruta(); });
 }
@@ -98,6 +103,7 @@ function vistaAjustes() {
       <button class="boton chico contorno" id="cambiar-clave" type="button">Cambiar mi contraseña</button></section>
     ${admin ? `<form id="f" class="tarjeta">
       ${NEGOCIO.map(([id, et]) => campo(id, et, n[id])).join("")}
+      <label class="opcion"><input type="checkbox" id="igtf_activo" name="igtf_activo" ${n.igtf_activo ? "checked" : ""}> 💱 Activar IGTF (3%) por defecto en facturas nuevas (también puedes activarlo o desactivarlo en cada factura)</label>
       <p class="pista">💳 Tus datos de cobro (pago móvil, Zelle, etc.) ahora se configuran en <b>Pagos → Mis datos</b>.</p>
       ${ERROR}<button class="boton verde" type="submit">GUARDAR CAMBIOS</button>
     </form>
@@ -110,14 +116,16 @@ function vistaAjustes() {
       <p class="suave">Mientras estés en práctica, las facturas y presupuestos son de prueba: llevan marca de agua, no valen y se borran al salir en vivo. Cuando todo esté probado y revisado con tu contador, sal en vivo para empezar la numeración real.</p>
       <form id="vivo">
         ${campo("primer_factura", "🧾 Primer N.º de factura", "1", "text", 'inputmode="numeric" required')}
+        ${campo("primer_nota_credito", "↩️ Primer N.º de nota de crédito", "1", "text", 'inputmode="numeric" required')}
         ${campo("primer_control", "🔢 Primer N.º de control interno", "1", "text", 'inputmode="numeric" required')}
         ${campo("primer_presupuesto", "📋 Primer N.º de presupuesto", "1", "text", 'inputmode="numeric" required')}
         ${campo("primer_recibo", "💵 Primer N.º de recibo de pago", "1", "text", 'inputmode="numeric" required')}
         <label class="opcion"><input type="checkbox" name="confirmo"> Entiendo que se BORRAN los documentos de práctica y que NO se puede volver atrás.</label>
         ${ERROR}<button class="boton rojo" type="submit">SALIR EN VIVO</button></form></section>`
-      : `<section class="tarjeta"><h2>✅ En vivo</h2><p class="suave">El sistema está en modo real: las facturas emitidas no se pueden editar ni borrar, solo anular.</p></section>`}
+      : `<section class="tarjeta"><h2>✅ En vivo</h2><p class="suave">El sistema está en modo real: las facturas emitidas no se pueden editar ni borrar, solo anular o ajustar con Nota de Crédito.</p></section>`}
     <section class="tarjeta"><h2>💾 Respaldo</h2><p class="suave">Descarga una copia de todos tus datos (clientes, inventario y documentos). Guárdala fuera del sistema, en un lugar seguro.</p>
-      <button class="boton" id="respaldo" type="button">⬇️ Exportar respaldo</button></section>` : ""}
+      <button class="boton" id="respaldo" type="button">⬇️ Exportar respaldo</button></section>
+    ${TARJETA_GITHUB_ZIP}` : ""}
     <button class="boton contorno" id="salir">Cerrar sesión</button>`;
   $("#atras").addEventListener("click", () => (location.hash = "#/inicio"));
   $("#cambiar-clave").addEventListener("click", () => vistaCambiarClave(estado, { forzado: false, alTerminar: () => { if (location.hash !== "#/ajustes") location.hash = "#/ajustes"; return ruta(); } }));
@@ -127,9 +135,9 @@ function vistaAjustes() {
   enlazarCodigo(ruta);
   enlazarMedio(ruta).catch((e) => aviso(e.message));
   $("#restaurar-ir").addEventListener("click", () => (location.hash = "#/restaurar"));
-  enviar($("#f"), async (d) => { await api("config", "PUT", d); aviso("Guardado ✅"); location.hash = "#/inicio"; });
+  enviar($("#f"), async (d) => { d.igtf_activo = $("#igtf_activo").checked ? 1 : 0; await api("config", "PUT", d); aviso("Guardado ✅"); location.hash = "#/inicio"; });
   if ($("#vivo")) enviar($("#vivo"), async (d) => {
-    await api("sistema/salir-en-vivo", "POST", { primer_factura: Number(d.primer_factura), primer_control: Number(d.primer_control),
+    await api("sistema/salir-en-vivo", "POST", { primer_factura: Number(d.primer_factura), primer_nota_credito: Number(d.primer_nota_credito || 1), primer_control: Number(d.primer_control),
       primer_presupuesto: Number(d.primer_presupuesto), primer_recibo: Number(d.primer_recibo), confirmo: d.confirmo === "on" });
     aviso("El sistema está en vivo ✅"); await ruta();
   });

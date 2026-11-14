@@ -26,7 +26,7 @@ const REGLAS: Regla[] = [
   [TODOS, /^\/api\/usuarios(\/|$)/, ["admin"]],
   [TODOS, /^\/api\/sistema(\/|$)/, ["admin"]],
   [U, /^\/api\/config$/, ["admin", "tasa"]],                             // el supervisor solo puede la tasa (se revisa dentro)
-  [P, /^\/api\/documentos\/\d+\/anular$/, ["anular"]],
+  [P, /^\/api\/documentos\/\d+\/(anular|devolver)$/, ["anular"]],
   [G, /^\/api\/documentos\/resumen$/, ["admin"]],                        // ganancia del mes
   [TODOS, /^\/api\/documentos(\/|$)/, ["caja"]],
   [P, /^\/api\/pagos\/\d+\/anular$/, ["anular"]],

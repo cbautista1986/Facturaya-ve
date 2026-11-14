@@ -33,6 +33,7 @@ h2 { font-size: 16px; margin: 24px 0 0; }
 
 .boton { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 54px;
   margin-top: 18px; border: 0; border-radius: 28px; background: var(--azul); color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+a.boton { text-decoration: none; }
 .boton.verde { background: var(--verde); } .boton.rojo { background: var(--rojo); }
 .boton.contorno { background: transparent; color: var(--rojo); border: 2px solid var(--rojo); }
 .boton.chico { width: auto; min-height: 44px; margin: 0; padding: 0 18px; font-size: 14px; }

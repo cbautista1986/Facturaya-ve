@@ -16,7 +16,7 @@ async function porCobrar(db: D1Database) {
   const hoy = fechaCaracas();
   const { results } = await db.prepare(
     `SELECT * FROM (SELECT d.id, d.numero, d.cliente_nombre, d.fecha_emision, d.vence_el, d.condicion, d.dias_credito, d.total_usd, ${PAGADO} AS pagado_usd
-       FROM documentos d WHERE d.tipo = 'FACTURA' AND d.estado = 'EMITIDO') WHERE total_usd - pagado_usd > 0 ORDER BY vence_el, id`
+       FROM documentos d WHERE d.tipo = 'FACTURA' AND d.es_nota_credito = 0 AND d.estado = 'EMITIDO') WHERE total_usd - pagado_usd > 0 ORDER BY vence_el, id`
   ).all<Fila>();
   return results.map((r) => {
     const vencida = !!r.vence_el && r.vence_el < hoy;
@@ -86,8 +86,9 @@ pagos.post("/", async (c) => {
   const db = c.env.DB, u = c.get("usuario"), b = await leerJson(c), hoy = fechaCaracas();
   const docId = Number(b.documento_id) || 0, metodo = texto(b.metodo, 20), moneda = texto(b.moneda, 3).toUpperCase();
   if (!METODOS[metodo] || !METODOS[metodo].includes(moneda)) return falla(c, 400, "El método de pago y la moneda no son compatibles.");
-  const D = await db.prepare(`SELECT d.id, d.tipo, d.estado, d.modo, d.total_usd, d.fecha_emision, ${PAGADO} AS pagado FROM documentos d WHERE d.id = ?`).bind(docId).first<Fila>();
+  const D = await db.prepare(`SELECT d.id, d.tipo, d.es_nota_credito, d.estado, d.modo, d.total_usd, d.fecha_emision, ${PAGADO} AS pagado FROM documentos d WHERE d.id = ?`).bind(docId).first<Fila>();
   if (!D) return falla(c, 404, "Documento no encontrado.");
+  if (D.es_nota_credito) return falla(c, 409, "No se registran cobros sobre una nota de crédito.");
   if (D.estado !== "EMITIDO") return falla(c, 409, "Solo se registran pagos en documentos emitidos y vigentes.");
   const saldoAntes = D.total_usd - D.pagado;
   if (saldoAntes <= 0) return falla(c, 409, "Este documento ya está pagado por completo.");

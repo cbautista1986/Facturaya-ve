@@ -508,6 +508,73 @@ export const MIGRACIONES: Migracion[] = [
       `CREATE TABLE integraciones (clave TEXT PRIMARY KEY, valor TEXT NOT NULL, actualizado_en TEXT NOT NULL)`,
     ],
   },
+  {
+    // Fase 8: IGTF (3%) activable/desactivable por factura y Devoluciones mediante Nota de Crédito según leyes venezolanas (SENIAT Providencia 0071).
+    id: "0011_igtf_y_notas_credito",
+    sql: [
+      `ALTER TABLE perfil_emisor ADD COLUMN igtf_activo INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE documentos ADD COLUMN aplica_igtf INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE documentos ADD COLUMN igtf_alicuota_cent INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE documentos ADD COLUMN igtf_usd INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE documentos ADD COLUMN igtf_bs INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE documentos ADD COLUMN es_nota_credito INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE documentos ADD COLUMN factura_afectada_id INTEGER REFERENCES documentos(id)`,
+      `ALTER TABLE documentos ADD COLUMN motivo_nc TEXT`,
+      `INSERT OR IGNORE INTO contadores (clave) VALUES ('NOTA_CREDITO:PRACTICA'), ('NOTA_CREDITO:REAL')`,
+      `INSERT OR IGNORE INTO parametros_fiscales (clave, vigente_desde, valor, nota) VALUES
+        ('igtf_alicuota_cent', '2000-01-01', '300', 'Alícuota de IGTF (% x 100): 3% para pagos en divisas o criptoactivos')`,
+      `DROP INDEX IF EXISTS idx_doc_numero`,
+      `CREATE UNIQUE INDEX idx_doc_numero ON documentos(tipo, es_nota_credito, modo, numero) WHERE numero IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_doc_afectada ON documentos(factura_afectada_id) WHERE factura_afectada_id IS NOT NULL`,
+      `DROP TRIGGER doc_inmutable`,
+      `CREATE TRIGGER doc_inmutable BEFORE UPDATE ON documentos
+        WHEN old.modo = 'REAL' AND old.estado <> 'BORRADOR' AND (
+          old.estado = 'ANULADO'
+          OR new.estado NOT IN ('EMITIDO', 'FACTURADO', 'ANULADO')
+          OR (old.estado = 'FACTURADO' AND new.estado <> 'FACTURADO')
+          OR new.tipo IS NOT old.tipo
+          OR new.es_nota_credito IS NOT old.es_nota_credito
+          OR new.factura_afectada_id IS NOT old.factura_afectada_id
+          OR new.motivo_nc IS NOT old.motivo_nc
+          OR new.modo IS NOT old.modo
+          OR new.numero IS NOT old.numero
+          OR new.control_interno IS NOT old.control_interno
+          OR new.presupuesto_id IS NOT old.presupuesto_id
+          OR new.cliente_id IS NOT old.cliente_id
+          OR new.cliente_rif IS NOT old.cliente_rif
+          OR new.cliente_nombre IS NOT old.cliente_nombre
+          OR new.cliente_direccion IS NOT old.cliente_direccion
+          OR new.cliente_whatsapp IS NOT old.cliente_whatsapp
+          OR new.cliente_email IS NOT old.cliente_email
+          OR new.nota IS NOT old.nota
+          OR new.fecha_emision IS NOT old.fecha_emision
+          OR new.emitido_en IS NOT old.emitido_en
+          OR new.tasa_e8 IS NOT old.tasa_e8
+          OR new.tasa_cargada_en IS NOT old.tasa_cargada_en
+          OR new.subtotal_usd IS NOT old.subtotal_usd
+          OR new.iva_usd IS NOT old.iva_usd
+          OR new.aplica_igtf IS NOT old.aplica_igtf
+          OR new.igtf_alicuota_cent IS NOT old.igtf_alicuota_cent
+          OR new.igtf_usd IS NOT old.igtf_usd
+          OR new.total_usd IS NOT old.total_usd
+          OR new.subtotal_bs IS NOT old.subtotal_bs
+          OR new.iva_bs IS NOT old.iva_bs
+          OR new.igtf_bs IS NOT old.igtf_bs
+          OR new.total_bs IS NOT old.total_bs
+          OR new.costo_total_usd IS NOT old.costo_total_usd
+          OR new.parametros_json IS NOT old.parametros_json
+          OR new.emisor_json IS NOT old.emisor_json
+          OR new.creado_en IS NOT old.creado_en
+          OR new.creado_por IS NOT old.creado_por
+          OR new.condicion IS NOT old.condicion
+          OR new.dias_credito IS NOT old.dias_credito
+          OR new.vence_el IS NOT old.vence_el
+          OR new.medio IS NOT old.medio
+          OR (new.control_fiscal IS NOT old.control_fiscal AND (old.control_fiscal IS NOT NULL OR old.medio IS NULL))
+          OR (new.fiscal_serial IS NOT old.fiscal_serial AND (old.fiscal_serial IS NOT NULL OR old.medio IS NOT 'MAQUINA_FISCAL')))
+        BEGIN SELECT RAISE(ABORT, 'Documento emitido: no se puede modificar, solo anular.'); END`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

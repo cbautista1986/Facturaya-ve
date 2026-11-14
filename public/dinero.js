@@ -45,10 +45,12 @@ export const cantidadTexto = (milli) => (milli / 1000).toString().replace(".", "
 export const tasaTexto = (e8) => (e8 / E8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "").replace(".", ",");
 
 // lineas: [{ cantidad_milli, precio_usd (centavos por unidad), alicuota_cent (% × 100), costo_usd? (centavos por unidad) }]
-// Devuelve montos por renglón, impuestos por alícuota y totales, en USD y en Bs (los de Bs son los legales).
+// Devuelve montos por renglón, impuestos por alícuota, IGTF opcional y totales, en USD y en Bs (los de Bs son los legales).
 // Con tasaE8 vacío (borrador sin tasa) los campos en Bs quedan en null.
-export function calcular(lineas, tasaE8) {
+export function calcular(lineas, tasaE8, opciones = {}) {
   const conTasa = Number.isInteger(tasaE8) && tasaE8 > 0;
+  const aplicaIgtf = !!(opciones && opciones.aplica_igtf);
+  const alicuotaIgtf = Number(opciones?.igtf_alicuota_cent ?? 300) || 300;
   const grupos = new Map();
   let costo = 0;
   const renglones = lineas.map((l) => {
@@ -69,8 +71,17 @@ export function calcular(lineas, tasaE8) {
   const suma = (k) => seguro(impuestos.reduce((s, i) => s + (i[k] ?? 0), 0));
   const subtotal_usd = suma("base_usd"), iva_usd = suma("iva_usd");
   const subtotal_bs = conTasa ? suma("base_bs") : null, iva_bs = conTasa ? suma("iva_bs") : null;
-  return { renglones, impuestos, costo_total_usd: costo, subtotal_usd, iva_usd, total_usd: seguro(subtotal_usd + iva_usd),
-    subtotal_bs, iva_bs, total_bs: conTasa ? seguro(subtotal_bs + iva_bs) : null };
+  const base_igtf_usd = seguro(subtotal_usd + iva_usd);
+  const base_igtf_bs = conTasa ? seguro(subtotal_bs + iva_bs) : null;
+  const igtf_usd = aplicaIgtf ? redondear(base_igtf_usd, alicuotaIgtf, 10000) : 0;
+  const igtf_bs = conTasa ? (aplicaIgtf ? redondear(base_igtf_bs, alicuotaIgtf, 10000) : 0) : null;
+  return {
+    renglones, impuestos, costo_total_usd: costo,
+    subtotal_usd, iva_usd, igtf_alicuota_cent: aplicaIgtf ? alicuotaIgtf : 0, igtf_usd,
+    total_usd: seguro(base_igtf_usd + igtf_usd),
+    subtotal_bs, iva_bs, igtf_bs,
+    total_bs: conTasa ? seguro(base_igtf_bs + igtf_bs) : null,
+  };
 }
 
 // Pagos: Bs (centavos) ÷ tasa del día del pago = USD (centavos); y al revés. Mitad hacia arriba, exacto.

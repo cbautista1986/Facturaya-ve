@@ -6,7 +6,7 @@ const enc = new TextEncoder();
 const aB64 = (u: Uint8Array) => btoa(String.fromCharCode(...u));
 const deB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-async function derivar(clave: string, sal: Uint8Array, iteraciones: number) {
+async function derivar(clave: string, sal: Uint8Array<ArrayBuffer>, iteraciones: number) {
   const base = await crypto.subtle.importKey("raw", enc.encode(clave), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
     { name: "PBKDF2", hash: "SHA-256", salt: sal, iterations: iteraciones }, base, 256);

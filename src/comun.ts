@@ -95,5 +95,5 @@ export const masDias = (iso: string, dias: number) => {
   return f.toISOString().slice(0, 10);
 };
 
-// Pagos vigentes de un documento "d" (y, si es una factura creada desde un presupuesto, los abonos hechos al presupuesto).
-export const PAGADO = `(SELECT COALESCE(SUM(p.monto_usd), 0) FROM pagos p WHERE p.estado = 'VIGENTE' AND (p.documento_id = d.id OR p.documento_id = d.presupuesto_id))`;
+// Pagos vigentes de un documento "d" (más abonos al presupuesto de origen y notas de crédito emitidas sobre la factura).
+export const PAGADO = `((SELECT COALESCE(SUM(p.monto_usd), 0) FROM pagos p WHERE p.estado = 'VIGENTE' AND (p.documento_id = d.id OR p.documento_id = d.presupuesto_id)) + (SELECT COALESCE(SUM(nc.total_usd), 0) FROM documentos nc WHERE nc.factura_afectada_id = d.id AND nc.es_nota_credito = 1 AND nc.estado = 'EMITIDO'))`;

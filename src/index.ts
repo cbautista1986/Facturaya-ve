@@ -22,15 +22,18 @@ const SESION_SEGUNDOS = 60 * 60 * 24 * 7;
 // Campos del negocio que el administrador puede editar (lista blanca: nada más se puede tocar)
 const OBLIGATORIOS = ["nombre_razon_social", "rif", "direccion_fiscal"];
 const OPCIONALES = ["telefono", "email", "datos_pago_movil", "datos_transferencia", "datos_zelle", "datos_binance", "datos_paypal"];
-const COLUMNAS_NEGOCIO = [...OBLIGATORIOS, ...OPCIONALES, "tasa_bcv", "tasa_bcv_fecha", "medio_facturacion", "maquina_serial", "maquina_ultimo"].join(", ");
+const COLUMNAS_NEGOCIO = [...OBLIGATORIOS, ...OPCIONALES, "tasa_bcv", "tasa_bcv_fecha", "medio_facturacion", "maquina_serial", "maquina_ultimo", "igtf_activo"].join(", ");
 
 async function abrirSesion(c: Ctx, usuarioId: number) {
   const token = tokenAleatorio();
   await c.env.DB.prepare(`INSERT INTO sesiones (token_hash, usuario_id, expira_en) VALUES (?, ?, ?)`)
     .bind(await sha256(token), usuarioId, ahora() + SESION_SEGUNDOS).run();
+  const url = new URL(c.req.url);
+  const esHttps = c.req.header("x-forwarded-proto") === "https" || url.protocol === "https:";
+  const enIframePreview = url.hostname.endsWith(".run.app");
   setCookie(c, "sid", token, {
-    httpOnly: true, sameSite: "Strict", path: "/", maxAge: SESION_SEGUNDOS,
-    secure: new URL(c.req.url).protocol === "https:",
+    httpOnly: true, sameSite: enIframePreview && esHttps ? "None" : "Lax", path: "/", maxAge: SESION_SEGUNDOS,
+    secure: enIframePreview ? esHttps : url.hostname !== "127.0.0.1" && url.hostname !== "localhost",
   });
 }
 
@@ -166,7 +169,8 @@ app.post("/api/recuperar", async (c) => {
 app.post("/api/logout", async (c) => {
   const token = getCookie(c, "sid");
   if (token) await c.env.DB.prepare(`DELETE FROM sesiones WHERE token_hash = ?`).bind(await sha256(token)).run();
-  deleteCookie(c, "sid", { path: "/" });
+  const esHttps = c.req.header("x-forwarded-proto") === "https" || new URL(c.req.url).protocol === "https:";
+  deleteCookie(c, "sid", { path: "/", sameSite: esHttps ? "None" : "Lax", secure: esHttps });
   return c.json({ ok: true });
 });
 
@@ -190,6 +194,10 @@ app.put("/api/config", async (c) => {
     const tasa = Number(String(b.tasa_bcv).replace(",", "."));
     if (!Number.isFinite(tasa) || tasa <= 0 || tasa > 1e9) return falla(c, 400, "La tasa BCV debe ser un número mayor que 0.");
     sets.push("tasa_bcv = ?", "tasa_bcv_fecha = datetime('now')"); valores.push(tasa);
+  }
+  if ("igtf_activo" in b) {
+    sets.push("igtf_activo = ?");
+    valores.push(b.igtf_activo === true || b.igtf_activo === 1 || b.igtf_activo === "1" || b.igtf_activo === "on" ? 1 : 0);
   }
   if (!sets.length) return falla(c, 400, "No hay cambios que guardar.");
 

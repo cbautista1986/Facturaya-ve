@@ -6,16 +6,16 @@ import { tasaTexto, cantidadTexto } from "./dinero.js";
 const ANCHO = 595.28, ALTO = 841.89, M = 40;
 const num = (c) => (c / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fecha = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
-export const numeroDoc = (d) => (d.numero == null ? "" : d.tipo === "PRESUPUESTO" ? `P-${String(d.numero).padStart(6, "0")}` : String(d.numero).padStart(8, "0"));
+export const numeroDoc = (d) => (d.numero == null ? "" : d.tipo === "PRESUPUESTO" ? `P-${String(d.numero).padStart(6, "0")}` : d.es_nota_credito ? `NC-${String(d.numero).padStart(8, "0")}` : String(d.numero).padStart(8, "0"));
 const bonito = (t) => { const d = String(t ?? "").replace(/\D/g, ""); return /^584\d{9}$/.test(d) ? `+58 ${d.slice(2, 5)} ${d.slice(5, 8)} ${d.slice(8)}` : String(t ?? ""); };
 const masDias = (iso, dias) => { const f = new Date(`${iso}T12:00:00Z`); f.setUTCDate(f.getUTCDate() + dias); return f.toISOString().slice(0, 10); };
 
 export function nombreArchivo(d) {
-  const base = d.tipo === "PRESUPUESTO" ? "Presupuesto" : "Factura";
+  const base = d.tipo === "PRESUPUESTO" ? "Presupuesto" : d.es_nota_credito ? "Nota-de-Credito" : "Factura";
   return `${d.modo === "PRACTICA" ? "PRACTICA-" : ""}${base}-${numeroDoc(d)}.pdf`;
 }
 
-export async function construirPdf(L, { doc: D, lineas, impuestos }) {
+export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA }) {
   if (!D.emisor_json || D.numero == null) throw new Error("Solo se puede crear el PDF de un documento emitido.");
   const { PDFDocument, StandardFonts, rgb, degrees } = L;
   const pdf = await PDFDocument.create();
@@ -23,12 +23,11 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
   const permitido = new Set(f.getCharacterSet());
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
   const emisor = JSON.parse(D.emisor_json), reglas = JSON.parse(D.parametros_json || "{}");
-  const esFactura = D.tipo === "FACTURA", maquina = esFactura && D.medio === "MAQUINA_FISCAL", sinControl = esFactura && !D.control_fiscal && !maquina;
-  // Con máquina fiscal la factura legal es la que imprime la máquina: este PDF es un comprobante interno, NO una factura fiscal
-  const titulo = maquina ? "COMPROBANTE INTERNO" : esFactura ? (D.control_fiscal ? "FACTURA" : reglas.titulo_sin_control || "FACTURA") : "PRESUPUESTO";
+  const esFactura = D.tipo === "FACTURA", esNc = !!D.es_nota_credito, maquina = esFactura && D.medio === "MAQUINA_FISCAL", sinControl = esFactura && !D.control_fiscal && !maquina;
+  // Con máquina fiscal la factura/NC legal es la que imprime la máquina: este PDF es un comprobante interno
+  const titulo = maquina ? (esNc ? "COMPROBANTE INTERNO (NC)" : "COMPROBANTE INTERNO") : esNc ? "NOTA DE CRÉDITO" : esFactura ? (D.control_fiscal ? "FACTURA" : reglas.titulo_sin_control || "FACTURA") : "PRESUPUESTO";
 
   const paginas = []; let pag, y;
-  // marcas de agua en diagonal, centradas en la hoja (se miden con la fuente para que nunca se corten)
   const diagonal = (p, txt, size, grados, color, opacity, dy = 0) => {
     const w = fb.widthOfTextAtSize(txt, size), a = (grados * Math.PI) / 180, h = size * 0.7;
     p.drawText(txt, { x: ANCHO / 2 - (w / 2) * Math.cos(a) + (h / 2) * Math.sin(a), y: ALTO / 2 - dy - (w / 2) * Math.sin(a) - (h / 2) * Math.cos(a),
@@ -39,7 +38,6 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
     if (D.estado === "ANULADO") diagonal(p, "ANULADA", 100, 35, [0.85, 0.15, 0.15], 0.22, -40);
   };
   const nueva = () => { pag = pdf.addPage([ANCHO, ALTO]); paginas.push(pag); marcas(pag); y = M; };
-  // T: escribe una línea; "top" es la distancia desde el borde superior de la hoja; der=true alinea a la derecha de x
   const T = (t, x, top, { s = 10, b = false, c = [0.12, 0.12, 0.12], der = false, p = pag } = {}) => {
     const txt = limpio(t), fuente = b ? fb : f, w = fuente.widthOfTextAtSize(txt, s);
     p.drawText(txt, { x: der ? x - w : x, y: ALTO - top - s, size: s, font: fuente, color: rgb(...c) });
@@ -65,26 +63,35 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
   const contacto = [emisor.telefono, emisor.email].filter(Boolean).join("  ·  ");
   if (contacto) { T(contacto, M, ey, { s: 9 }); ey += 12; }
   let dy = y; const R = ANCHO - M;
-  T(titulo, R, dy, { s: titulo.length > 12 ? 17 : 22, b: true, der: true }); dy += 28;
+  T(titulo, R, dy, { s: titulo.length > 14 ? 15 : 22, b: true, der: true }); dy += 26;
   T(`N.º: ${numeroDoc(D)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
   if (esFactura) { T(`Control interno: ${String(D.control_interno).padStart(8, "0")}`, R, dy, { s: 9, der: true }); dy += 13;
-    T(maquina ? `Factura fiscal N.º: ${D.control_fiscal || "pendiente de registrar"}` : `N.º de control fiscal: ${D.control_fiscal || "No asignado"}`, R, dy, { s: 9, der: true }); dy += 13;
+    T(maquina ? `${esNc ? "Nota de crédito fiscal N.º" : "Factura fiscal N.º"}: ${D.control_fiscal || "pendiente de registrar"}` : `N.º de control fiscal: ${D.control_fiscal || "No asignado"}`, R, dy, { s: 9, der: true }); dy += 13;
     if (D.fiscal_serial) { T(`Serial de la máquina fiscal: ${D.fiscal_serial}`, R, dy, { s: 9, der: true }); dy += 13; } }
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
   y = Math.max(ey, dy) + 8;
 
-  if (sinControl) { // aviso visible: el documento todavía no tiene N.º de control fiscal
+  if (sinControl) {
     const ls = envolver(reglas.leyenda_sin_control || "DOCUMENTO SIN NÚMERO DE CONTROL FISCAL", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
     caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
   }
-  if (maquina && !D.control_fiscal) { // con el número fiscal ya registrado, el aviso rojo se retira: el título y la referencia fiscal bastan
+  if (maquina && !D.control_fiscal) {
     const ls = envolver("Pendiente: falta registrar el número fiscal que imprimió la máquina fiscal. Mientras tanto este es un comprobante interno.", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
     caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
   }
   if (D.estado === "ANULADO") {
     const ls = envolver(`DOCUMENTO ANULADO el ${fecha(D.anulado_en)}. Motivo: ${D.motivo_anulacion || ""}`, ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
     caja(y, h, [0.98, 0.9, 0.9], [0.85, 0.15, 0.15]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.7, 0.1, 0.1] })); y += h + 10;
+  }
+  if (esNc) {
+    const numAf = FA?.numero ?? reglas.factura_afectada_numero, fecAf = FA?.fecha_emision ?? reglas.factura_afectada_fecha, ctlAf = FA?.control_fiscal || FA?.control_interno || reglas.factura_afectada_control;
+    const refTxt = `FACTURA AFECTADA (SENIAT Providencia SNAT/2011/0071): Factura N.º ${String(numAf ?? "").padStart(8, "0")}  ·  Fecha: ${fecha(fecAf)}${ctlAf ? `  ·  Control: ${String(ctlAf).padStart(8, "0")}` : ""}`;
+    const motTxt = `Motivo de la devolución / ajuste: ${D.motivo_nc || D.nota || ""}`;
+    const ls = [...envolver(refTxt, ANCHO - 2 * M - 16, 9, true), ...envolver(motTxt, ANCHO - 2 * M - 16, 9)], h = ls.length * 12 + 10;
+    caja(y, h, [0.94, 0.96, 1], [0.16, 0.34, 0.66]);
+    ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: i === 0, c: [0.1, 0.25, 0.55] }));
+    y += h + 10;
   }
 
   // ---- cliente
@@ -122,6 +129,11 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
     if (i.alicuota_cent === 0) filas.push(["Monto exento", i.base_usd, i.base_bs]);
     else { filas.push([`Base imponible ${i.alicuota_cent / 100}%`, i.base_usd, i.base_bs]); filas.push([`IVA ${i.alicuota_cent / 100}%`, i.iva_usd, i.iva_bs]); }
   }
+  if (D.aplica_igtf && D.igtf_usd > 0) {
+    const alicIgtf = (D.igtf_alicuota_cent || 300) / 100;
+    filas.push(["Subtotal + IVA", (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0), (D.subtotal_bs ?? 0) + (D.iva_bs ?? 0)]);
+    filas.push([`IGTF (${alicIgtf}%)`, D.igtf_usd, D.igtf_bs ?? 0]);
+  }
   const notaLineas = D.nota ? envolver(`Nota: ${D.nota}`, ANCHO - 2 * M, 9) : [];
   const cambio = envolver(reglas.leyenda_cambio || "", ANCHO - 2 * M, 8);
   const necesario = 30 + filas.length * 14 + 30 + 14 + cambio.length * 11 + notaLineas.length * 12 + 20;
@@ -130,7 +142,7 @@ export async function construirPdf(L, { doc: D, lineas, impuestos }) {
   T("USD", col.usd, y, { s: 8, c: [0.45, 0.45, 0.45], der: true }); T("Bs.", col.bs, y, { s: 8, c: [0.45, 0.45, 0.45], der: true }); y += 13;
   for (const [t, u, b] of filas) { T(t, col.pu - 60, y, { s: 9.5 }); T(num(u), col.usd, y, { s: 9.5, der: true }); T(num(b), col.bs, y, { s: 9.5, der: true }); y += 14; }
   pag.drawLine({ start: { x: col.pu - 60, y: ALTO - y + 2 }, end: { x: R, y: ALTO - y + 2 }, thickness: 0.8, color: rgb(0.2, 0.2, 0.2) }); y += 4;
-  T("TOTAL", col.pu - 60, y, { s: 12, b: true }); T(num(D.total_usd), col.usd, y, { s: 12, b: true, der: true }); T(num(D.total_bs), col.bs, y, { s: 12, b: true, der: true }); y += 26;
+  T(D.aplica_igtf && D.igtf_usd > 0 ? "TOTAL + IGTF" : "TOTAL", col.pu - 60, y, { s: 12, b: true }); T(num(D.total_usd), col.usd, y, { s: 12, b: true, der: true }); T(num(D.total_bs), col.bs, y, { s: 12, b: true, der: true }); y += 26;
 
   T(`Tasa de cambio BCV: Bs. ${tasaTexto(D.tasa_e8)} por USD`, M, y, { s: 9, b: true }); y += 14;
   cambio.forEach((l) => { T(l, M, y, { s: 8, c: [0.4, 0.4, 0.4] }); y += 11; });

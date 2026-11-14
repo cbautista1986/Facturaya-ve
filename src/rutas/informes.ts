@@ -1,6 +1,5 @@
-// Módulo INFORMES (Fase 6): libros de ventas y compras, resumen mensual de IVA, ganancias, por cobrar, inventario valorizado: /api/informes
-// SOLO LECTURA: ningún informe escribe en la base. Todo sale de los mismos datos que ya guardan los demás módulos
-// (el saldo y las existencias se calculan, no se guardan). Solo se incluyen documentos del modo actual (práctica o real).
+// Módulo INFORMES (Fase 6 + IGTF y Notas de Crédito): libros de ventas y compras, resumen mensual de IVA, ganancias, por cobrar, inventario valorizado: /api/informes
+// SOLO LECTURA: ningún informe escribe en la base. Todo sale de los mismos datos que ya guardan los demás módulos.
 import { Hono } from "hono";
 import { redondear } from "../../public/dinero.js";
 import { PAGADO, falla, fechaCaracas, modoActual, requiereSesion, type Ctx, type Env } from "../comun";
@@ -11,7 +10,6 @@ type Fila = Record<string, any>;
 const FECHA = /^\d{4}-\d{2}-\d{2}$/;
 const fechaValida = (f: string) => FECHA.test(f) && new Date(`${f}T12:00:00Z`).toISOString().slice(0, 10) === f;
 
-// Rango ?desde=AAAA-MM-DD&hasta=AAAA-MM-DD (por defecto: del 1.º del mes en curso a hoy, hora de Caracas)
 function rango(c: Ctx): { desde: string; hasta: string } | string {
   const hoy = fechaCaracas();
   const desde = c.req.query("desde") ?? `${hoy.slice(0, 8)}01`, hasta = c.req.query("hasta") ?? hoy;
@@ -22,13 +20,16 @@ function rango(c: Ctx): { desde: string; hasta: string } | string {
 }
 const suma = (xs: Fila[], k: string) => xs.reduce((s, x) => s + (x[k] ?? 0), 0);
 
-// ---------------------------------------------------------------- libro de ventas (facturas, montos legales en Bs)
+// ---------------------------------------------------------------- libro de ventas (facturas y notas de crédito, montos legales en Bs)
 informes.get("/ventas", async (c) => {
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
   const [docs, imp] = await Promise.all([
-    db.prepare(`SELECT id, numero, control_interno, control_fiscal, fiscal_serial, medio, fecha_emision, cliente_rif, cliente_nombre, estado, tasa_e8, total_usd, total_bs
-        FROM documentos WHERE tipo = 'FACTURA' AND modo = ? AND estado IN ('EMITIDO', 'ANULADO') AND fecha_emision BETWEEN ? AND ? ORDER BY numero, id`)
+    db.prepare(`SELECT d.id, d.es_nota_credito, d.factura_afectada_id,
+          (SELECT fa.numero FROM documentos fa WHERE fa.id = d.factura_afectada_id) AS factura_afectada_numero,
+          d.numero, d.control_interno, d.control_fiscal, d.fiscal_serial, d.medio, d.fecha_emision,
+          d.cliente_rif, d.cliente_nombre, d.estado, d.tasa_e8, d.aplica_igtf, d.igtf_usd, d.igtf_bs, d.total_usd, d.total_bs
+        FROM documentos d WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO') AND d.fecha_emision BETWEEN ? AND ? ORDER BY d.fecha_emision, d.id`)
       .bind(modo, r.desde, r.hasta).all<Fila>(),
     db.prepare(`SELECT i.documento_id, i.alicuota_cent, i.base_bs, i.iva_bs FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
         WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO') AND d.fecha_emision BETWEEN ? AND ?`)
@@ -36,21 +37,40 @@ informes.get("/ventas", async (c) => {
   ]);
   const porDoc = new Map<number, Fila[]>();
   for (const i of imp.results) porDoc.set(i.documento_id, [...(porDoc.get(i.documento_id) ?? []), i]);
-  const filas: Fila[] = docs.results.map((d) => ({ ...d, impuestos: (porDoc.get(d.id) ?? []).map((i) => ({ alicuota_cent: i.alicuota_cent, base_bs: i.base_bs, iva_bs: i.iva_bs })) }));
-  // Totales: las anuladas se listan (para que la numeración no tenga saltos) pero NO suman.
+  const filas: Fila[] = docs.results.map((d) => {
+    const signo = d.es_nota_credito ? -1 : 1;
+    return {
+      ...d,
+      igtf_bs: (d.igtf_bs ?? 0) * signo,
+      igtf_usd: (d.igtf_usd ?? 0) * signo,
+      total_bs: (d.total_bs ?? 0) * signo,
+      total_usd: (d.total_usd ?? 0) * signo,
+      impuestos: (porDoc.get(d.id) ?? []).map((i) => ({
+        alicuota_cent: i.alicuota_cent,
+        base_bs: i.base_bs * signo,
+        iva_bs: i.iva_bs * signo,
+      })),
+    };
+  });
+  // Totales: las anuladas se listan (para que la numeración no tenga saltos) pero NO suman; las Notas de Crédito vigentes restan.
   const vigentes = filas.filter((f) => f.estado === "EMITIDO"), porAlicuota = new Map<number, { base_bs: number; iva_bs: number }>();
   for (const f of vigentes) for (const i of f.impuestos) {
     const t = porAlicuota.get(i.alicuota_cent) ?? { base_bs: 0, iva_bs: 0 };
     porAlicuota.set(i.alicuota_cent, { base_bs: t.base_bs + i.base_bs, iva_bs: t.iva_bs + i.iva_bs });
   }
   const alicuotas = [...porAlicuota].sort((a, b) => a[0] - b[0]).map(([alicuota_cent, t]) => ({ alicuota_cent, ...t }));
-  return c.json({ ok: true, modo, desde: r.desde, hasta: r.hasta, filas, alicuotas, n_vigentes: vigentes.length, n_anuladas: filas.length - vigentes.length,
-    n_sin_fiscal: vigentes.filter((f) => f.medio && !f.control_fiscal).length, // emitidas con un medio definido y sin número fiscal registrado todavía
-    total_bs: suma(vigentes, "total_bs"), total_usd: suma(vigentes, "total_usd") });
+  return c.json({
+    ok: true, modo, desde: r.desde, hasta: r.hasta, filas, alicuotas,
+    n_vigentes: vigentes.filter((f) => !f.es_nota_credito).length,
+    n_notas_credito: vigentes.filter((f) => f.es_nota_credito).length,
+    n_anuladas: filas.length - vigentes.length,
+    n_sin_fiscal: vigentes.filter((f) => f.medio && !f.control_fiscal).length,
+    igtf_bs: suma(vigentes, "igtf_bs"), igtf_usd: suma(vigentes, "igtf_usd"),
+    total_bs: suma(vigentes, "total_bs"), total_usd: suma(vigentes, "total_usd"),
+  });
 });
 
-// ---------------------------------------------------------------- libro de compras (Bs con la tasa de la fecha de la factura; USD como referencia)
-// Las compras registradas antes de que se guardara la tasa (tasa_e8 vacía) salen sin montos en Bs: no se les inventa una tasa.
+// ---------------------------------------------------------------- libro de compras
 informes.get("/compras", async (c) => {
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
@@ -75,14 +95,16 @@ informes.get("/compras", async (c) => {
     subtotal_usd: suma(vigentes, "subtotal_usd"), iva_usd: suma(vigentes, "iva_usd"), total_usd: suma(vigentes, "total_usd") });
 });
 
-// ---------------------------------------------------------------- resumen mensual de IVA: débito fiscal (ventas) - crédito fiscal (compras), en Bs
-// Es una GUÍA para el contador, no la declaración: no incluye retenciones, excedentes de meses anteriores ni notas de crédito o débito.
+// ---------------------------------------------------------------- resumen mensual de IVA: débito fiscal (ventas netas de NC) - crédito fiscal (compras), en Bs
 informes.get("/resumen-iva", async (c) => {
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
+  const signo = `(CASE WHEN d.es_nota_credito = 1 THEN -1 ELSE 1 END)`;
   const [ventas, compras, sinTasa] = await Promise.all([
-    db.prepare(`SELECT substr(d.fecha_emision, 1, 7) AS mes, SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs ELSE 0 END) AS gravadas_bs,
-        SUM(CASE WHEN i.alicuota_cent = 0 THEN i.base_bs ELSE 0 END) AS exentas_bs, SUM(i.iva_bs) AS iva_bs
+    db.prepare(`SELECT substr(d.fecha_emision, 1, 7) AS mes,
+        SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs * ${signo} ELSE 0 END) AS gravadas_bs,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN i.base_bs * ${signo} ELSE 0 END) AS exentas_bs,
+        SUM(i.iva_bs * ${signo}) AS iva_bs
         FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
         WHERE d.tipo = 'FACTURA' AND d.estado = 'EMITIDO' AND d.modo = ? AND d.fecha_emision BETWEEN ? AND ? GROUP BY mes`).bind(modo, r.desde, r.hasta).all<Fila>(),
     db.prepare(`SELECT substr(c.fecha, 1, 7) AS mes, SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs ELSE 0 END) AS gravadas_bs,
@@ -104,20 +126,21 @@ informes.get("/resumen-iva", async (c) => {
     compras_gravadas_bs: t("compras_gravadas_bs"), compras_exentas_bs: t("compras_exentas_bs"), credito_bs: t("credito_bs"), diferencia_bs: t("diferencia_bs"), compras_sin_tasa: t("compras_sin_tasa") } });
 });
 
-// ---------------------------------------------------------------- ganancias (privadas: solo para el dueño)
-// Misma fórmula que Inicio (documentos/resumen): ganancia = monto del renglón - costo (el costo es opcional).
-const COSTO = `((r.cantidad_milli * COALESCE(r.costo_usd, 0) + 500) / 1000)`;
+// ---------------------------------------------------------------- ganancias (privadas: solo para el dueño; netas de notas de crédito)
+const SIGNO = `(CASE WHEN d.es_nota_credito = 1 THEN -1 ELSE 1 END)`;
+const COSTO = `(((r.cantidad_milli * COALESCE(r.costo_usd, 0) + 500) / 1000) * ${SIGNO})`;
+const INGRESO = `(r.monto_usd * ${SIGNO})`;
 informes.get("/ganancias", async (c) => {
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
   const base = `FROM documento_renglones r JOIN documentos d ON d.id = r.documento_id
     WHERE d.tipo = 'FACTURA' AND d.estado = 'EMITIDO' AND d.modo = ? AND d.fecha_emision BETWEEN ? AND ?`;
   const [tipos, items, clientes] = await Promise.all([
-    db.prepare(`SELECT r.tipo, SUM(r.monto_usd) AS ingresos, SUM(${COSTO}) AS costos ${base} GROUP BY r.tipo`).bind(modo, r.desde, r.hasta).all<Fila>(),
-    db.prepare(`SELECT r.tipo, MIN(r.descripcion) AS nombre, SUM(r.cantidad_milli) AS cantidad_milli, SUM(r.monto_usd) AS ingresos, SUM(${COSTO}) AS costos ${base}
-        GROUP BY r.tipo, COALESCE(CAST(r.catalogo_id AS TEXT), r.descripcion) ORDER BY SUM(r.monto_usd) - SUM(${COSTO}) DESC LIMIT 100`).bind(modo, r.desde, r.hasta).all<Fila>(),
-    db.prepare(`SELECT COALESCE(d.cliente_rif, '') AS rif, MIN(d.cliente_nombre) AS nombre, SUM(r.monto_usd) AS ingresos, SUM(${COSTO}) AS costos ${base}
-        GROUP BY COALESCE(d.cliente_rif, '') ORDER BY SUM(r.monto_usd) - SUM(${COSTO}) DESC LIMIT 100`).bind(modo, r.desde, r.hasta).all<Fila>(),
+    db.prepare(`SELECT r.tipo, SUM(${INGRESO}) AS ingresos, SUM(${COSTO}) AS costos ${base} GROUP BY r.tipo`).bind(modo, r.desde, r.hasta).all<Fila>(),
+    db.prepare(`SELECT r.tipo, MIN(r.descripcion) AS nombre, SUM(r.cantidad_milli * ${SIGNO}) AS cantidad_milli, SUM(${INGRESO}) AS ingresos, SUM(${COSTO}) AS costos ${base}
+        GROUP BY r.tipo, COALESCE(CAST(r.catalogo_id AS TEXT), r.descripcion) ORDER BY SUM(${INGRESO}) - SUM(${COSTO}) DESC LIMIT 100`).bind(modo, r.desde, r.hasta).all<Fila>(),
+    db.prepare(`SELECT COALESCE(d.cliente_rif, '') AS rif, MIN(d.cliente_nombre) AS nombre, SUM(${INGRESO}) AS ingresos, SUM(${COSTO}) AS costos ${base}
+        GROUP BY COALESCE(d.cliente_rif, '') ORDER BY SUM(${INGRESO}) - SUM(${COSTO}) DESC LIMIT 100`).bind(modo, r.desde, r.hasta).all<Fila>(),
   ]);
   const con = (f: Fila): Fila => ({ ...f, ganancia: f.ingresos - f.costos });
   const t = (x: string) => con(tipos.results.find((f) => f.tipo === x) ?? { tipo: x, ingresos: 0, costos: 0 });
@@ -134,7 +157,7 @@ informes.get("/por-cobrar", async (c) => {
   const modo = await modoActual(c.env.DB), hoy = fechaCaracas();
   const { results } = await c.env.DB.prepare(
     `SELECT * FROM (SELECT d.id, d.numero, d.cliente_rif, d.cliente_nombre, d.fecha_emision, d.vence_el, d.condicion, d.total_usd, ${PAGADO} AS pagado_usd
-       FROM documentos d WHERE d.tipo = 'FACTURA' AND d.estado = 'EMITIDO' AND d.modo = ?) WHERE total_usd - pagado_usd > 0 ORDER BY cliente_nombre COLLATE NOCASE, fecha_emision, id`
+       FROM documentos d WHERE d.tipo = 'FACTURA' AND d.es_nota_credito = 0 AND d.estado = 'EMITIDO' AND d.modo = ?) WHERE total_usd - pagado_usd > 0 ORDER BY cliente_nombre COLLATE NOCASE, fecha_emision, id`
   ).bind(modo).all<Fila>();
   const vacios = () => Object.fromEntries(TRAMOS.map(([k]) => [k, 0])) as Record<string, number>;
   const clientes = new Map<string, Fila>(), tramos = vacios();

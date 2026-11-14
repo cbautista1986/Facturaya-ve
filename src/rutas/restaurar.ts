@@ -228,7 +228,7 @@ restaurar.post("/cancelar", async (c) => {
     db.prepare(`DELETE FROM pagos WHERE modo = 'PRACTICA'`), db.prepare(`DELETE FROM movimientos_stock WHERE modo = 'PRACTICA'`),
     db.prepare(`DELETE FROM compra_impuestos`), db.prepare(`DELETE FROM compras WHERE modo = 'PRACTICA'`),
     db.prepare(`DELETE FROM documento_impuestos`), db.prepare(`DELETE FROM documento_renglones`),
-    db.prepare(`UPDATE documentos SET presupuesto_id = NULL WHERE modo = 'PRACTICA'`), db.prepare(`DELETE FROM documentos WHERE modo = 'PRACTICA'`),
+    db.prepare(`UPDATE documentos SET presupuesto_id = NULL, factura_afectada_id = NULL WHERE modo = 'PRACTICA'`), db.prepare(`DELETE FROM documentos WHERE modo = 'PRACTICA'`),
     db.prepare(`DELETE FROM catalogo`), db.prepare(`DELETE FROM proveedores`), db.prepare(`DELETE FROM clientes`),
     db.prepare(`DELETE FROM auditoria WHERE id > ?`).bind(previo.auditoria_max),
     db.prepare(`UPDATE perfil_emisor SET ${cols.map((k) => `${k} = ?`).join(", ")} WHERE id = 1`).bind(...cols.map((k) => p[k])),

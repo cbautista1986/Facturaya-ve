@@ -4,16 +4,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --local --ip 127.0.0.1 --port 8787 --show-interactive-dev-session=false",
-    "deploy": "wrangler deploy",
+    "dev": "tsx watch server.ts",
+    "build": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "start": "node server.ts",
     "tipos": "tsc --noEmit"
   },
   "dependencies": {
-    "hono": "^4.13.13"
+    "@hono/node-server": "^2.1.8",
+    "@types/node": "^26.6.6",
+    "hono": "^4.13.13",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261016.1",
-    "typescript": "^7.0.2",
-    "wrangler": "^4.151.1"
+    "typescript": "^7.0.2"
   }
 }

@@ -11,7 +11,7 @@ import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 
 const NEGOCIO = [
-  ["nombre_razon_social", "🏷️ Nombre o razón social"], ["rif", "🪪 RIF o cédula"], ["direccion_fiscal", "📍 Dirección fiscal"],
+  ["nombre_razon_social", "🏷️ Nombre o razón social"], ["rif", "🪪 RIF fiscal (ej: V-18529773-6 o J-12345678-9)"], ["direccion_fiscal", "📍 Dirección fiscal"],
   ["telefono", "📞 Teléfono"], ["email", "✉️ Correo del negocio"],
 ];
 let estado = {};
@@ -21,14 +21,15 @@ const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta"><span cl
   <p class="suave">Pulsa cualquiera de estos botones para descargar el archivo con su <b>nombre y terminación exactos</b> listo para subir a GitHub:</p>
   <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip</button>
   <div class="dos-botones">
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="package.json">⬇️ package.json</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="tsconfig.json">⬇️ tsconfig.json</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="_headers">⬇️ _headers</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="pdf.js">⬇️ public/pdf.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="factura.js">⬇️ public/factura.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="dinero.js">⬇️ public/dinero.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
   </div>
   <div class="dos-botones">
-    <button type="button" class="boton chico" data-copy-cf="package.json">📋 Copiar package.json</button>
-    <button type="button" class="boton chico" data-copy-cf="tsconfig.json">📋 Copiar tsconfig.json</button>
-    <button type="button" class="boton chico" data-copy-cf="_headers">📋 Copiar _headers</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="index.ts">⬇️ src/index.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="documentos.ts">⬇️ src/rutas/documentos.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="pagos.ts">⬇️ src/rutas/pagos.ts</button>
   </div></section>` : "";
 
 document.addEventListener("click", async (e) => {
@@ -75,7 +76,7 @@ function vistaInstalar() {
     <p class="suave">Crea tu cuenta de administrador. Esta pantalla se bloquea después.</p>
     <form id="f">
       ${campo("nombre", "👤 Nombre de tu negocio o personal", "", "text", 'required autocomplete="organization"')}
-      ${campo("rif", "🪪 RIF o cédula", "", "text", 'required placeholder="J-12345678-9"')}
+      ${campo("rif", "🪪 RIF fiscal (ej: V-18529773-6 o J-12345678-9)", "", "text", 'required placeholder="V-18529773-6 o J-12345678-9"')}
       ${campo("direccion", "📍 Dirección fiscal", "", "text", 'required autocomplete="street-address"')}
       ${campo("telefono", "📞 Teléfono", "", "tel", 'autocomplete="tel"')}
       ${campo("email", "✉️ Tu correo (será tu usuario)", "", "email", 'required autocomplete="username"')}

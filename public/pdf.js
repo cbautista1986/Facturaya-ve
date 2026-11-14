@@ -1,7 +1,7 @@
 // PDF de presupuestos y facturas. Se genera en el navegador con pdf-lib (incluida en /vendor, sin internet).
 // construirPdf(PDFLib, { doc, lineas, impuestos }) -> Uint8Array. Los datos son los que devuelve GET /api/documentos/:id.
 // Solo depende de dinero.js, para poder probarlo fuera del navegador.
-import { tasaTexto, cantidadTexto } from "./dinero.js";
+import { tasaTexto, cantidadTexto, aRifSeniat } from "./dinero.js";
 
 const ANCHO = 595.28, ALTO = 841.89, M = 40;
 const num = (c) => (c / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -15,17 +15,23 @@ export function nombreArchivo(d) {
   return `${d.modo === "PRACTICA" ? "PRACTICA-" : ""}${base}-${numeroDoc(d)}.pdf`;
 }
 
-export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA }) {
+export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA, negocio }) {
   if (!D.emisor_json || D.numero == null) throw new Error("Solo se puede crear el PDF de un documento emitido.");
   const { PDFDocument, StandardFonts, rgb, degrees } = L;
   const pdf = await PDFDocument.create();
   const f = await pdf.embedFont(StandardFonts.Helvetica), fb = await pdf.embedFont(StandardFonts.HelveticaBold);
   const permitido = new Set(f.getCharacterSet());
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
-  const emisor = JSON.parse(D.emisor_json), reglas = JSON.parse(D.parametros_json || "{}");
+  const emisorGuardado = JSON.parse(D.emisor_json), reglas = JSON.parse(D.parametros_json || "{}");
+  const emisor = {
+    nombre_razon_social: negocio?.nombre_razon_social || emisorGuardado.nombre_razon_social,
+    rif: aRifSeniat(negocio?.rif || emisorGuardado.rif),
+    direccion_fiscal: negocio?.direccion_fiscal || emisorGuardado.direccion_fiscal,
+    telefono: negocio?.telefono ?? emisorGuardado.telefono,
+    email: negocio?.email ?? emisorGuardado.email,
+  };
   const esFactura = D.tipo === "FACTURA", esNc = !!D.es_nota_credito, maquina = esFactura && D.medio === "MAQUINA_FISCAL", sinControl = esFactura && !D.control_fiscal && !maquina;
-  // Con máquina fiscal la factura/NC legal es la que imprime la máquina: este PDF es un comprobante interno
-  const titulo = maquina ? (esNc ? "COMPROBANTE INTERNO (NC)" : "COMPROBANTE INTERNO") : esNc ? "NOTA DE CRÉDITO" : esFactura ? (D.control_fiscal ? "FACTURA" : reglas.titulo_sin_control || "FACTURA") : "PRESUPUESTO";
+  const titulo = esNc ? "NOTA DE CRÉDITO" : esFactura ? (D.control_fiscal ? "FACTURA" : reglas.titulo_sin_control || "FACTURA") : "PRESUPUESTO";
 
   const paginas = []; let pag, y;
   const diagonal = (p, txt, size, grados, color, opacity, dy = 0) => {
@@ -65,9 +71,16 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   let dy = y; const R = ANCHO - M;
   T(titulo, R, dy, { s: titulo.length > 14 ? 15 : 22, b: true, der: true }); dy += 26;
   T(`N.º: ${numeroDoc(D)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
-  if (esFactura) { T(`Control interno: ${String(D.control_interno).padStart(8, "0")}`, R, dy, { s: 9, der: true }); dy += 13;
-    T(maquina ? `${esNc ? "Nota de crédito fiscal N.º" : "Factura fiscal N.º"}: ${D.control_fiscal || "pendiente de registrar"}` : `N.º de control fiscal: ${D.control_fiscal || "No asignado"}`, R, dy, { s: 9, der: true }); dy += 13;
-    if (D.fiscal_serial) { T(`Serial de la máquina fiscal: ${D.fiscal_serial}`, R, dy, { s: 9, der: true }); dy += 13; } }
+  if (esFactura) {
+    const nroControl = `00-${String(D.control_interno).padStart(8, "0")}`;
+    if (maquina) {
+      T(`N.º de Control: ${nroControl}`, R, dy, { s: 9, der: true }); dy += 13;
+      T(`${esNc ? "Nota de crédito fiscal N.º" : "Factura fiscal N.º"}: ${D.control_fiscal || "Pendiente de registrar"}`, R, dy, { s: 9, der: true }); dy += 13;
+      if (D.fiscal_serial) { T(`Serial de la máquina fiscal: ${D.fiscal_serial}`, R, dy, { s: 9, der: true }); dy += 13; }
+    } else {
+      T(`N.º de Control: ${D.control_fiscal || nroControl}`, R, dy, { s: 9, der: true }); dy += 13;
+    }
+  }
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
   y = Math.max(ey, dy) + 8;
@@ -192,7 +205,7 @@ export async function construirRecibo(L, { pago: P, documento: D }) {
 
   let y = M, ey = y;
   T(emisor.nombre_razon_social, M, ey, { s: 14, b: true }); ey += 19;
-  T(`RIF: ${emisor.rif}`, M, ey); ey += 14;
+  T(`RIF: ${aRifSeniat(emisor.rif)}`, M, ey); ey += 14;
   for (const l of envolver(emisor.direccion_fiscal, 280, 9)) { T(l, M, ey, { s: 9 }); ey += 12; }
   const contacto = [emisor.telefono, emisor.email].filter(Boolean).join("  ·  ");
   if (contacto) { T(contacto, M, ey, { s: 9 }); ey += 12; }

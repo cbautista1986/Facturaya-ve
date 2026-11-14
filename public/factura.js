@@ -309,7 +309,7 @@ async function ver(estado, id) {
   const maquina = D.tipo === "FACTURA" && emitido && D.medio === "MAQUINA_FISCAL";
   const sinControl = D.tipo === "FACTURA" && emitido && !D.control_fiscal && !maquina;
   const nom = nombreDe(D);
-  const titulo = maquina ? (esNc ? "COMPROBANTE INTERNO (NC)" : "COMPROBANTE INTERNO") : esNc ? "NOTA DE CRÉDITO" : D.tipo === "FACTURA" && emitido && !D.control_fiscal ? (reglas.titulo_sin_control || "Factura") : nom;
+  const titulo = esNc ? "Nota de crédito" : D.tipo === "FACTURA" && emitido && !D.control_fiscal && !maquina ? (reglas.titulo_sin_control || "Factura") : nom;
   const pideFiscal = D.tipo === "FACTURA" && D.estado === "EMITIDO" && !!D.medio && !D.control_fiscal;
   const tieneDisponibleDevolver = D.tipo === "FACTURA" && !esNc && D.estado === "EMITIDO" && lineas.some((l) => l.cantidad_milli - (l.devuelto_milli ?? 0) > 0);
 
@@ -340,7 +340,7 @@ async function ver(estado, id) {
       <h1>${esc(titulo)} ${emitido ? esc(numeroDoc(D)) : "(borrador)"}</h1><span class="insignia ${estColor}">${estTxt}</span></header>
     ${D.modo === "PRACTICA" ? bannerPractica({ modo: "PRACTICA" }) : ""}
     ${D.estado === "ANULADO" ? `<section class="aviso-anulado">⛔ ANULADO el ${fechaDoc(D.anulado_en)} · Motivo: ${esc(D.motivo_anulacion)}</section>` : ""}
-    ${maquina && !D.control_fiscal ? `<section class="aviso-control">🖨️ Falta registrar el número fiscal que imprimió tu máquina fiscal. Mientras tanto este es un comprobante interno.</section>` : ""}
+    ${maquina && !D.control_fiscal ? `<section class="aviso-control">🖨️ Falta registrar el número fiscal que imprimió tu máquina fiscal.</section>` : ""}
     ${sinControl ? `<section class="aviso-control">⚠️ ${esc(reglas.leyenda_sin_control || "Documento sin N.º de control fiscal")}</section>` : ""}
     ${esNc ? `<section class="tarjeta"><span class="etiqueta">↩️ FACTURA AFECTADA (NORMATIVA SENIAT)</span>
       <div class="tot"><span>Factura original</span><b>${FA ? `<a href="#/factura/${FA.id}">Factura ${String(FA.numero).padStart(8, "0")}</a>` : esc(String(reglas.factura_afectada_numero ?? "").padStart(8, "0"))}</b></div>
@@ -350,7 +350,7 @@ async function ver(estado, id) {
       <div class="tot"><span>Cliente</span><b>${cliente ? esc(cliente.nombre) : "(sin elegir)"}</b></div>
       ${cliente ? `<div class="tot"><span>RIF / C.I.</span><b>${esc(cliente.rif)}</b></div>` : ""}
       ${emitido ? `<div class="tot"><span>Fecha de emisión</span><b>${fechaDoc(D.fecha_emision)}</b></div>` : ""}
-      ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>Control interno</span><b>${String(D.control_interno).padStart(8, "0")}</b></div>
+      ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>00-${String(D.control_interno).padStart(8, "0")}</b></div>
         <div class="tot"><span>${maquina ? (esNc ? "Nota de crédito fiscal N.º" : "Factura fiscal N.º") : "N.º de control fiscal"}</span><b>${esc(D.control_fiscal || (maquina ? "Pendiente de registrar" : "No asignado"))}</b></div>
         ${D.fiscal_serial ? `<div class="tot"><span>Serial de la máquina fiscal</span><b>${esc(D.fiscal_serial)}</b></div>` : ""}` : ""}
       ${emitido ? `<div class="tot"><span>Tasa BCV usada</span><b>Bs. ${bs(D.tasa_e8 / 1e8)}</b></div>` : ""}
@@ -408,7 +408,7 @@ async function ver(estado, id) {
 
   $("#atras").addEventListener("click", () => (location.hash = "#/factura"));
   const pedir = async (fn) => { try { await fn(); } catch (e) { const er = $("#error"); er.textContent = e.message; er.hidden = false; } };
-  const blobPdf = async () => new Blob([await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA })], { type: "application/pdf" });
+  const blobPdf = async () => new Blob([await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, negocio: estado.negocio })], { type: "application/pdf" });
   const tasaNc = tasaInfo(estado).e8 || D.tasa_e8;
   const recalcularNc = () => {
     const caja = $("#dev-totales"); if (!caja) return;

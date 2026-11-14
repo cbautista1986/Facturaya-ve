@@ -87,3 +87,28 @@ export function calcular(lineas, tasaE8, opciones = {}) {
 // Pagos: Bs (centavos) ÷ tasa del día del pago = USD (centavos); y al revés. Mitad hacia arriba, exacto.
 export const bsAUsd = (bsCent, tasaE8) => redondear(bsCent, E8, tasaE8);
 export const usdABs = (usdCent, tasaE8) => redondear(usdCent, tasaE8, E8);
+
+// Convierte una cédula o RIF venezolano (ej. "V-18529773" o "V185297736") al formato RIF SENIAT con dígito verificador Módulo 11 ("V-18529773-6").
+export function aRifSeniat(valor) {
+  const limpioRif = String(valor ?? "").toUpperCase().trim().replace(/\s+/g, "");
+  if (!limpioRif) return "";
+  // Si ya viene con guion y dígito verificador explícito (ej. V-18529773-6 o J-50664201-2), se normaliza su formato con guiones
+  const conDigito = limpioRif.match(/^([VEJPGC])-?(\d{6,8})-(\d)$/);
+  if (conDigito) return `${conDigito[1]}-${conDigito[2].padStart(8, "0")}-${conDigito[3]}`;
+  // Si viene con 9 dígitos pegados (8 de cuerpo + 1 verificador, ej. J506642012)
+  const nueveDigitos = limpioRif.match(/^([VEJPGC])-?(\d{8})(\d)$/);
+  if (nueveDigitos) return `${nueveDigitos[1]}-${nueveDigitos[2]}-${nueveDigitos[3]}`;
+  // Si es una cédula V o E (6 a 8 dígitos sin dígito verificador, ej. V-18529773), calcula el dígito verificador SENIAT (Módulo 11)
+  const sinDigito = limpioRif.match(/^([VEJPG])-?(\d{6,8})$/);
+  if (sinDigito) {
+    const letra = sinDigito[1], cuerpo = sinDigito[2].padStart(8, "0");
+    const valorLetra = { V: 1, E: 2, J: 3, P: 4, G: 5 }[letra] ?? 1;
+    const pesos = [3, 2, 7, 6, 5, 4, 3, 2];
+    const suma = valorLetra * 4 + [...cuerpo].reduce((acc, d, i) => acc + Number(d) * pesos[i], 0);
+    const resto = 11 - (suma % 11);
+    const digito = resto >= 10 ? 0 : resto;
+    return `${letra}-${cuerpo}-${digito}`;
+  }
+  return limpioRif;
+}
+

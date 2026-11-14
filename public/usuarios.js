@@ -2,8 +2,22 @@
 // recuperar la clave olvidada y cambio de clave. Las claves temporales y los códigos se muestran UNA sola vez.
 import { $, raiz, esc, api, aviso, campo, enviar, ERROR } from "./comun.js";
 
-const ETIQUETA_ROL = { ADMIN: "Dueño / administrador", SUPERVISOR: "Supervisor", CAJERO: "Cajero", BODEGA: "Bodega" };
-const AYUDA_ROL = { ADMIN: "Todo", SUPERVISOR: "Caja, devoluciones y tasa", CAJERO: "Solo caja", BODEGA: "Inventario y compras" };
+const ETIQUETA_ROL = {
+  SUPER_ADMIN: "Súper Administrador (EXENET)",
+  ADMIN: "Dueño / administrador",
+  SUPERVISOR: "Supervisor",
+  CAJERO: "Cajero",
+  BODEGA: "Bodega",
+  CONTADOR: "Contador (Libros SENIAT)",
+};
+const AYUDA_ROL = {
+  SUPER_ADMIN: "Control total + reinicio de fábrica",
+  ADMIN: "Todo el negocio y usuarios",
+  SUPERVISOR: "Caja, devoluciones, inventario y tasa",
+  CAJERO: "Solo facturación, clientes y cobros",
+  BODEGA: "Inventario, proveedores y compras",
+  CONTADOR: "Solo lectura y descarga de Libros SENIAT",
+};
 
 // Tarjeta con un secreto que se muestra una sola vez (clave temporal o código de recuperación) y botón de copiar
 export function tarjetaSecreto(secreto, aviso1) {
@@ -21,7 +35,7 @@ export function enlazarCopiar(texto) {
 // Pantalla completa para guardar el código de recuperación (no se puede seguir sin confirmar que se guardó)
 export function pantallaCodigo(codigo, { titulo = "🔐 Tu código de recuperación", boton = "CONTINUAR ➔", alContinuar }) {
   raiz.innerHTML = `<section class="tarjeta"><h1>${titulo}</h1>
-    <p class="suave">Si olvidas tu contraseña, este código es la ÚNICA forma de recuperarla sin ayuda técnica. Anótalo en papel o guárdalo en un lugar seguro. <b>No se vuelve a mostrar.</b></p>
+    <p class="suave">Si olvidas tu contraseña, este código es la ÚNICA forma de recuperarla sin ayuda técnica ni correo. Anótalo en papel o guárdalo en un lugar seguro. <b>No se vuelve a mostrar.</b></p>
     ${tarjetaSecreto(codigo, "Tu código:")}
     <label class="opcion"><input type="checkbox" id="guardado"> Ya guardé mi código en un lugar seguro.</label>
     <button class="boton" id="seguir" disabled>${boton}</button></section>`;
@@ -30,17 +44,35 @@ export function pantallaCodigo(codigo, { titulo = "🔐 Tu código de recuperaci
   $("#seguir").addEventListener("click", alContinuar);
 }
 
-// Olvidé mi contraseña (solo el administrador; los demás piden al administrador que restablezca su clave)
+// Olvidé mi contraseña: 1) Recuperación jerárquica por correo al Administrador / Dueño, o 2) Código maestro de un solo uso
 export function vistaRecuperar(alVolver) {
-  raiz.innerHTML = `<section class="tarjeta"><h1>🔑 Recuperar mi contraseña</h1>
-    <p class="suave">Escribe tu correo, el código de recuperación que guardaste al instalar y una contraseña nueva. Si eres cajero, supervisor o de bodega, pídele al administrador que restablezca tu clave.</p>
-    <form id="f">
-      ${campo("email", "✉️ Correo", "", "email", 'required autocomplete="username"')}
-      ${campo("codigo", "🔐 Código de recuperación", "", "text", 'required autocomplete="off" autocapitalize="characters" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"')}
-      ${campo("clave_nueva", "🔒 Contraseña nueva (mínimo 10 caracteres)", "", "password", 'required minlength="10" autocomplete="new-password"')}
-      ${ERROR}<button class="boton" type="submit">CAMBIAR CONTRASEÑA ➔</button>
-    </form><button class="boton contorno" id="volver" type="button">← Volver</button></section>`;
+  raiz.innerHTML = `
+    <section class="tarjeta"><h1>✉️ Recuperar clave por correo (Jerárquico)</h1>
+      <p class="suave">Escribe el correo de la cuenta que olvidó su clave (cajero, supervisor, contador, bodega o dueño). Por seguridad jerárquica, la clave temporal se enviará siempre al <b>correo del Administrador principal (Dueño del negocio)</b>.</p>
+      <form id="f-correo">
+        ${campo("email_correo", "✉️ Correo del usuario a recuperar", "", "email", 'required autocomplete="username" placeholder="usuario@tunegocio.com"')}
+        <p id="ok-correo" class="ganancia-txt" hidden></p>
+        ${ERROR}<button class="boton verde" type="submit">ENVIAR CLAVE AL CORREO DEL DUEÑO ➔</button>
+      </form>
+    </section>
+    <section class="tarjeta"><h2>🔐 O recuperar con Código Maestro de un solo uso</h2>
+      <p class="suave">Si eres el dueño y guardaste tu código de recuperación al instalar, úsalo aquí para cambiar tu clave de inmediato sin depender del correo:</p>
+      <form id="f">
+        ${campo("email", "✉️ Correo del administrador", "", "email", 'required autocomplete="username"')}
+        ${campo("codigo", "🔐 Código de recuperación", "", "text", 'required autocomplete="off" autocapitalize="characters" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"')}
+        ${campo("clave_nueva", "🔒 Contraseña nueva (mínimo 10 caracteres)", "", "password", 'required minlength="10" autocomplete="new-password"')}
+        ${ERROR}<button class="boton" type="submit">CAMBIAR CONTRASEÑA CON CÓDIGO ➔</button>
+      </form>
+      <button class="boton contorno" id="volver" type="button">← Volver al inicio de sesión</button>
+    </section>`;
   $("#volver").addEventListener("click", alVolver);
+  enviar($("#f-correo"), async (d) => {
+    const r = await api("recuperar-correo", "POST", { email: d.email_correo });
+    const msg = $("#ok-correo");
+    msg.textContent = r.mensaje || "Solicitud procesada ✅ Revisa el correo del Administrador.";
+    msg.hidden = false;
+    aviso("Clave enviada al correo del Administrador ✅");
+  });
   enviar($("#f"), async (d) => {
     const r = await api("recuperar", "POST", d);
     pantallaCodigo(r.codigo_recuperacion, { titulo: "✅ Contraseña cambiada · tu código NUEVO", boton: "IR A INICIAR SESIÓN ➔", alContinuar: alVolver });

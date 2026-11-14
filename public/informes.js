@@ -1,6 +1,6 @@
 // Pantallas de INFORMES (Fase 6): menú de informes y cada informe con selector de periodo, vista compacta y exportación CSV / PDF.
 // Todo el contenido sale de informe-tabla.js (mismo modelo para pantalla, CSV y PDF); aquí solo se dibuja y se descarga.
-import { $, raiz, esc, api, aviso, navegacion, activar, descargar, cargarPdfLib, ERROR } from "./comun.js";
+import { $, raiz, esc, api, aviso, navegacion, activar, descargar, cargarPdfLib, puede, ERROR } from "./comun.js";
 import { INFORMES, construirModelo, aCsv, construirPdfInforme, nombreArchivoInforme, hoyCaracas } from "./informe-tabla.js";
 
 let periodo = null; // { preset, desde, hasta }: se recuerda al pasar de un informe a otro
@@ -17,12 +17,13 @@ function rangoDe(preset, hoy) {
 }
 
 function menu() {
+  const disponibles = INFORMES.filter((i) => i.clave !== "ganancias" || puede("admin"));
   raiz.innerHTML = `
-    <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver al inicio" aria-label="Volver">←</button><h1>📊 Informes</h1></header>
-    <p class="suave">Para tu contador y para ti. Cada informe se puede descargar en CSV (Excel) o PDF.</p>
-    <div class="lista">${INFORMES.map((i) => `<button type="button" class="fila" data-informe="${i.clave}" data-ayuda="${esc(i.ayuda)}">
+    <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver al inicio" aria-label="Volver">←</button><h1>📊 Libros e Informes SENIAT</h1></header>
+    <p class="suave">Libros contables en Bolívares (a tasa BCV de cada operación) y reportes para el contador y el SENIAT. Descargables en CSV (Excel) o PDF.</p>
+    <div class="lista">${disponibles.map((i) => `<button type="button" class="fila" data-informe="${i.clave}" data-ayuda="${esc(i.ayuda)}">
       <span class="icono-tipo">${i.icono}</span><span class="dato"><strong>${esc(i.nombre)}</strong><small class="suave">${esc(i.ayuda)}</small></span><span aria-hidden="true">›</span></button>`).join("")}</div>
-    ${navegacion("inicio")}`;
+    ${navegacion("informes")}`;
   $("#atras").addEventListener("click", () => (location.hash = "#/inicio"));
   raiz.querySelectorAll("[data-informe]").forEach((b) => b.addEventListener("click", () => (location.hash = `#/informes/${b.dataset.informe}`)));
   activar();
@@ -37,7 +38,7 @@ function tabla(s) {
 }
 
 export async function vistaInformes(estado, clave) {
-  const inf = INFORMES.find((i) => i.clave === clave);
+  const inf = INFORMES.find((i) => i.clave === clave && (i.clave !== "ganancias" || puede("admin")));
   if (!inf) return menu();
   const hoy = hoyCaracas();
   if (!periodo) periodo = { preset: "mes", ...rangoDe("mes", hoy) };

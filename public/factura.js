@@ -305,17 +305,21 @@ async function ver(estado, id) {
   const datos = await api(`documentos/${encodeURIComponent(id)}`);
   const { documento: D, lineas, impuestos, pagos = [], notas_credito = [], factura_afectada: FA = null, pagado_usd = 0, acreditado_nc_usd = 0, saldo_usd = null } = datos;
   const [estTxt, estColor] = ESTADOS[D.estado], emitido = D.estado !== "BORRADOR", esNc = !!D.es_nota_credito, reglas = JSON.parse(D.parametros_json || "{}");
-  const cliente = D.cliente_nombre ? { nombre: D.cliente_nombre, rif: D.cliente_rif } : D.cliente_id ? await api(`clientes/${D.cliente_id}`).then((r) => ({ nombre: r.cliente.nombre_apellido, rif: r.cliente.rif_cedula })) : null;
-  const maquina = D.tipo === "FACTURA" && emitido && D.medio === "MAQUINA_FISCAL";
-  const sinControl = D.tipo === "FACTURA" && emitido && !D.control_fiscal && !maquina;
+  const cliente = D.cliente_nombre ? { nombre: D.cliente_nombre, rif: D.cliente_rif, email: D.cliente_email || "" } : D.cliente_id ? await api(`clientes/${D.cliente_id}`).then((r) => ({ nombre: r.cliente.nombre_apellido, rif: r.cliente.rif_cedula, email: r.cliente.email || "" })) : null;
   const nom = nombreDe(D);
-  const titulo = esNc ? "Nota de crédito" : D.tipo === "FACTURA" && emitido && !D.control_fiscal && !maquina ? (reglas.titulo_sin_control || "Factura") : nom;
-  const pideFiscal = D.tipo === "FACTURA" && D.estado === "EMITIDO" && !!D.medio && !D.control_fiscal;
+  const titulo = esNc ? "Nota de crédito" : nom;
+  const medioEfectivo = D.medio || estado.negocio?.medio_facturacion || "APP_SENIAT";
+  const esAppSeniat = D.tipo === "FACTURA" && emitido && medioEfectivo === "APP_SENIAT";
+  const esImprenta = D.tipo === "FACTURA" && emitido && medioEfectivo === "IMPRENTA_DIGITAL";
+  const nroControlMostrar = D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`;
+  const pideFiscal = D.tipo === "FACTURA" && D.estado === "EMITIDO" && !D.control_fiscal;
   const tieneDisponibleDevolver = D.tipo === "FACTURA" && !esNc && D.estado === "EMITIDO" && lineas.some((l) => l.cantidad_milli - (l.devuelto_milli ?? 0) > 0);
 
   const botones = D.estado === "BORRADOR"
     ? [["editar", "✏️ Editar", ""], ["emitir", `EMITIR ${nom.toUpperCase()}`, "verde"], ["borrar", "Eliminar borrador", "contorno"]]
     : [["pdf", "📄 Descargar PDF", ""], ["compartir", "📤 Compartir PDF", "verde"],
+      ["correo", "✉️ Enviar por correo al cliente", "contorno-azul"],
+      ...(esAppSeniat ? [["clonar_seniat", "📋 Copiar datos para App SENIAT", "contorno-azul"]] : []),
       ...(D.estado === "EMITIDO" && !esNc && saldo_usd > 0 ? [["pagar", "💵 Registrar pago", "verde"]] : []),
       ["whatsapp", "💬 Enviar por WhatsApp", ""],
       ...(D.tipo === "PRESUPUESTO" && D.estado === "EMITIDO" ? [["convertir", "🧾 Convertir en factura", ""]] : []),
@@ -326,11 +330,9 @@ async function ver(estado, id) {
   const tienePagosVigentes = pagos.some((p) => p.estado === "VIGENTE");
   const tieneNcVigentes = notas_credito.some((n) => n.estado === "EMITIDO");
   const mesCerrado = D.tipo === "FACTURA" && !esNc && D.fecha_emision && String(D.fecha_emision).slice(0, 7) !== dia(new Date()).slice(0, 7);
-  const impresaMaquina = D.tipo === "FACTURA" && !esNc && D.medio === "MAQUINA_FISCAL" && !!D.control_fiscal;
   const bloqueoAnularFactura = D.tipo === "FACTURA" && !esNc
     ? (tienePagosVigentes ? "Esta factura tiene pagos registrados. Anula primero los pagos o emite una Nota de Crédito."
       : tieneNcVigentes ? "Esta factura ya tiene Notas de Crédito aplicadas; no puede anularse directamente."
-      : impresaMaquina ? "Esta factura ya fue impresa en Máquina Fiscal (N.º " + D.control_fiscal + "). Según la Providencia SENIAT SNAT/2011/0071 debes emitir una Nota de Crédito."
       : mesCerrado ? "Esta factura pertenece a un mes fiscal anterior. Para no alterar el Libro de Ventas cerrado, debes emitir una Nota de Crédito."
       : null)
     : null;
@@ -340,8 +342,6 @@ async function ver(estado, id) {
       <h1>${esc(titulo)} ${emitido ? esc(numeroDoc(D)) : "(borrador)"}</h1><span class="insignia ${estColor}">${estTxt}</span></header>
     ${D.modo === "PRACTICA" ? bannerPractica({ modo: "PRACTICA" }) : ""}
     ${D.estado === "ANULADO" ? `<section class="aviso-anulado">⛔ ANULADO el ${fechaDoc(D.anulado_en)} · Motivo: ${esc(D.motivo_anulacion)}</section>` : ""}
-    ${maquina && !D.control_fiscal ? `<section class="aviso-control">🖨️ Falta registrar el número fiscal que imprimió tu máquina fiscal.</section>` : ""}
-    ${sinControl ? `<section class="aviso-control">⚠️ ${esc(reglas.leyenda_sin_control || "Documento sin N.º de control fiscal")}</section>` : ""}
     ${esNc ? `<section class="tarjeta"><span class="etiqueta">↩️ FACTURA AFECTADA (NORMATIVA SENIAT)</span>
       <div class="tot"><span>Factura original</span><b>${FA ? `<a href="#/factura/${FA.id}">Factura ${String(FA.numero).padStart(8, "0")}</a>` : esc(String(reglas.factura_afectada_numero ?? "").padStart(8, "0"))}</b></div>
       <div class="tot"><span>Fecha factura original</span><b>${fechaDoc(FA?.fecha_emision ?? reglas.factura_afectada_fecha)}</b></div>
@@ -349,10 +349,10 @@ async function ver(estado, id) {
     <section class="tarjeta">
       <div class="tot"><span>Cliente</span><b>${cliente ? esc(cliente.nombre) : "(sin elegir)"}</b></div>
       ${cliente ? `<div class="tot"><span>RIF / C.I.</span><b>${esc(cliente.rif)}</b></div>` : ""}
+      ${cliente?.email ? `<div class="tot"><span>Correo</span><b>${esc(cliente.email)}</b></div>` : ""}
       ${emitido ? `<div class="tot"><span>Fecha de emisión</span><b>${fechaDoc(D.fecha_emision)}</b></div>` : ""}
-      ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>00-${String(D.control_interno).padStart(8, "0")}</b></div>
-        <div class="tot"><span>${maquina ? (esNc ? "Nota de crédito fiscal N.º" : "Factura fiscal N.º") : "N.º de control fiscal"}</span><b>${esc(D.control_fiscal || (maquina ? "Pendiente de registrar" : "No asignado"))}</b></div>
-        ${D.fiscal_serial ? `<div class="tot"><span>Serial de la máquina fiscal</span><b>${esc(D.fiscal_serial)}</b></div>` : ""}` : ""}
+      ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>${esc(nroControlMostrar)}</b></div>
+        <div class="tot"><span>Modalidad digital</span><b>${esImprenta ? "🌐 Imprenta Digital (API)" : "📱 Aplicación Digital SENIAT"}</b></div>` : ""}
       ${emitido ? `<div class="tot"><span>Tasa BCV usada</span><b>Bs. ${bs(D.tasa_e8 / 1e8)}</b></div>` : ""}
     </section>
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span>${lineas.map((l) => `<div class="reng-ver"><div><b>${esc(l.descripcion)}</b><br><small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.precio_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : "Exento"}${l.devuelto_milli > 0 ? ` · ↩️ Devuelto: ${cantidadTexto(l.devuelto_milli)}` : ""}</small></div><b>${usd(l.monto_usd)}</b></div>`).join("")}</section>
@@ -364,15 +364,22 @@ async function ver(estado, id) {
       <div class="tot grande"><span>${D.aplica_igtf && D.igtf_usd > 0 ? "TOTAL + IGTF" : "TOTAL"}</span><b>${usd(D.total_usd)}</b></div>
       ${emitido ? `<div class="tot"><span>Total en Bs.</span><b>Bs. ${bs(D.total_bs / 100)}</b></div>` : `<small class="suave">Los montos en Bs. se fijan al emitir, con la tasa BCV de ese momento.</small>`}
       ${D.costo_total_usd ? `<small class="ganancia-txt">🔒 Ganancia: ${usd(D.subtotal_usd - D.costo_total_usd)} (solo la ves tú)</small>` : ""}</section>
-    ${pideFiscal ? `<section class="tarjeta"><span class="etiqueta">🧾 REGISTRAR NÚMERO FISCAL</span>
-      ${maquina && !estado.negocio.maquina_serial ? `<p class="suave">Primero hay que configurar tu máquina fiscal (serial y último número) en <b>Ajustes → Medio de facturación</b>. Solo el dueño puede hacerlo.</p>` : `
-      <p class="suave">${maquina ? `Imprime el documento en tu máquina fiscal (serial <b>${esc(estado.negocio.maquina_serial)}</b>) y confirma el número que salió.` : "Anota aquí el número de control que te dio la imprenta digital."} Solo se puede registrar una vez.</p>
-      <form id="fiscal-form">${campo("numero", maquina ? "Número fiscal (propuesto: el siguiente)" : "Número de control", maquina ? String((estado.negocio.maquina_ultimo ?? 0) + 1).padStart(7, "0") : "", "text", `required maxlength="30" autocomplete="off"${maquina ? ' inputmode="numeric"' : ""}`)}
-        ${ERROR}<button class="boton chico" type="submit">REGISTRAR</button></form>`}</section>` : ""}
+    ${pideFiscal ? `<section class="tarjeta"><span class="etiqueta">${esImprenta ? "🌐 N.º DE CONTROL DE IMPRENTA DIGITAL" : "📱 SINCRONIZACIÓN CON APP DIGITAL SENIAT"}</span>
+      <p class="suave">${esImprenta
+        ? "Mientras conectas el API de la Imprenta Digital, el PDF ya muestra el correlativo <b>" + esc(nroControlMostrar) + "</b>. Si la imprenta asigna un número de control distinto, regístralo aquí."
+        : "El PDF ya sale con título <b>FACTURA</b>, correlativo <b>" + esc(numeroDoc(D)) + "</b> y <b>N.º de Control " + esc(nroControlMostrar) + "</b>. Cuando transcribas esta factura en la aplicación del SENIAT, puedes confirmar o actualizar su N.º de Control definitivo aquí:"}</p>
+      <form id="fiscal-form">${campo("numero", "N.º de Control definitivo", nroControlMostrar, "text", 'required maxlength="30" autocomplete="off"')}
+        ${ERROR}<button class="boton chico" type="submit">GUARDAR N.º DE CONTROL</button></form></section>` : ""}
     ${emitido && !esNc ? seccionPagos(D, pagos, notas_credito, pagado_usd, acreditado_nc_usd, saldo_usd) : ""}
     ${D.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(D.nota)}</p></section>` : ""}
     <p class="error" id="error" role="alert" hidden></p>
     ${botones.map(([id2, txt, clase]) => `<button type="button" class="boton ${clase}" data-acc="${id2}">${txt}</button>`).join("")}
+    <form id="correo-form" class="tarjeta" hidden>
+      <h2>✉️ Enviar ${esc(titulo.toLowerCase())} + PDF por correo</h2>
+      <p class="pista">Se enviará un correo electrónico con el resumen en Bolívares y USD más el archivo PDF adjunto.</p>
+      ${campo("email_destino", "✉️ Correo del cliente", D.cliente_email || cliente?.email || "", "email", 'required placeholder="cliente@correo.com"')}
+      ${ERROR}<button class="boton verde" type="submit">ENVIAR CORREO CON PDF ➔</button>
+    </form>
     <form id="devolver-form" class="tarjeta" hidden>
       <h2>↩️ Emitir Nota de Crédito (Devolución SENIAT)</h2>
       <p class="pista">Según la Providencia Administrativa SNAT/2011/0071 del SENIAT, cuando una factura ya fue entregada al cliente o hay devolución parcial o total de mercancía/servicio, se emite una <b>Nota de Crédito</b> referenciando la Factura ${esc(numeroDoc(D))}. Las existencias devueltas reingresan al inventario automáticamente.</p>
@@ -408,7 +415,8 @@ async function ver(estado, id) {
 
   $("#atras").addEventListener("click", () => (location.hash = "#/factura"));
   const pedir = async (fn) => { try { await fn(); } catch (e) { const er = $("#error"); er.textContent = e.message; er.hidden = false; } };
-  const blobPdf = async () => new Blob([await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, negocio: estado.negocio })], { type: "application/pdf" });
+  const bytesPdf = async () => await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, negocio: estado.negocio });
+  const blobPdf = async () => new Blob([await bytesPdf()], { type: "application/pdf" });
   const tasaNc = tasaInfo(estado).e8 || D.tasa_e8;
   const recalcularNc = () => {
     const caja = $("#dev-totales"); if (!caja) return;
@@ -448,6 +456,30 @@ async function ver(estado, id) {
     borrar: () => pedir(async () => { if (!confirm("¿Eliminar este borrador?")) return; await api(`documentos/${id}`, "DELETE"); aviso("Borrador eliminado"); location.hash = "#/factura"; }),
     pdf: () => pedir(async () => descargar(await blobPdf(), nombreArchivo(D))),
     compartir: () => pedir(async () => compartir(await blobPdf(), nombreArchivo(D))),
+    correo: () => {
+      $("#correo-form").hidden = !$("#correo-form").hidden;
+      if (!$("#correo-form").hidden) $("#email_destino")?.focus();
+    },
+    clonar_seniat: () => pedir(async () => {
+      const resumenSeniat = [
+        `DOCUMENTO: ${esNc ? "NOTA DE CRÉDITO" : "FACTURA"} N.º ${numeroDoc(D)}`,
+        `N.º DE CONTROL: ${nroControlMostrar}`,
+        `FECHA EMISIÓN: ${fechaDoc(D.fecha_emision)}`,
+        `CLIENTE: ${cliente?.nombre ?? D.cliente_nombre ?? ""}`,
+        `RIF / C.I.: ${cliente?.rif ?? D.cliente_rif ?? ""}`,
+        `DIRECCIÓN: ${D.cliente_direccion || "-"}`,
+        `TASA BCV: Bs. ${bs(D.tasa_e8 / 1e8)}`,
+        `--- RENGLONES ---`,
+        ...lineas.map((l, idx) => `${idx + 1}. ${l.descripcion} | Cant: ${cantidadTexto(l.cantidad_milli)} | P.Unit: Bs. ${bs(Math.round((l.precio_usd * (D.tasa_e8 / 1e8))) / 100)} (${usd(l.precio_usd)}) | IVA: ${l.alicuota_cent / 100}% | Monto: Bs. ${bs(l.monto_bs / 100)} (${usd(l.monto_usd)})`),
+        `--- TOTALES ---`,
+        `Subtotal: Bs. ${bs(D.subtotal_bs / 100)} (${usd(D.subtotal_usd)})`,
+        `IVA: Bs. ${bs(D.iva_bs / 100)} (${usd(D.iva_usd)})`,
+        ...(D.aplica_igtf && D.igtf_usd > 0 ? [`IGTF (3%): Bs. ${bs((D.igtf_bs ?? 0) / 100)} (${usd(D.igtf_usd)})`] : []),
+        `TOTAL: Bs. ${bs(D.total_bs / 100)} (${usd(D.total_usd)})`,
+      ].join("\n");
+      await navigator.clipboard.writeText(resumenSeniat);
+      aviso("Datos copiados al portapapeles para clonar en la App SENIAT 📋");
+    }),
     convertir: () => pedir(async () => { const r = await api(`documentos/${id}/convertir`, "POST"); aviso("Borrador de factura creado"); location.hash = `#/factura/${r.id}`; }),
     copiar: () => pedir(async () => { const r = await api(`documentos/${id}/copiar`, "POST"); aviso("Copia creada como borrador"); location.hash = `#/factura/${r.id}`; }),
     pagar: () => (location.hash = `#/pagos/nuevo/${id}`),
@@ -467,10 +499,22 @@ async function ver(estado, id) {
   $("#devolver-lineas")?.addEventListener("input", recalcularNc);
   $("#dev_igtf")?.addEventListener("change", recalcularNc);
   if ($("#fiscal-form")) enviar($("#fiscal-form"), async (d) => {
-    try { await api(`documentos/${id}/fiscal`, "POST", { numero: d.numero }); }
-    catch (e) { if (/Se salta del/.test(e.message) && confirm(e.message)) await api(`documentos/${id}/fiscal`, "POST", { numero: d.numero, confirmar_salto: true }); else throw e; }
-    estado.negocio = (await api("estado")).negocio;
-    aviso("Número fiscal registrado ✅"); await ver(estado, id);
+    await api(`documentos/${id}/fiscal`, "POST", { numero: d.numero });
+    aviso("N.º de Control guardado ✅"); await ver(estado, id);
+  });
+  if ($("#correo-form")) enviar($("#correo-form"), async (v) => {
+    const bytes = await bytesPdf();
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    const pdf_base64 = btoa(bin);
+    await api(`documentos/${id}/enviar-correo`, "POST", {
+      email: v.email_destino,
+      pdf_base64,
+      nombre_archivo: nombreArchivo(D),
+    });
+    aviso(`Correo enviado a ${v.email_destino} ✅`);
+    $("#correo-form").hidden = true;
+    await ver(estado, id);
   });
   raiz.querySelectorAll("[data-recibo]").forEach((el) => el.addEventListener("click", () => (location.hash = `#/pagos/recibo/${el.dataset.recibo}`)));
   raiz.querySelectorAll("[data-doc]").forEach((el) => el.addEventListener("click", () => (location.hash = `#/factura/${el.dataset.doc}`)));

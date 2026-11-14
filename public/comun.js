@@ -52,6 +52,7 @@ export function enviar(form, accion) {
 const NAV = [
   ["inicio", "🏠", "Inicio", "#/inicio"], ["factura", "🧾", "Factura", "#/factura", "caja"], ["clientes", "👥", "Clientes", "#/clientes", "caja"],
   ["pagos", "💳", "Pagos", "#/pagos", "caja"], ["inventario", "📦", "Inventario", "#/inventario", "inventario"],
+  ["informes", "📊", "Libros", "#/informes", "informes_contador"],
 ];
 // Permisos de quien tiene la sesión (los manda el servidor en /api/estado). Solo sirven para MOSTRAR u ocultar: el servidor es quien los hace cumplir.
 let PERMISOS = [];

@@ -10,7 +10,7 @@ const nroFactura = (n) => (n == null ? "" : String(n).padStart(8, "0"));
 const alicuota = (cent) => (cent === 0 ? "Exento" : `${cent / 100}%`);
 const MOV = { COMPRA: "Compra", CARGA: "Carga", VENTA: "Venta", DEVOLUCION_VENTA: "Devolución de venta", ANULACION_COMPRA: "Anulación de compra", AJUSTE: "Ajuste" };
 const MOTIVO = { DANADO: "Dañado", PERDIDO: "Perdido", GARANTIA: "Garantía", USO_INTERNO: "Uso interno", SOBRANTE: "Sobrante" };
-const MEDIO = { MAQUINA_FISCAL: "Máquina fiscal", IMPRENTA_DIGITAL: "Imprenta digital" };
+const MEDIO = { APP_SENIAT: "App Digital SENIAT", IMPRENTA_DIGITAL: "Imprenta Digital" };
 const izq = (t) => ({ t }), der = (t) => ({ t, der: true });
 const periodo = (r) => `Del ${fecha(r.desde)} al ${fecha(r.hasta)}`;
 
@@ -28,7 +28,7 @@ export const INFORMES = [
 function modeloVentas(r) {
   const alic = r.alicuotas.map((a) => a.alicuota_cent);
   const hayIgtf = r.filas.some((f) => f.igtf_bs);
-  const columnas = [izq("Fecha"), izq("Tipo"), izq("N.º doc."), izq("Factura afectada"), izq("Control interno"), izq("Control fiscal"), izq("Serial máquina fiscal"), izq("Medio"), izq("RIF / Cédula"), izq("Cliente"), izq("Estado"),
+  const columnas = [izq("Fecha"), izq("Tipo"), izq("N.º doc."), izq("Factura afectada"), izq("N.º de Control"), izq("Modalidad"), izq("RIF / Cédula"), izq("Cliente"), izq("Estado"),
     ...alic.flatMap((a) => [der(`Base ${alicuota(a)} (Bs)`), ...(a === 0 ? [] : [der(`IVA ${alicuota(a)} (Bs)`)])]),
     ...(hayIgtf ? [der("IGTF (Bs)"), der("IGTF (USD)")] : []),
     der("Total (Bs)"), der("Total (USD)")];
@@ -37,24 +37,23 @@ function modeloVentas(r) {
     const anulada = f.estado === "ANULADO", esNc = !!f.es_nota_credito;
     const nro = esNc ? `NC-${nroFactura(f.numero)}` : nroFactura(f.numero);
     const afectada = esNc && f.factura_afectada_numero != null ? nroFactura(f.factura_afectada_numero) : "";
-    return [fecha(f.fecha_emision), esNc ? "Nota de crédito" : "Factura", nro, afectada, f.control_interno == null ? "" : nroFactura(f.control_interno), f.control_fiscal || "", f.fiscal_serial || "", MEDIO[f.medio] || "", f.cliente_rif || "", f.cliente_nombre || "",
+    const nroCtrl = f.control_fiscal || (f.control_interno == null ? "" : `00-${nroFactura(f.control_interno)}`);
+    return [fecha(f.fecha_emision), esNc ? "Nota de crédito" : "Factura", nro, afectada, nroCtrl, MEDIO[f.medio] || "App Digital SENIAT", f.cliente_rif || "", f.cliente_nombre || "",
       anulada ? "ANULADA" : "Emitida",
       ...(anulada
         ? [...alic.flatMap((a) => (a === 0 ? [""] : ["", ""])), ...(hayIgtf ? ["", ""] : []), "", ""]
         : [...celdasImp(f), ...(hayIgtf ? [num(f.igtf_bs ?? 0), num(f.igtf_usd ?? 0)] : []), num(f.total_bs), num(f.total_usd)])];
   });
-  const totales = [["TOTAL", "", "", "", "", "", "", "", "", "", `${r.n_vigentes} fact. / ${r.n_notas_credito ?? 0} NC`,
+  const totales = [["TOTAL", "", "", "", "", "", "", "", `${r.n_vigentes} fact. / ${r.n_notas_credito ?? 0} NC`,
     ...alic.flatMap((a) => { const t = r.alicuotas.find((x) => x.alicuota_cent === a); return [num(t.base_bs), ...(a === 0 ? [] : [num(t.iva_bs)])]; }),
     ...(hayIgtf ? [num(r.igtf_bs ?? 0), num(r.igtf_usd ?? 0)] : []),
     num(r.total_bs), num(r.total_usd)]];
   return { clave: "ventas", titulo: "Libro de ventas", periodo: periodo(r),
     resumen: [["Facturas emitidas", String(r.n_vigentes)], ...(r.n_notas_credito ? [["Notas de crédito (restan)", String(r.n_notas_credito)]] : []), ["Anuladas (no suman)", String(r.n_anuladas)],
       ...(hayIgtf ? [["IGTF en Bs", num(r.igtf_bs)], ["IGTF en USD", num(r.igtf_usd)]] : []),
-      ["Total neto en Bs", num(r.total_bs)], ["Total neto en USD", num(r.total_usd)],
-      ...(r.n_sin_fiscal ? [["Sin número fiscal", String(r.n_sin_fiscal)]] : [])],
+      ["Total neto en Bs", num(r.total_bs)], ["Total neto en USD", num(r.total_usd)]],
     notas: ["Montos en bolívares: son los montos legales de cada documento. Las Notas de Crédito restan base imponible, IVA y total conforme a la Providencia SENIAT SNAT/2011/0071. Las anuladas se listan pero no suman.",
-      "Medio: con máquina fiscal la factura o nota de crédito legal es la de la máquina (aquí va su número fiscal y su serial); con imprenta digital, el control lo da la imprenta.",
-      ...(r.n_sin_fiscal ? [`${r.n_sin_fiscal} documento(s) emitido(s) todavía no tienen su número fiscal registrado.`] : [])],
+      "Modalidad digital: Aplicación Digital SENIAT o Imprenta Digital Autorizada (API)."],
     secciones: [{ titulo: "Facturas y Notas de Crédito", columnas, filas, totales }] };
 }
 
@@ -158,6 +157,10 @@ export const nombreArchivoInforme = (m, modo, ext, r) => `${modo === "PRACTICA" 
 export async function construirPdfInforme(L, m, { negocio, modo }) {
   const { PDFDocument, StandardFonts, rgb } = L;
   const pdf = await PDFDocument.create(), f = await pdf.embedFont(StandardFonts.Helvetica), fb = await pdf.embedFont(StandardFonts.HelveticaBold);
+  let logoImg = null;
+  if (negocio?.logo_base64 && typeof negocio.logo_base64 === "string" && negocio.logo_base64.startsWith("data:image/")) {
+    try { logoImg = negocio.logo_base64.startsWith("data:image/png") ? await pdf.embedPng(negocio.logo_base64) : await pdf.embedJpg(negocio.logo_base64); } catch {}
+  }
   const permitido = new Set(f.getCharacterSet());
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
   const ANCHO = 841.89, ALTO = 595.28, M = 32, UTIL = ANCHO - 2 * M, paginas = [];
@@ -169,6 +172,11 @@ export async function construirPdfInforme(L, m, { negocio, modo }) {
   const recortar = (t, w, size, fuente) => { t = limpio(t); if (fuente.widthOfTextAtSize(t, size) <= w) return t; while (t.length > 1 && fuente.widthOfTextAtSize(t + "…", size) > w) t = t.slice(0, -1); return t + "…"; };
   const texto = (t, x, size, fuente, opc = {}) => pag.drawText(limpio(t), { x, y, size, font: fuente, color: opc.color || rgb(0.1, 0.1, 0.1) });
   nueva();
+  if (logoImg) {
+    const esc = Math.min(95 / logoImg.width, 32 / logoImg.height, 1);
+    const lw = logoImg.width * esc, lh = logoImg.height * esc;
+    pag.drawImage(logoImg, { x: ANCHO - M - lw, y: ALTO - M - lh + 6, width: lw, height: lh });
+  }
   texto(negocio?.nombre_razon_social || "", M, 13, fb); y -= 14; texto(`RIF ${negocio?.rif || ""}`, M, 9, f); y -= 20;
   texto(m.titulo, M, 16, fb, { color: rgb(0.1, 0.45, 0.91) }); y -= 14; texto(m.periodo + (modo === "PRACTICA" ? " · DATOS DE PRACTICA" : ""), M, 9, f); y -= 14;
   texto(m.resumen.map(([k, v]) => `${k}: ${v}`).join("   ·   "), M, 9, fb); y -= 16;

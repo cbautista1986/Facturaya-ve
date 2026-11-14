@@ -15,6 +15,15 @@ export function nombreArchivo(d) {
   return `${d.modo === "PRACTICA" ? "PRACTICA-" : ""}${base}-${numeroDoc(d)}.pdf`;
 }
 
+async function incrustarLogo(pdf, dataUrl) {
+  if (!dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) return null;
+  try {
+    return dataUrl.startsWith("data:image/png") ? await pdf.embedPng(dataUrl) : await pdf.embedJpg(dataUrl);
+  } catch {
+    return null;
+  }
+}
+
 export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA, negocio }) {
   if (!D.emisor_json || D.numero == null) throw new Error("Solo se puede crear el PDF de un documento emitido.");
   const { PDFDocument, StandardFonts, rgb, degrees } = L;
@@ -29,9 +38,11 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
     direccion_fiscal: negocio?.direccion_fiscal || emisorGuardado.direccion_fiscal,
     telefono: negocio?.telefono ?? emisorGuardado.telefono,
     email: negocio?.email ?? emisorGuardado.email,
+    logo_base64: negocio?.logo_base64 ?? emisorGuardado.logo_base64 ?? null,
   };
-  const esFactura = D.tipo === "FACTURA", esNc = !!D.es_nota_credito, maquina = esFactura && D.medio === "MAQUINA_FISCAL", sinControl = esFactura && !D.control_fiscal && !maquina;
-  const titulo = esNc ? "NOTA DE CRÉDITO" : esFactura ? (D.control_fiscal ? "FACTURA" : reglas.titulo_sin_control || "FACTURA") : "PRESUPUESTO";
+  const logoImg = await incrustarLogo(pdf, emisor.logo_base64);
+  const esFactura = D.tipo === "FACTURA", esNc = !!D.es_nota_credito;
+  const titulo = esNc ? "NOTA DE CRÉDITO" : esFactura ? "FACTURA" : "PRESUPUESTO";
 
   const paginas = []; let pag, y;
   const diagonal = (p, txt, size, grados, color, opacity, dy = 0) => {
@@ -61,8 +72,14 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   const caja = (top, alto, relleno, borde) => pag.drawRectangle({ x: M, y: ALTO - top - alto, width: ANCHO - 2 * M, height: alto, color: rgb(...relleno), borderColor: borde ? rgb(...borde) : undefined, borderWidth: borde ? 1 : 0 });
 
   nueva();
-  // ---- encabezado: emisor a la izquierda, título y números a la derecha
+  // ---- encabezado: logo + emisor a la izquierda, título y números a la derecha
   let ey = y;
+  if (logoImg) {
+    const esc = Math.min(115 / logoImg.width, 40 / logoImg.height, 1);
+    const lw = logoImg.width * esc, lh = logoImg.height * esc;
+    pag.drawImage(logoImg, { x: M, y: ALTO - ey - lh, width: lw, height: lh });
+    ey += lh + 6;
+  }
   T(emisor.nombre_razon_social, M, ey, { s: 14, b: true }); ey += 19;
   T(`RIF: ${emisor.rif}`, M, ey); ey += 14;
   for (const l of envolver(emisor.direccion_fiscal, 280, 9)) { T(l, M, ey, { s: 9 }); ey += 12; }
@@ -72,27 +89,13 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   T(titulo, R, dy, { s: titulo.length > 14 ? 15 : 22, b: true, der: true }); dy += 26;
   T(`N.º: ${numeroDoc(D)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
   if (esFactura) {
-    const nroControl = `00-${String(D.control_interno).padStart(8, "0")}`;
-    if (maquina) {
-      T(`N.º de Control: ${nroControl}`, R, dy, { s: 9, der: true }); dy += 13;
-      T(`${esNc ? "Nota de crédito fiscal N.º" : "Factura fiscal N.º"}: ${D.control_fiscal || "Pendiente de registrar"}`, R, dy, { s: 9, der: true }); dy += 13;
-      if (D.fiscal_serial) { T(`Serial de la máquina fiscal: ${D.fiscal_serial}`, R, dy, { s: 9, der: true }); dy += 13; }
-    } else {
-      T(`N.º de Control: ${D.control_fiscal || nroControl}`, R, dy, { s: 9, der: true }); dy += 13;
-    }
+    const nroControl = D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`;
+    T(`N.º de Control: ${nroControl}`, R, dy, { s: 9, b: true, der: true }); dy += 13;
   }
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
   y = Math.max(ey, dy) + 8;
 
-  if (sinControl) {
-    const ls = envolver(reglas.leyenda_sin_control || "DOCUMENTO SIN NÚMERO DE CONTROL FISCAL", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
-    caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
-  }
-  if (maquina && !D.control_fiscal) {
-    const ls = envolver("Pendiente: falta registrar el número fiscal que imprimió la máquina fiscal. Mientras tanto este es un comprobante interno.", ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
-    caja(y, h, [1, 0.95, 0.95], [0.75, 0.1, 0.1]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.65, 0.05, 0.05] })); y += h + 10;
-  }
   if (D.estado === "ANULADO") {
     const ls = envolver(`DOCUMENTO ANULADO el ${fecha(D.anulado_en)}. Motivo: ${D.motivo_anulacion || ""}`, ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
     caja(y, h, [0.98, 0.9, 0.9], [0.85, 0.15, 0.15]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.7, 0.1, 0.1] })); y += h + 10;
@@ -182,6 +185,7 @@ export async function construirRecibo(L, { pago: P, documento: D }) {
   const permitido = new Set(f.getCharacterSet());
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
   const emisor = JSON.parse(D.emisor_json || "{}"), reglas = JSON.parse(P.reglas_json || "{}");
+  const logoImg = await incrustarLogo(pdf, emisor.logo_base64);
   const pag = pdf.addPage([ANCHO, ALTO]), R = ANCHO - M;
   const T = (t, x, top, { s = 10, b = false, c = [0.12, 0.12, 0.12], der = false } = {}) => {
     const txt = limpio(t), fuente = b ? fb : f, w = fuente.widthOfTextAtSize(txt, s);
@@ -204,6 +208,12 @@ export async function construirRecibo(L, { pago: P, documento: D }) {
   if (P.estado === "ANULADO") diagonal("ANULADO", 100, [0.85, 0.15, 0.15], 0.22, -40);
 
   let y = M, ey = y;
+  if (logoImg) {
+    const esc = Math.min(115 / logoImg.width, 40 / logoImg.height, 1);
+    const lw = logoImg.width * esc, lh = logoImg.height * esc;
+    pag.drawImage(logoImg, { x: M, y: ALTO - ey - lh, width: lw, height: lh });
+    ey += lh + 6;
+  }
   T(emisor.nombre_razon_social, M, ey, { s: 14, b: true }); ey += 19;
   T(`RIF: ${aRifSeniat(emisor.rif)}`, M, ey); ey += 14;
   for (const l of envolver(emisor.direccion_fiscal, 280, 9)) { T(l, M, ey, { s: 9 }); ey += 12; }

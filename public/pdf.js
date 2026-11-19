@@ -1,0 +1,255 @@
+// PDF de presupuestos y facturas. Se genera en el navegador con pdf-lib (incluida en /vendor, sin internet).
+// construirPdf(PDFLib, { doc, lineas, impuestos }) -> Uint8Array. Los datos son los que devuelve GET /api/documentos/:id.
+// Solo depende de dinero.js, para poder probarlo fuera del navegador.
+import { tasaTexto, cantidadTexto, aRifSeniat } from "./dinero.js";
+
+const ANCHO = 595.28, ALTO = 841.89, M = 40;
+const num = (c) => (c / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fecha = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
+export const numeroDoc = (d) => (d.numero == null ? "" : d.tipo === "PRESUPUESTO" ? `P-${String(d.numero).padStart(6, "0")}` : d.es_nota_credito ? `NC-${String(d.numero).padStart(8, "0")}` : d.es_nota_debito ? `ND-${String(d.numero).padStart(8, "0")}` : String(d.numero).padStart(8, "0"));
+const bonito = (t) => { const d = String(t ?? "").replace(/\D/g, ""); return /^584\d{9}$/.test(d) ? `+58 ${d.slice(2, 5)} ${d.slice(5, 8)} ${d.slice(8)}` : String(t ?? ""); };
+const masDias = (iso, dias) => { const f = new Date(`${iso}T12:00:00Z`); f.setUTCDate(f.getUTCDate() + dias); return f.toISOString().slice(0, 10); };
+
+export function nombreArchivo(d) {
+  const base = d.tipo === "PRESUPUESTO" ? "Presupuesto" : d.es_nota_credito ? "Nota-de-Credito" : d.es_nota_debito ? "Nota-de-Debito" : "Factura";
+  return `${d.modo === "PRACTICA" ? "PRACTICA-" : ""}${base}-${numeroDoc(d)}.pdf`;
+}
+
+async function incrustarLogo(pdf, dataUrl) {
+  if (!dataUrl || typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) return null;
+  try {
+    return dataUrl.startsWith("data:image/png") ? await pdf.embedPng(dataUrl) : await pdf.embedJpg(dataUrl);
+  } catch {
+    return null;
+  }
+}
+
+export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA, negocio }) {
+  if (!D.emisor_json || D.numero == null) throw new Error("Solo se puede crear el PDF de un documento emitido.");
+  const { PDFDocument, StandardFonts, rgb, degrees } = L;
+  const pdf = await PDFDocument.create();
+  const f = await pdf.embedFont(StandardFonts.Helvetica), fb = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const permitido = new Set(f.getCharacterSet());
+  const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
+  const emisorGuardado = JSON.parse(D.emisor_json), reglas = JSON.parse(D.parametros_json || "{}");
+  const emisor = {
+    nombre_razon_social: negocio?.nombre_razon_social || emisorGuardado.nombre_razon_social,
+    rif: aRifSeniat(negocio?.rif || emisorGuardado.rif),
+    direccion_fiscal: negocio?.direccion_fiscal || emisorGuardado.direccion_fiscal,
+    telefono: negocio?.telefono ?? emisorGuardado.telefono,
+    email: negocio?.email ?? emisorGuardado.email,
+    logo_base64: negocio?.logo_base64 ?? emisorGuardado.logo_base64 ?? null,
+  };
+  const logoImg = await incrustarLogo(pdf, emisor.logo_base64);
+  const esFactura = D.tipo === "FACTURA", esNc = !!D.es_nota_credito, esNd = !!D.es_nota_debito;
+  const titulo = esNc ? "NOTA DE CRÉDITO" : esNd ? "NOTA DE DÉBITO" : esFactura ? "FACTURA" : "PRESUPUESTO";
+
+  const paginas = []; let pag, y;
+  const diagonal = (p, txt, size, grados, color, opacity, dy = 0) => {
+    const w = fb.widthOfTextAtSize(txt, size), a = (grados * Math.PI) / 180, h = size * 0.7;
+    p.drawText(txt, { x: ANCHO / 2 - (w / 2) * Math.cos(a) + (h / 2) * Math.sin(a), y: ALTO / 2 - dy - (w / 2) * Math.sin(a) - (h / 2) * Math.cos(a),
+      size, font: fb, color: rgb(...color), rotate: degrees(grados), opacity });
+  };
+  const marcas = (p) => {
+    if (D.modo === "PRACTICA") diagonal(p, "PRÁCTICA - SIN VALOR", 40, 35, [0.6, 0.6, 0.6], 0.4, 150);
+    if (D.estado === "ANULADO") diagonal(p, "ANULADA", 100, 35, [0.85, 0.15, 0.15], 0.22, -40);
+  };
+  const nueva = () => { pag = pdf.addPage([ANCHO, ALTO]); paginas.push(pag); marcas(pag); y = M; };
+  const T = (t, x, top, { s = 10, b = false, c = [0.12, 0.12, 0.12], der = false, p = pag } = {}) => {
+    const txt = limpio(t), fuente = b ? fb : f, w = fuente.widthOfTextAtSize(txt, s);
+    p.drawText(txt, { x: der ? x - w : x, y: ALTO - top - s, size: s, font: fuente, color: rgb(...c) });
+    return w;
+  };
+  const envolver = (t, max, s, b = false) => {
+    const fuente = b ? fb : f, salida = []; let linea = "";
+    for (const palabra of limpio(t).split(" ")) {
+      const prueba = linea ? `${linea} ${palabra}` : palabra;
+      if (linea && fuente.widthOfTextAtSize(prueba, s) > max) { salida.push(linea); linea = palabra; } else linea = prueba;
+    }
+    if (linea) salida.push(linea);
+    return salida.length ? salida : [""];
+  };
+  const caja = (top, alto, relleno, borde) => pag.drawRectangle({ x: M, y: ALTO - top - alto, width: ANCHO - 2 * M, height: alto, color: rgb(...relleno), borderColor: borde ? rgb(...borde) : undefined, borderWidth: borde ? 1 : 0 });
+
+  nueva();
+  // ---- encabezado: logo + emisor a la izquierda, título y números a la derecha
+  let ey = y;
+  if (logoImg) {
+    const esc = Math.min(115 / logoImg.width, 40 / logoImg.height, 1);
+    const lw = logoImg.width * esc, lh = logoImg.height * esc;
+    pag.drawImage(logoImg, { x: M, y: ALTO - ey - lh, width: lw, height: lh });
+    ey += lh + 6;
+  }
+  T(emisor.nombre_razon_social, M, ey, { s: 14, b: true }); ey += 19;
+  T(`RIF: ${emisor.rif}`, M, ey); ey += 14;
+  for (const l of envolver(emisor.direccion_fiscal, 280, 9)) { T(l, M, ey, { s: 9 }); ey += 12; }
+  const contacto = [emisor.telefono, emisor.email].filter(Boolean).join("  ·  ");
+  if (contacto) { T(contacto, M, ey, { s: 9 }); ey += 12; }
+  let dy = y; const R = ANCHO - M;
+  T(titulo, R, dy, { s: titulo.length > 14 ? 15 : 22, b: true, der: true }); dy += 26;
+  T(`N.º: ${numeroDoc(D)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
+  if (esFactura) {
+    const nroControl = D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`;
+    T(`N.º de Control: ${nroControl}`, R, dy, { s: 9, b: true, der: true }); dy += 13;
+  }
+  T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
+  if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
+  y = Math.max(ey, dy) + 8;
+
+  if (D.estado === "ANULADO") {
+    const ls = envolver(`DOCUMENTO ANULADO el ${fecha(D.anulado_en)}. Motivo: ${D.motivo_anulacion || ""}`, ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
+    caja(y, h, [0.98, 0.9, 0.9], [0.85, 0.15, 0.15]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.7, 0.1, 0.1] })); y += h + 10;
+  }
+  if (esNc || esNd) {
+    const numAf = FA?.numero ?? reglas.factura_afectada_numero, fecAf = FA?.fecha_emision ?? reglas.factura_afectada_fecha, ctlAf = FA?.control_fiscal || FA?.control_interno || reglas.factura_afectada_control;
+    const refTxt = `FACTURA AFECTADA (SENIAT Providencia SNAT/2011/0071): Factura N.º ${String(numAf ?? "").padStart(8, "0")}  ·  Fecha: ${fecha(fecAf)}${ctlAf ? `  ·  Control: ${String(ctlAf).padStart(8, "0")}` : ""}`;
+    const motTxt = `Motivo de ${esNd ? "la nota de débito / recargo" : "la devolución / ajuste"}: ${D.motivo_nc || D.nota || ""}`;
+    const ls = [...envolver(refTxt, ANCHO - 2 * M - 16, 9, true), ...envolver(motTxt, ANCHO - 2 * M - 16, 9)], h = ls.length * 12 + 10;
+    caja(y, h, [0.94, 0.96, 1], [0.16, 0.34, 0.66]);
+    ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: i === 0, c: [0.1, 0.25, 0.55] }));
+    y += h + 10;
+  }
+
+  // ---- cliente
+  const datosCliente = [["Cliente", D.cliente_nombre], ["RIF / C.I.", D.cliente_rif], D.cliente_direccion && ["Dirección", D.cliente_direccion], D.cliente_whatsapp && ["WhatsApp", bonito(D.cliente_whatsapp)]].filter(Boolean);
+  const textoCliente = datosCliente.flatMap(([k, v]) => envolver(v, 400, 10).map((l, i) => [i === 0 ? k : "", l]));
+  const hc = textoCliente.length * 14 + 12;
+  caja(y, hc, [0.95, 0.96, 0.98]); textoCliente.forEach(([k, v], i) => { T(k, M + 8, y + 6 + i * 14, { s: 9, c: [0.4, 0.4, 0.4] }); T(v, M + 80, y + 6 + i * 14, { s: 10, b: k === "Cliente" }); });
+  y += hc + 12;
+
+  // ---- renglones
+  const col = { cant: M + 4, desc: M + 48, pu: 370, iva: 418, usd: 488, bs: R - 2 };
+  const encabezadoTabla = () => {
+    caja(y, 18, [0.16, 0.34, 0.66]);
+    const c = [1, 1, 1];
+    T("Cant.", col.cant, y + 4, { s: 8.5, b: true, c }); T("Descripción", col.desc, y + 4, { s: 8.5, b: true, c });
+    T("P. unit. USD", col.pu, y + 4, { s: 8.5, b: true, c, der: true }); T("IVA", col.iva, y + 4, { s: 8.5, b: true, c, der: true });
+    T("Monto USD", col.usd, y + 4, { s: 8.5, b: true, c, der: true }); T("Monto Bs.", col.bs, y + 4, { s: 8.5, b: true, c, der: true });
+    y += 22;
+  };
+  encabezadoTabla();
+  for (const l of lineas) {
+    const ds = envolver(l.descripcion, col.pu - col.desc - 70, 9.5), h = ds.length * 12 + 6;
+    if (y + h > ALTO - M - 30) { nueva(); encabezadoTabla(); }
+    T(cantidadTexto(l.cantidad_milli), col.cant, y + 3, { s: 9.5 });
+    ds.forEach((t, i) => T(t, col.desc, y + 3 + i * 12, { s: 9.5 }));
+    T(num(l.precio_usd), col.pu, y + 3, { s: 9.5, der: true }); T(l.alicuota_cent === 0 ? "Exento" : `${l.alicuota_cent / 100}%`, col.iva, y + 3, { s: 9.5, der: true });
+    T(num(l.monto_usd), col.usd, y + 3, { s: 9.5, der: true }); T(num(l.monto_bs), col.bs, y + 3, { s: 9.5, der: true });
+    pag.drawLine({ start: { x: M, y: ALTO - y - h }, end: { x: R, y: ALTO - y - h }, thickness: 0.4, color: rgb(0.85, 0.85, 0.85) });
+    y += h;
+  }
+
+  // ---- totales (USD de referencia; Bs. son los montos legales)
+  const filas = [];
+  for (const i of impuestos) {
+    if (i.alicuota_cent === 0) filas.push(["Monto exento", i.base_usd, i.base_bs]);
+    else { filas.push([`Base imponible ${i.alicuota_cent / 100}%`, i.base_usd, i.base_bs]); filas.push([`IVA ${i.alicuota_cent / 100}%`, i.iva_usd, i.iva_bs]); }
+  }
+  if (D.aplica_igtf && D.igtf_usd > 0) {
+    const alicIgtf = (D.igtf_alicuota_cent || 300) / 100;
+    filas.push(["Subtotal + IVA", (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0), (D.subtotal_bs ?? 0) + (D.iva_bs ?? 0)]);
+    filas.push([`IGTF (${alicIgtf}%)`, D.igtf_usd, D.igtf_bs ?? 0]);
+  }
+  const notaLineas = D.nota ? envolver(`Nota: ${D.nota}`, ANCHO - 2 * M, 9) : [];
+  const cambio = envolver(reglas.leyenda_cambio || "", ANCHO - 2 * M, 8);
+  const necesario = 30 + filas.length * 14 + 30 + 14 + cambio.length * 11 + notaLineas.length * 12 + 20;
+  if (y + necesario > ALTO - M - 24) nueva();
+  y += 10;
+  T("USD", col.usd, y, { s: 8, c: [0.45, 0.45, 0.45], der: true }); T("Bs.", col.bs, y, { s: 8, c: [0.45, 0.45, 0.45], der: true }); y += 13;
+  for (const [t, u, b] of filas) { T(t, col.pu - 60, y, { s: 9.5 }); T(num(u), col.usd, y, { s: 9.5, der: true }); T(num(b), col.bs, y, { s: 9.5, der: true }); y += 14; }
+  pag.drawLine({ start: { x: col.pu - 60, y: ALTO - y + 2 }, end: { x: R, y: ALTO - y + 2 }, thickness: 0.8, color: rgb(0.2, 0.2, 0.2) }); y += 4;
+  T(D.aplica_igtf && D.igtf_usd > 0 ? "TOTAL + IGTF" : "TOTAL", col.pu - 60, y, { s: 12, b: true }); T(num(D.total_usd), col.usd, y, { s: 12, b: true, der: true }); T(num(D.total_bs), col.bs, y, { s: 12, b: true, der: true }); y += 26;
+
+  T(`Tasa de cambio BCV: Bs. ${tasaTexto(D.tasa_e8)} por USD`, M, y, { s: 9, b: true }); y += 14;
+  cambio.forEach((l) => { T(l, M, y, { s: 8, c: [0.4, 0.4, 0.4] }); y += 11; });
+  y += 4; notaLineas.forEach((l) => { T(l, M, y, { s: 9 }); y += 12; });
+
+  paginas.forEach((p, i) => { // pie de cada página
+    T(`Página ${i + 1} de ${paginas.length}  ·  Conforme a Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102`, ANCHO / 2 + 115, ALTO - 28, { s: 7.5, c: [0.55, 0.55, 0.55], der: true, p });
+  });
+  return pdf.save();
+}
+
+// ------------------------------------------------------------------ RECIBO DE PAGO (comprobante interno, sin valor fiscal)
+const METODO = { PAGO_MOVIL: "Pago móvil", TRANSFERENCIA: "Transferencia", EFECTIVO: "Efectivo", ZELLE: "Zelle", BINANCE: "Binance Pay", PAYPAL: "PayPal", RETENCION_IVA: "Retención IVA SENIAT", RETENCION_ISLR: "Retención ISLR (Decreto 1.808)", OTRO: "Otro" };
+export const metodoNombre = (m) => METODO[m] ?? m;
+export const numeroRecibo = (n) => String(n).padStart(8, "0");
+export const nombreRecibo = (p) => `${p.modo === "PRACTICA" ? "PRACTICA-" : ""}Recibo-${numeroRecibo(p.numero)}.pdf`;
+const dolar = (c) => `$ ${num(c)}`;
+
+// construirRecibo(PDFLib, { pago, documento }) -> Uint8Array. Datos tal como los devuelve GET /api/pagos/:id.
+export async function construirRecibo(L, { pago: P, documento: D }) {
+  const { PDFDocument, StandardFonts, rgb, degrees } = L;
+  const pdf = await PDFDocument.create();
+  const f = await pdf.embedFont(StandardFonts.Helvetica), fb = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const permitido = new Set(f.getCharacterSet());
+  const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
+  const emisor = JSON.parse(D.emisor_json || "{}"), reglas = JSON.parse(P.reglas_json || "{}");
+  const logoImg = await incrustarLogo(pdf, emisor.logo_base64);
+  const pag = pdf.addPage([ANCHO, ALTO]), R = ANCHO - M;
+  const T = (t, x, top, { s = 10, b = false, c = [0.12, 0.12, 0.12], der = false } = {}) => {
+    const txt = limpio(t), fuente = b ? fb : f, w = fuente.widthOfTextAtSize(txt, s);
+    pag.drawText(txt, { x: der ? x - w : x, y: ALTO - top - s, size: s, font: fuente, color: rgb(...c) }); return w;
+  };
+  const envolver = (t, max, s, b = false) => {
+    const fuente = b ? fb : f, salida = []; let linea = "";
+    for (const palabra of limpio(t).split(" ")) {
+      const prueba = linea ? `${linea} ${palabra}` : palabra;
+      if (linea && fuente.widthOfTextAtSize(prueba, s) > max) { salida.push(linea); linea = palabra; } else linea = prueba;
+    }
+    if (linea) salida.push(linea); return salida.length ? salida : [""];
+  };
+  const caja = (top, alto, relleno, borde) => pag.drawRectangle({ x: M, y: ALTO - top - alto, width: ANCHO - 2 * M, height: alto, color: rgb(...relleno), borderColor: borde ? rgb(...borde) : undefined, borderWidth: borde ? 1 : 0 });
+  const diagonal = (txt, size, color, opacity, dy) => {
+    const w = fb.widthOfTextAtSize(txt, size), a = (35 * Math.PI) / 180, h = size * 0.7;
+    pag.drawText(txt, { x: ANCHO / 2 - (w / 2) * Math.cos(a) + (h / 2) * Math.sin(a), y: ALTO / 2 - dy - (w / 2) * Math.sin(a) - (h / 2) * Math.cos(a), size, font: fb, color: rgb(...color), rotate: degrees(35), opacity });
+  };
+  if (P.modo === "PRACTICA") diagonal("PRÁCTICA - SIN VALOR", 40, [0.6, 0.6, 0.6], 0.4, 150);
+  if (P.estado === "ANULADO") diagonal("ANULADO", 100, [0.85, 0.15, 0.15], 0.22, -40);
+
+  let y = M, ey = y;
+  if (logoImg) {
+    const esc = Math.min(115 / logoImg.width, 40 / logoImg.height, 1);
+    const lw = logoImg.width * esc, lh = logoImg.height * esc;
+    pag.drawImage(logoImg, { x: M, y: ALTO - ey - lh, width: lw, height: lh });
+    ey += lh + 6;
+  }
+  T(emisor.nombre_razon_social, M, ey, { s: 14, b: true }); ey += 19;
+  T(`RIF: ${aRifSeniat(emisor.rif)}`, M, ey); ey += 14;
+  for (const l of envolver(emisor.direccion_fiscal, 280, 9)) { T(l, M, ey, { s: 9 }); ey += 12; }
+  const contacto = [emisor.telefono, emisor.email].filter(Boolean).join("  ·  ");
+  if (contacto) { T(contacto, M, ey, { s: 9 }); ey += 12; }
+  let dy = y;
+  T("RECIBO DE PAGO", R, dy, { s: 17, b: true, der: true }); dy += 25;
+  T(`N.º: ${numeroRecibo(P.numero)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
+  T(`Fecha del pago: ${fecha(P.fecha_pago)}`, R, dy, { s: 9, der: true }); dy += 13;
+  y = Math.max(ey, dy) + 10;
+
+  if (P.estado === "ANULADO") {
+    const ls = envolver(`RECIBO ANULADO el ${fecha(P.anulado_en)}. Motivo: ${P.motivo_anulacion || ""}`, ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;
+    caja(y, h, [0.98, 0.9, 0.9], [0.85, 0.15, 0.15]); ls.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.7, 0.1, 0.1] })); y += h + 10;
+  }
+  const nroControl = D.tipo === "FACTURA" ? (D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`) : null;
+  const nroPresupuesto = D.presupuesto_numero != null ? `P-${String(D.presupuesto_numero).padStart(6, "0")}` : null;
+  const filas = [
+    ["Recibimos de", D.cliente_nombre], ["RIF / C.I.", D.cliente_rif],
+    ["Por concepto de", `${D.tipo === "FACTURA" ? (D.es_nota_debito ? "Pago de la Nota de Débito N.º" : "Pago de la factura N.º") : "Abono al presupuesto N.º"} ${numeroDoc(D)}`],
+    nroControl && ["N.º de Control Fiscal", nroControl],
+    nroPresupuesto && ["Presupuesto de origen N.º", nroPresupuesto],
+    ["Forma de pago", `${metodoNombre(P.metodo)} (${P.moneda === "BS" ? "Bolívares" : "Divisas USD"})`],
+    P.comprobante_retencion && [P.es_retencion_islr ? `Comprobante Retención ISLR (${P.porcentaje_retencion || ""}%)` : "Comprobante Retención SENIAT", P.comprobante_retencion],
+    P.referencia && P.referencia !== P.comprobante_retencion && ["Referencia", P.referencia],
+    ["Monto recibido", P.moneda === "BS" ? `Bs. ${num(P.monto_recibido)}` : dolar(P.monto_recibido)],
+    P.moneda === "BS" && ["Tasa BCV del día del pago", `Bs. ${tasaTexto(P.tasa_e8)} por USD`],
+    ["Equivale a (acreditado)", dolar(P.monto_usd)], ["Total del documento", dolar(D.total_usd)],
+    ["Saldo después de este pago", P.saldo_despues_usd === 0 ? `${dolar(0)}  (PAGADO)` : dolar(P.saldo_despues_usd)],
+  ].filter(Boolean);
+  const alto = filas.length * 20 + 14;
+  caja(y, alto, [0.95, 0.96, 0.98]);
+  filas.forEach(([k, v], i) => { T(k, M + 10, y + 9 + i * 20, { s: 9.5, c: [0.4, 0.4, 0.4] }); T(v, M + 190, y + 8 + i * 20, { s: 11, b: ["Monto recibido", "Equivale a (acreditado)", "Recibimos de"].includes(k) }); });
+  y += alto + 14;
+  if (P.nota) { for (const l of envolver(`Nota: ${P.nota}`, ANCHO - 2 * M, 9)) { T(l, M, y, { s: 9 }); y += 12; } y += 4; }
+  for (const l of envolver("Comprobante de cobro vinculado a documento emitido conforme a normativa SENIAT.", ANCHO - 2 * M, 8)) { T(l, M, y, { s: 8, c: [0.45, 0.45, 0.45] }); y += 11; }
+  T(`FacturaYa Venezuela · Providencia SENIAT SNAT/2011/0071`, ANCHO / 2 + 90, ALTO - 28, { s: 7.5, c: [0.55, 0.55, 0.55], der: true });
+  return pdf.save();
+}

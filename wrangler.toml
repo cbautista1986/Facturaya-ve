@@ -1,0 +1,40 @@
+name = "facturaya"  # debe ser igual al nombre del Worker en Cloudflare
+main = "src/index.ts"
+compatibility_date = "2025-10-20"
+# Cuando compres tu dominio propio y lo conectes en Cloudflare, descomenta la línea de abajo para ocultar *.workers.dev:
+# workers_dev = false
+
+# El front end (carpeta public/) se sirve gratis y sin límite; el Worker solo corre para /api/*
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "facturacion_ve_db"
+database_id = "1c555fec-951d-48f9-bbb4-fc54bf6c2e84"
+
+[observability]
+enabled = true
+
+# Turnstile anti-bots (clave pública segura para el repositorio; las claves secretas y datos de contacto van SOLO en Cloudflare -> Variables and Secrets)
+[vars]
+TURNSTILE_SITE_KEY = "0x4AAAAAAGBXwZFePzf-zu4f"
+# Opcional (configurar preferiblemente en Cloudflare -> Variables and Secrets):
+# TURNSTILE_HOSTNAMES = "facturacion.tu-dominio.com"
+# WHATSAPP_CONTACTO = "584140000000"
+# SUPER_ADMIN_EMAIL = "admin@tu-dominio.com"
+
+# Sincronización automática de Tasa BCV Centralizada, Cierre Contable Mensual y Respaldo Diario + Archivo Mensual R2 (8:00 AM, 1:00 PM y 6:00 PM hora de Caracas UTC-4)
+[triggers]
+crons = ["0 12,17,22 * * *"]
+
+# Respaldo automático diario (30 días) y archivo mensual fiscal (10 años) en Cloudflare R2 (bucket privado, gratis hasta 10 GB/mes):
+[[r2_buckets]]
+binding = "RESPALDOS_R2"
+bucket_name = "facturaya-respaldos"
+
+# Nota de privacidad multi-inquilino:
+# No incluyas aquí bindings [[d1_databases]] con nombres, RIF o UUIDs de empresas clientes.
+# Las bases D1 dedicadas de clientes se enlazan dinámicamente mediante el panel Multi-Tenant y los secretos de Cloudflare.

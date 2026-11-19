@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="fy-bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0A1F3C"/>
+      <stop offset="55%" stop-color="#144992"/>
+      <stop offset="100%" stop-color="#1A73E8"/>
+    </linearGradient>
+    <linearGradient id="fy-ring" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.32"/>
+      <stop offset="100%" stop-color="#93C5FD" stop-opacity="0.08"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#fy-bg)"/>
+  <rect x="5" y="5" width="54" height="54" rx="13" stroke="url(#fy-ring)" stroke-width="1.5"/>
+  <!-- Architectural corporate F monogram -->
+  <path d="M21 16H45V23.2H28.8V30.4H41.5V37.2H28.8V48H21V16Z" fill="#FFFFFF"/>
+  <!-- Precision emerald accent bar -->
+  <rect x="35.5" y="41.5" width="9.5" height="6.5" rx="2" fill="#22C55E"/>
+</svg>

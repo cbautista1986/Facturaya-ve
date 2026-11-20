@@ -60,7 +60,14 @@ test("Suite Integral SENIAT: Facturación en centavos, Stock, Nota de Crédito, 
   });
   assert.equal(inst.status, 200);
 
-  await reqJson(env, jarAdmin, "/api/config", "PUT", { tasa_bcv: "100,00", igtf_activo: 1 });
+  const cfgTasa = await reqJson(env, jarAdmin, "/api/config", "PUT", { tasa_bcv: "100,00" });
+  assert.equal(cfgTasa.status, 200);
+  const cfgEsp = await reqJson(env, jarAdmin, "/api/config/regimen", "PUT", {
+    tipo_contribuyente: "ESPECIAL",
+    clave_actual: "ClavePruebaSegura2026!",
+    confirmo_regimen: true,
+  });
+  assert.equal(cfgEsp.status, 200);
 
   // Pasar a Modo REAL iniciando numeración oficial desde 00000001
   const enVivo = await reqJson(env, jarAdmin, "/api/sistema/salir-en-vivo", "POST", {

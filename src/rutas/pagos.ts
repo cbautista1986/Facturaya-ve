@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { aCentavos, aRifSeniat, aTasaE8, bsAUsd } from "../../public/dinero.js";
 import { enviarCorreo } from "../correo";
 import { EMAIL, PAGADO, RIF, auditar, comodin, falla, fechaCaracas, idParam, leerJson, modoActual, normalizarWhatsapp, parametrosVigentes, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
+import { leerTipoContribuyente } from "../regimen";
 
 const pagos = new Hono<Env>();
 pagos.use("*", requiereSesion);
@@ -140,6 +141,9 @@ pagos.post("/", async (c) => {
   let porcentajeRetencion: number | null = null;
 
   if (esRetencionIva) {
+    if ((await leerTipoContribuyente(db)) === "FORMAL") {
+      return falla(c, 400, "Un Contribuyente Formal no cobra IVA, por lo que no recibe retenciones de IVA.");
+    }
     if (D.tipo !== "FACTURA") return falla(c, 400, "Las retenciones de IVA solo se aplican sobre facturas emitidas.");
     if ((D.iva_bs ?? 0) <= 0) return falla(c, 400, "Esta factura es exenta y no tiene IVA para retener.");
     const brutoComp = String(b.comprobante_retencion ?? b.referencia ?? "").replace(/[\s-]/g, "");

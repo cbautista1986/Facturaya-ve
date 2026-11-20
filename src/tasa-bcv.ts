@@ -3,6 +3,7 @@
 import { aTasaE8, aRifSeniat } from "../public/dinero.js";
 import { EMAIL, fechaCaracas, modoActual } from "./comun";
 import { enviarCorreo, leerConfigCorreo } from "./correo";
+import { normalizarTipoContribuyente, reglasRegimen } from "./regimen";
 
 export type TasaBcvGlobal = {
   tasa_bcv: string;
@@ -295,8 +296,11 @@ export async function enviarCierreMensualInquilino(
   }
 
   const perfil = await db
-    .prepare(`SELECT nombre_razon_social, rif, email FROM perfil_emisor WHERE id = 1`)
-    .first<{ nombre_razon_social: string; rif: string; email: string }>();
+    .prepare(`SELECT nombre_razon_social, rif, email, tipo_contribuyente, igtf_activo FROM perfil_emisor WHERE id = 1`)
+    .first<{ nombre_razon_social: string; rif: string; email: string; tipo_contribuyente?: string; igtf_activo?: number }>();
+  const tipoContrib = normalizarTipoContribuyente(perfil?.tipo_contribuyente, perfil?.igtf_activo);
+  const reg = reglasRegimen(tipoContrib);
+  const esFormal = tipoContrib === "FORMAL";
 
   const { results: usuariosDest } = await db
     .prepare(`SELECT email FROM usuarios WHERE activo = 1 AND rol IN ('SUPER_ADMIN', 'ADMIN', 'CONTADOR') ORDER BY id`)
@@ -455,19 +459,22 @@ export async function enviarCierreMensualInquilino(
     ["Fecha", "Factura_Proveedor", "Control", "RIF_Proveedor", "Proveedor", "Base_Bs", "IVA_Bs", "Total_Bs"],
     filasCsvCompras
   );
-  const csvResumen = armarCsv(
-    ["Concepto", "Monto_Bs", "Monto_USD"],
-    [
-      ["Ingresos Brutos Municipales (Ventas Netas sin IVA)", fmtDec(baseVentasBs), fmtDec(baseVentasUsd)],
-      ["Debito Fiscal IVA (Ventas)", fmtDec(debitoIvaBs), ""],
-      ["Credito Fiscal IVA (Compras)", fmtDec(creditoIvaBs), ""],
-      ["Retenciones de IVA Soportadas (75% / 100%)", fmtDec(retIvaBs), ""],
-      ["Cuota Tributaria IVA a Pagar SENIAT", fmtDec(aPagarIvaBs), ""],
-      ["Excedente Credito Fiscal Proximo Mes", fmtDec(excedenteCreditoBs), ""],
-      ["IGTF 3% Percibido en Divisas", fmtDec(igtfVentasBs), fmtDec(igtfVentasUsd)],
-      ["Retenciones de ISLR Soportadas (Decreto 1808)", fmtDec(retIslrBs), ""],
-    ]
-  );
+  const mostrarIgtfCorreo = reg.cobraIgtf || igtfVentasBs > 0;
+  const filasResumenCsv: unknown[][] = [
+    ["Ingresos Brutos Municipales (Ventas Netas sin IVA)", fmtDec(baseVentasBs), fmtDec(baseVentasUsd)],
+    ...(!esFormal
+      ? [
+          ["Debito Fiscal IVA (Ventas)", fmtDec(debitoIvaBs), ""],
+          ["Credito Fiscal IVA (Compras)", fmtDec(creditoIvaBs), ""],
+          ["Retenciones de IVA Soportadas (75% / 100%)", fmtDec(retIvaBs), ""],
+          ["Cuota Tributaria IVA a Pagar SENIAT", fmtDec(aPagarIvaBs), ""],
+          ["Excedente Credito Fiscal Proximo Mes", fmtDec(excedenteCreditoBs), ""],
+        ]
+      : [["Condicion Fiscal", "CONTRIBUYENTE FORMAL (EXENTO DE IVA - ART. 8 LEY IVA)", ""]]),
+    ...(mostrarIgtfCorreo ? [["IGTF 3% Percibido en Divisas", fmtDec(igtfVentasBs), fmtDec(igtfVentasUsd)]] : []),
+    ["Retenciones de ISLR Soportadas (Decreto 1808)", fmtDec(retIslrBs), ""],
+  ];
+  const csvResumen = armarCsv(["Concepto", "Monto_Bs", "Monto_USD"], filasResumenCsv);
   const csvRetenciones = armarCsv(
     ["Fecha_Pago", "Tipo_Retencion", "Comprobante", "Factura", "RIF_Agente", "Agente_Retencion", "Monto_Retenido_Bs", "Equivalente_USD"],
     filasCsvRet
@@ -475,36 +482,41 @@ export async function enviarCierreMensualInquilino(
 
   const nombreNegocio = perfil?.nombre_razon_social || "FacturaYa Venezuela";
   const rifNegocio = aRifSeniat(perfil?.rif || "");
+  const introCorreo = esFormal
+    ? `Adjuntamos los <b>4 reportes contables en CSV (compatibles con Excel)</b> correspondientes al período <b>${escHtml(mes)}</b> para Contribuyente Formal (Relación de Ventas, Relación de Compras, ISLR e Ingresos Brutos Municipales):`
+    : mostrarIgtfCorreo
+      ? `Adjuntamos los <b>4 libros y resúmenes fiscales en CSV (compatibles con Excel)</b> correspondientes al período <b>${escHtml(mes)}</b> para la declaración de IVA (Forma 30), IGTF (Forma 99032), ISLR e Ingresos Brutos Municipales:`
+      : `Adjuntamos los <b>4 libros y resúmenes fiscales en CSV (compatibles con Excel)</b> correspondientes al período <b>${escHtml(mes)}</b> para la declaración de IVA (Forma 30), ISLR e Ingresos Brutos Municipales:`;
 
   const html = `<div style="font-family:system-ui,-apple-system,sans-serif;max-width:640px;margin:0 auto;padding:24px;border:1px solid #dde3ec;border-radius:16px;color:#1f2933">
     <div style="border-bottom:2px solid #1A73E8;padding-bottom:12px;margin-bottom:16px">
       <h2 style="margin:0;color:#1A73E8">📊 Cierre Contable y Fiscal SENIAT · ${escHtml(mes)}</h2>
-      <p style="margin:4px 0 0;font-size:13px;color:#5f6b7a"><b>${escHtml(nombreNegocio)}</b> · RIF: ${escHtml(rifNegocio)} · Modo: ${escHtml(modo)}</p>
+      <p style="margin:4px 0 0;font-size:13px;color:#5f6b7a"><b>${escHtml(nombreNegocio)}</b> · RIF: ${escHtml(rifNegocio)} · ${escHtml(reg.etiqueta)} · Modo: ${escHtml(modo)}</p>
     </div>
-    <p style="font-size:14px;color:#374151;margin:0 0 16px">
-      Adjuntamos los <b>4 libros y resúmenes fiscales en CSV (compatibles con Excel)</b> correspondientes al período <b>${escHtml(mes)}</b> para la declaración de IVA (Forma 30), IGTF (Forma 99032), ISLR e Ingresos Brutos Municipales:
-    </p>
+    <p style="font-size:14px;color:#374151;margin:0 0 16px">${introCorreo}</p>
     <table style="width:100%;border-collapse:collapse;font-size:14px;margin-bottom:16px">
       <tbody>
         <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb"><b>🏛️ Ingresos Brutos Municipales (Ventas Netas)</b></td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right"><b>${fmtBs(baseVentasBs)}</b> (${fmtUsd(baseVentasUsd)})</td></tr>
-        <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">📈 Débito Fiscal IVA (Ventas: ${docsVentas.length} doc.)</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(debitoIvaBs)}</td></tr>
+        ${!esFormal ? `<tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">📈 Débito Fiscal IVA (Ventas: ${docsVentas.length} doc.)</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(debitoIvaBs)}</td></tr>
         <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">📉 Crédito Fiscal IVA (Compras: ${docsCompras.length} doc.)</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">- ${fmtBs(creditoIvaBs)}</td></tr>
         <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">🧾 Retenciones de IVA recibidas (Comprobantes)</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">- ${fmtBs(retIvaBs)}</td></tr>
-        <tr style="background:#f8fafd"><td style="padding:10px;border-bottom:2px solid #dde3ec"><b>⚖️ ${aPagarIvaBs > 0 ? "Cuota Tributaria IVA a Pagar SENIAT" : "Excedente Crédito Fiscal Próximo Mes"}</b></td><td style="padding:10px;border-bottom:2px solid #dde3ec;text-align:right;font-size:15px"><b>${fmtBs(aPagarIvaBs > 0 ? aPagarIvaBs : excedenteCreditoBs)}</b></td></tr>
-        <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">💵 IGTF 3% Percibido en Divisas</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(igtfVentasBs)} (${fmtUsd(igtfVentasUsd)})</td></tr>
+        <tr style="background:#f8fafd"><td style="padding:10px;border-bottom:2px solid #dde3ec"><b>⚖️ ${aPagarIvaBs > 0 ? "Cuota Tributaria IVA a Pagar SENIAT" : "Excedente Crédito Fiscal Próximo Mes"}</b></td><td style="padding:10px;border-bottom:2px solid #dde3ec;text-align:right;font-size:15px"><b>${fmtBs(aPagarIvaBs > 0 ? aPagarIvaBs : excedenteCreditoBs)}</b></td></tr>` : `<tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">🩺 Condición Fiscal</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">Contribuyente Formal (Exento de IVA)</td></tr>`}
+        ${mostrarIgtfCorreo ? `<tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">💵 IGTF 3% Percibido en Divisas</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(igtfVentasBs)} (${fmtUsd(igtfVentasUsd)})</td></tr>` : ""}
         <tr><td style="padding:8px;border-bottom:1px solid #e5e7eb">📑 Retenciones de ISLR recibidas (Decreto 1.808)</td><td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(retIslrBs)}</td></tr>
       </tbody>
     </table>
-    <p style="font-size:12px;color:#6b7280;margin:0">Archivos adjuntos: Libro de Ventas, Libro de Compras, Resumen de IVA/Alcaldía y Relación de Retenciones IVA/ISLR.</p>
+    <p style="font-size:12px;color:#6b7280;margin:0">Archivos adjuntos: ${esFormal ? "Relación de Ventas, Relación de Compras, Resumen de Ingresos y Retenciones ISLR." : "Libro de Ventas, Libro de Compras, Resumen de IVA/Alcaldía y Relación de Retenciones IVA/ISLR."}</p>
   </div>`;
 
-  const textoPlano = `Cierre Contable SENIAT ${mes} - ${nombreNegocio} (${rifNegocio})\nIngresos Brutos: ${fmtBs(baseVentasBs)}\nDébito IVA: ${fmtBs(debitoIvaBs)} | Crédito IVA: ${fmtBs(creditoIvaBs)} | Ret. IVA: ${fmtBs(retIvaBs)}\nIVA a Pagar: ${fmtBs(aPagarIvaBs)} | IGTF 3%: ${fmtBs(igtfVentasBs)} | Ret. ISLR: ${fmtBs(retIslrBs)}`;
+  const textoPlano = esFormal
+    ? `Cierre Contable SENIAT ${mes} - ${nombreNegocio} (${rifNegocio}) · Contribuyente Formal\nIngresos Brutos: ${fmtBs(baseVentasBs)} (${fmtUsd(baseVentasUsd)})\nRet. ISLR: ${fmtBs(retIslrBs)}`
+    : `Cierre Contable SENIAT ${mes} - ${nombreNegocio} (${rifNegocio}) · ${reg.etiqueta}\nIngresos Brutos: ${fmtBs(baseVentasBs)}\nDébito IVA: ${fmtBs(debitoIvaBs)} | Crédito IVA: ${fmtBs(creditoIvaBs)} | Ret. IVA: ${fmtBs(retIvaBs)}\nIVA a Pagar: ${fmtBs(aPagarIvaBs)}${mostrarIgtfCorreo ? ` | IGTF 3%: ${fmtBs(igtfVentasBs)}` : ""} | Ret. ISLR: ${fmtBs(retIslrBs)}`;
 
   const adjuntos = [
-    { filename: `Libro-Ventas-${mes}.csv`, content: base64Utf8(csvVentas) },
-    { filename: `Libro-Compras-${mes}.csv`, content: base64Utf8(csvCompras) },
-    { filename: `Resumen-IVA-Alcaldia-${mes}.csv`, content: base64Utf8(csvResumen) },
-    { filename: `Retenciones-IVA-ISLR-${mes}.csv`, content: base64Utf8(csvRetenciones) },
+    { filename: `${esFormal ? "Relacion-Ventas" : "Libro-Ventas"}-${mes}.csv`, content: base64Utf8(csvVentas) },
+    { filename: `${esFormal ? "Relacion-Compras" : "Libro-Compras"}-${mes}.csv`, content: base64Utf8(csvCompras) },
+    { filename: `${esFormal ? "Resumen-Ingresos-Alcaldia" : "Resumen-IVA-Alcaldia"}-${mes}.csv`, content: base64Utf8(csvResumen) },
+    { filename: `Retenciones-${esFormal ? "ISLR" : "IVA-ISLR"}-${mes}.csv`, content: base64Utf8(csvRetenciones) },
   ];
 
   let enviados = 0;

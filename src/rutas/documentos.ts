@@ -10,6 +10,7 @@ import { veCostos } from "../permisos";
 import { sha256 } from "../seguridad";
 import { solicitarControlImprentaDigital } from "./sistema";
 import { EMAIL, PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
+import { leerTipoContribuyente, normalizarTipoContribuyente, reglasRegimen } from "../regimen";
 
 const documentos = new Hono<Env>();
 documentos.use("*", requiereSesion);
@@ -28,6 +29,7 @@ async function prepararEmisorDeduplicado(db: D1Database, perfil: Record<string, 
       direccion_fiscal: perfil?.direccion_fiscal,
       telefono: perfil?.telefono,
       email: perfil?.email,
+      tipo_contribuyente: normalizarTipoContribuyente(perfil?.tipo_contribuyente, perfil?.igtf_activo),
       logo_hash: logoHash,
       logo_base64: null as string | null,
     },
@@ -110,12 +112,17 @@ async function normalizarLineas(c: Ctx, bruto: unknown, permitidas: number[], ma
 async function validarBorrador(c: Ctx, b: Record<string, unknown>, tipo: string) {
   const db = c.env.DB;
   const params = await parametrosVigentes(db, fechaCaracas());
+  const tipoContrib = await leerTipoContribuyente(db);
+  const reglasTipo = reglasRegimen(tipoContrib);
   const permitidas = (params.iva_alicuotas_cent ?? "0,800,1600").split(",").map(Number);
   const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? 300) || 300;
   const clienteId = Number(b.cliente_id) || null;
   if (clienteId && !(await db.prepare(`SELECT 1 AS x FROM clientes WHERE id = ?`).bind(clienteId).first())) return "El cliente elegido ya no existe.";
   const lineas = await normalizarLineas(c, b.lineas, permitidas, Number(params.max_renglones ?? 30));
   if (typeof lineas === "string") return lineas;
+  if (!reglasTipo.cobraIva && lineas.some((l) => l.alicuota_cent !== 0)) {
+    return "Como Contribuyente Formal (Art. 8 Ley del IVA), todos los renglones deben ser Exentos de IVA (0%).";
+  }
   let condicion = "CONTADO", dias: number | null = null;
   if (tipo === "FACTURA" && texto(b.condicion, 10) === "CREDITO") {
     dias = Number(b.dias_credito);
@@ -123,6 +130,9 @@ async function validarBorrador(c: Ctx, b: Record<string, unknown>, tipo: string)
     condicion = "CREDITO";
   }
   const aplicaIgtf = tipo === "FACTURA" && (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on") ? 1 : 0;
+  if (aplicaIgtf && !reglasTipo.cobraIgtf) {
+    return `Solo los Contribuyentes Especiales (SPE) designados por el SENIAT pueden cobrar IGTF (3%). Tu negocio es Contribuyente ${reglasTipo.etiquetaCorta}.`;
+  }
   try {
     return {
       clienteId, nota: texto(b.nota, 500) || null, lineas,
@@ -336,7 +346,14 @@ documentos.post("/:id/emitir", async (c) => {
   if (!lineas.length) return falla(c, 400, "Agrega al menos un renglón.");
   if (lineas.some((l) => l.precio_usd <= 0)) return falla(c, 400, "Todos los renglones deben tener un precio mayor que 0.");
 
-  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, tipo_contribuyente, igtf_activo, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const reglasTipo = reglasRegimen(perfil?.tipo_contribuyente, perfil?.igtf_activo);
+  if (!reglasTipo.cobraIva && lineas.some((l) => Number(l.alicuota_cent) !== 0)) {
+    return falla(c, 400, "Este borrador tiene renglones con IVA, pero el negocio es Contribuyente Formal (Art. 8 Ley del IVA). Edita el borrador para dejarlos Exentos (0%).");
+  }
+  if (doc.aplica_igtf && !reglasTipo.cobraIgtf) {
+    return falla(c, 400, `Este borrador incluye IGTF (3%), pero el negocio es Contribuyente ${reglasTipo.etiquetaCorta}. Solo los Contribuyentes Especiales (SPE) pueden cobrar IGTF.`);
+  }
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? ""));
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV de hoy en Ajustes antes de emitir.");
   const cli = await db.prepare(`SELECT rif_cedula, nombre_apellido, direccion, whatsapp, email FROM clientes WHERE id = ?`).bind(doc.cliente_id).first<Fila>();
@@ -488,12 +505,16 @@ documentos.post("/:id/devolver", async (c) => {
   }
   if (!lineasNc.length) return falla(c, 400, "Indica al menos un renglón con cantidad a devolver mayor que 0.");
 
-  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, tipo_contribuyente, igtf_activo, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const reglasTipo = reglasRegimen(perfil?.tipo_contribuyente, perfil?.igtf_activo);
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? "")) || F.tasa_e8;
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV en Ajustes antes de emitir la Nota de Crédito.");
 
   const fecha = fechaCaracas(), params = await parametrosVigentes(db, fecha);
   const aplicaIgtf = b.aplica_igtf === undefined ? !!F.aplica_igtf : (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on");
+  if (aplicaIgtf && !F.aplica_igtf && !reglasTipo.cobraIgtf) {
+    return falla(c, 400, `No se puede incluir IGTF (3%) en la Nota de Crédito porque ni la factura ni tu condición (${reglasTipo.etiquetaCorta}) aplican IGTF.`);
+  }
   const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? F.igtf_alicuota_cent ?? 300) || 300;
   const calc = calcular(lineasNc, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf });
 
@@ -651,6 +672,8 @@ documentos.post("/:id/nota-debito", async (c) => {
     return falla(c, 409, "Solo se puede emitir una Nota de Débito sobre una factura emitida y vigente.");
   }
 
+  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, tipo_contribuyente, igtf_activo, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const reglasTipo = reglasRegimen(perfil?.tipo_contribuyente, perfil?.igtf_activo);
   const fecha = fechaCaracas(), params = await parametrosVigentes(db, fecha);
   const permitidas = (params.iva_alicuotas_cent ?? "0,800,1600").split(",").map(Number);
   const brutoLineas = Array.isArray(b.lineas) && b.lineas.length > 0
@@ -659,20 +682,25 @@ documentos.post("/:id/nota-debito", async (c) => {
         descripcion: texto(b.concepto || motivo, 200),
         cantidad: b.cantidad ?? "1",
         precio_usd: b.monto_usd ?? b.precio_usd,
-        alicuota_iva: b.alicuota_iva ?? 16,
+        alicuota_iva: b.alicuota_iva ?? (reglasTipo.cobraIva ? 16 : 0),
         tipo: "SERVICIO",
       }];
 
   const lineasNd = await normalizarLineas(c, brutoLineas, permitidas, Number(params.max_renglones ?? 30));
   if (typeof lineasNd === "string") return falla(c, 400, lineasNd);
   if (lineasNd.some((l) => l.precio_usd <= 0)) return falla(c, 400, "El monto de la Nota de Débito debe ser mayor que 0.");
+  if (!reglasTipo.cobraIva && lineasNd.some((l) => l.alicuota_cent !== 0)) {
+    return falla(c, 400, "Como Contribuyente Formal (Art. 8 Ley del IVA), la Nota de Débito debe ser Exenta de IVA (0%).");
+  }
 
-  const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
   const tasaActual = aTasaE8(String(perfil?.tasa_bcv ?? ""));
   const tasa = b.usar_tasa_factura === true ? Number(F.tasa_e8) : (tasaActual && !Number.isNaN(tasaActual) ? tasaActual : Number(F.tasa_e8));
   const aplicaIgtf = b.aplica_igtf !== undefined
     ? (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on")
-    : Boolean(F.aplica_igtf);
+    : (reglasTipo.cobraIgtf && Boolean(F.aplica_igtf));
+  if (aplicaIgtf && !reglasTipo.cobraIgtf) {
+    return falla(c, 400, `Solo los Contribuyentes Especiales (SPE) pueden aplicar IGTF (3%) en Notas de Débito. Tu negocio es Contribuyente ${reglasTipo.etiquetaCorta}.`);
+  }
   const alicuotaIgtf = Number(F.igtf_alicuota_cent || params.igtf_alicuota_cent || 300) || 300;
 
   let calc;

@@ -1,21 +1,21 @@
 # FacturaYa Venezuela — Especificación Técnica y Contable
 
-Software de facturación digital, control administrativo, inventario y generación de libros contables diseñado para contribuyentes ordinarios y especiales en la República Bolivariana de Venezuela.
+Software de facturación digital, control administrativo, inventario y generación de libros contables diseñado para contribuyentes **Formales**, **Ordinarios** y **Especiales (SPE)** en la República Bolivariana de Venezuela.
 
 ---
 
 ## 1. Marco Normativo Implementado
 
-El sistema estructura sus flujos de emisión, cobro, registro de compras y reportes fiscales conforme a la normativa tributaria vigente en Venezuela:
+El sistema estructura sus flujos de emisión, cobro, registro de compras y reportes fiscales conforme a la normativa tributaria vigente en Venezuela, adaptando pantallas, validaciones y libros según el tipo de contribuyente configurado (`FORMAL`, `ORDINARIO` o `ESPECIAL`):
 
 | Norma | Alcance implementado en el software |
 | :--- | :--- |
-| **Providencia Administrativa SNAT/2011/0071** | Emisión de Facturas, Notas de Crédito (`NC`), Notas de Débito (`ND`) y Presupuestos con identificación completa del emisor, receptor, RIF, domicilio fiscal, detalle de alícuotas de IVA (Exento, 8% y 16%) y totales legales. |
+| **Providencia Administrativa SNAT/2011/0071** | Emisión de Facturas, Notas de Crédito (`NC`), Notas de Débito (`ND`) y Presupuestos con identificación completa del emisor, receptor, RIF, domicilio fiscal, detalle de alícuotas de IVA (Exento, 8% y 16%), totales legales y leyenda obligatoria `CONTRIBUYENTE FORMAL · SIN DERECHO A CRÉDITO FISCAL` cuando aplica. |
 | **Providencia Administrativa SNAT/2024/000102** | Soporte para modalidades de facturación digital: operación con Sistema Digital SENIAT y conector API para Imprenta Digital Autorizada con idempotencia de emisión y trazabilidad de números de control. |
-| **Art. 70 y Art. 72 del Reglamento de la Ley del IVA (RLIVA)** | Generación y exportación en PDF y CSV del **Libro de Compras** (mercancía de inventario, gastos operativos y servicios con crédito fiscal) y del **Libro de Ventas** (facturas, notas de débito, notas de crédito e IGTF). |
+| **Art. 70 y Art. 72 del Reglamento de la Ley del IVA (RLIVA)** | Generación y exportación en PDF y CSV del **Libro de Compras** (mercancía de inventario, gastos operativos y servicios con crédito fiscal) y del **Libro de Ventas** (o *Relación de Ventas / Compras* para Contribuyente Formal). |
 | **Art. 128 de la Ley del Banco Central de Venezuela (BCV)** | Expresión bimoneda con monto legal obligatorio en Bolívares (`Bs.`) calculado a la tasa oficial del BCV (sincronizada o manual) congelada históricamente en cada documento y pago emitido. |
-| **Providencia SNAT/2022/000013 (IGTF 3%)** | Cálculo, registro por método de pago en divisas, desglose en comprobantes y relación quincenal de IGTF (Forma 99032). |
-| **Providencia SNAT/2015/0049** | Registro de comprobantes de retención de IVA (75% y 100%) e imputación en el período correspondiente dentro del Libro de Ventas, incluyendo retenciones recibidas en el mes sobre facturas de períodos anteriores. |
+| **Providencia SNAT/2022/000013 (IGTF 3%)** | Habilitado exclusivamente para **Sujetos Pasivos Especiales (SPE)**: cálculo, registro por método de pago en divisas, desglose en comprobantes y relación quincenal de IGTF (Forma 99032); oculto y bloqueado en servidor para Formales y Ordinarios. |
+| **Providencia SNAT/2015/0049** | Registro de comprobantes de retención de IVA (75% y 100%, aplicable a Ordinarios y Especiales) e imputación en el período correspondiente dentro del Libro de Ventas, incluyendo retenciones recibidas en el mes sobre facturas de períodos anteriores. |
 | **Decreto 1.808** | Registro y relación de comprobantes de retención de ISLR (alícuotas configurables: 1%, 2%, 3%, 5%). |
 
 ---

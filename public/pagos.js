@@ -203,8 +203,11 @@ async function editarMetodo(metodo) {
 async function formPago(estado, docId) {
   const { documento: D, pagado_usd, saldo_usd } = await api(`documentos/${encodeURIComponent(docId)}`), hoy = hoyCaracas();
   if (D.estado !== "EMITIDO" || !(saldo_usd > 0)) throw new Error("Este documento no admite más pagos.");
+  const tipoContrib = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
+  const esFormal = tipoContrib === "FORMAL";
+  const esEspecial = tipoContrib === "ESPECIAL";
   const metodosDisp = METODOS_UI.filter(([v]) => {
-    if (v === "RETENCION_IVA") return D.tipo === "FACTURA" && !D.es_nota_credito && (D.iva_bs ?? 0) > 0;
+    if (v === "RETENCION_IVA") return !esFormal && D.tipo === "FACTURA" && !D.es_nota_credito && (D.iva_bs ?? 0) > 0;
     if (v === "RETENCION_ISLR") return D.tipo === "FACTURA" && !D.es_nota_credito && (D.subtotal_bs ?? 0) > 0;
     return true;
   });
@@ -225,7 +228,7 @@ async function formPago(estado, docId) {
       <select id="metodo" name="metodo">${metodosDisp.map(([v, ic, t]) => `<option value="${v}">${ic} ${t}</option>`).join("")}</select>
       <fieldset><legend>Moneda del pago</legend>
         <label class="opcion"><input type="radio" name="moneda" value="USD" checked> 💵 Dólares / Divisas (USD)</label>
-        <label class="opcion"><input type="radio" name="moneda" value="BS"> 🇻🇪 Bolívares (Bs. · Sin IGTF)</label></fieldset>
+        <label class="opcion"><input type="radio" name="moneda" value="BS"> 🇻🇪 Bolívares (Bs.${esEspecial ? " · Sin IGTF" : ""})</label></fieldset>
       <p class="pista" id="pista-igtf-pago"></p>
       <div id="caja-retencion" class="tarjeta" hidden>
         <span class="etiqueta">🧾 RETENCIÓN DE IVA SENIAT (SNAT/2015/0049 · SNAT/2025/000054)</span>
@@ -277,10 +280,14 @@ async function formPago(estado, docId) {
         : esRetIslr
           ? `📑 Comprobante de Retención de ISLR (${porcentajeIslr}% sobre base imponible sin IVA, Decreto 1.808). Queda registrado en tu auxiliar anual ARC.`
           : esBs
-            ? "🇻🇪 Pago en Bolívares: no causa IGTF (0%). Se convierte a USD con la tasa BCV del día."
-            : D.aplica_igtf
-              ? "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): esta factura ya incluye el IGTF (3% SNAT/2022/000013)."
-              : "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): recuerda que los cobros en moneda extranjera están sujetos a IGTF (3% SNAT/2022/000013).";
+            ? (esEspecial
+                ? "🇻🇪 Pago en Bolívares: no causa IGTF (0%). Se convierte a USD con la tasa BCV del día."
+                : "🇻🇪 Pago en Bolívares: se convierte a USD con la tasa BCV del día.")
+            : esEspecial
+              ? (D.aplica_igtf
+                  ? "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): esta factura ya incluye el IGTF (3% SNAT/2022/000013)."
+                  : "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): como Sujeto Pasivo Especial (SPE), los cobros en moneda extranjera causan IGTF (3% SNAT/2022/000013).")
+              : "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): se acredita directamente al saldo en USD (sin IGTF).";
     }
     const monto = aCentavos($("#monto").value), tasa = aTasaE8($("#tasa").value), el = $("#equivale");
     if (!monto || Number.isNaN(monto)) { el.textContent = ""; return; }
@@ -378,7 +385,7 @@ async function verRecibo(estado, id) {
       <div class="tot"><span>${D.tipo === "FACTURA" ? (D.es_nota_debito ? "Nota de Débito N.º" : "Factura asociada N.º") : "Presupuesto N.º"}</span><b>${esc(numeroDoc(D))}</b></div>
       ${nroControl ? `<div class="tot"><span>N.º de Control Fiscal</span><b>${esc(nroControl)}</b></div>` : ""}
       ${nroPresupuesto ? `<div class="tot"><span>Presupuesto de origen N.º</span><b>${esc(nroPresupuesto)}</b></div>` : ""}
-      <div class="tot"><span>Forma de pago</span><b>${esc(metodoNombre(P.metodo))}${P.es_retencion_islr && P.porcentaje_retencion ? ` (${P.porcentaje_retencion}%)` : ""} (${P.moneda === "BS" ? "Bolívares · Sin IGTF" : "Divisas USD"})</b></div>
+      <div class="tot"><span>Forma de pago</span><b>${esc(metodoNombre(P.metodo))}${P.es_retencion_islr && P.porcentaje_retencion ? ` (${P.porcentaje_retencion}%)` : ""} (${P.moneda === "BS" ? (estado?.negocio?.tipo_contribuyente === "ESPECIAL" ? "Bolívares · Sin IGTF" : "Bolívares") : "Divisas USD"})</b></div>
       ${P.comprobante_retencion ? `<div class="tot"><span>${P.es_retencion_islr ? "Comprobante Retención ISLR" : "Comprobante Retención SENIAT"}</span><b>${esc(P.comprobante_retencion)}</b></div>` : ""}
       ${P.referencia && P.referencia !== P.comprobante_retencion ? `<div class="tot"><span>Referencia</span><b>${esc(P.referencia)}</b></div>` : ""}
       <div class="tot"><span>Monto recibido</span><b>${P.moneda === "BS" ? "Bs. " + bs(P.monto_recibido / 100) : usd(P.monto_recibido)}</b></div>

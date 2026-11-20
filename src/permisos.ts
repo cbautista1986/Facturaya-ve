@@ -52,6 +52,7 @@ const REGLAS: Regla[] = [
   [P, /^\/api\/sistema\/tasa-bcv\/sincronizar$/, ["admin", "tasa"]],     // sincronizar tasa BCV oficial (Dueño, Súper Admin o Supervisor)
   [TODOS, /^\/api\/usuarios(\/|$)/, ["admin"]],
   [TODOS, /^\/api\/sistema(\/|$)/, ["admin"]],
+  [U, /^\/api\/config\/regimen$/, ["admin"]],                             // cambio de tipo de contribuyente: solo Dueño o Súper Admin (con clave + confirmación)
   [U, /^\/api\/config$/, ["admin", "tasa"]],                             // el supervisor solo puede la tasa (se revisa dentro)
   [P, /^\/api\/documentos\/\d+\/(anular|devolver|nota-debito)$/, ["anular"]],
   [G, /^\/api\/documentos\/resumen$/, ["admin"]],                        // ganancia del mes

@@ -663,6 +663,12 @@ test("5. SENIAT Libros Contables v2: Retención de IVA (75%/100%), Declaración 
   const jar: Record<string, string> = {};
   await instalarBase(env, jar);
   await reqJson(env, jar, "/api/config", "PUT", { tasa_bcv: "100,00" });
+  const regEsp = await reqJson(env, jar, "/api/config/regimen", "PUT", {
+    tipo_contribuyente: "ESPECIAL",
+    clave_actual: "ClavePruebaSegura2026!",
+    confirmo_regimen: true,
+  });
+  assert.equal(regEsp.status, 200);
 
   // Salir en vivo a modo REAL para probar inmutabilidad y libros reales
   const enVivo = await reqJson(env, jar, "/api/sistema/salir-en-vivo", "POST", {

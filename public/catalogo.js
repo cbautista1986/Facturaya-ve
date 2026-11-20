@@ -6,9 +6,9 @@ let filtro = "PRODUCTO", elegido = false; // pestaña actual: "PRODUCTO" o "SERV
 export const fijarFiltro = (f) => { filtro = f; elegido = true; }; // lo usa la pantalla de Compras para volver a Productos o Servicios
 
 export async function vistaCatalogo(estado, id) {
-  if (id === "nuevo") return formulario(null);
+  if (id === "nuevo") return formulario(estado, null);
   if (id) {
-    try { return formulario((await api(`catalogo/${encodeURIComponent(id)}`)).item); }
+    try { return formulario(estado, (await api(`catalogo/${encodeURIComponent(id)}`)).item); }
     catch (e) { aviso(e.message); location.hash = "#/inventario"; return; }
   }
   if (!elegido) { // la primera vez, si solo hay servicios, abre directo en la pestaña Servicios
@@ -73,8 +73,10 @@ function lista(tasa) {
 
 const IVAS = [[16, "General 16%"], [8, "Reducido 8%"], [0, "Exento"]];
 
-function formulario(i) {
-  const v = i ?? { tipo: filtro, alicuota_iva: 16, activo: 1, controla_stock: 1 };
+function formulario(estado, i) {
+  const esFormal = estado?.negocio?.tipo_contribuyente === "FORMAL";
+  const v = i ?? { tipo: filtro, alicuota_iva: esFormal ? 0 : 16, activo: 1, controla_stock: 1 };
+  if (esFormal) v.alicuota_iva = 0;
   raiz.innerHTML = `
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver a la lista" aria-label="Volver">←</button><h1>${i ? "Editar" : "Nuevo"}</h1></header>
     <form id="f" class="tarjeta">
@@ -87,7 +89,10 @@ function formulario(i) {
       ${campo("precio_usd", "💵 Precio de venta en USD", aTexto(v.precio_centavos), "text", 'inputmode="decimal" placeholder="Vacío = se define al facturar"')}
       ${campo("costo_usd", "🔒 Costo en USD (solo lo ves tú)", aTexto(v.costo_centavos), "text", 'inputmode="decimal" placeholder="Opcional"')}
       <label for="alicuota_iva">🧾 IVA</label>
-      <select id="alicuota_iva" name="alicuota_iva">${IVAS.map(([n, t]) => `<option value="${n}" ${n === v.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select>
+      ${esFormal
+        ? `<select id="alicuota_iva" name="alicuota_iva"><option value="0" selected>Exento (0% — Contribuyente Formal)</option></select>
+           <p class="pista">🩺 Contribuyente Formal (Art. 8 Ley IVA): todas las operaciones son exentas de IVA (0%).</p>`
+        : `<select id="alicuota_iva" name="alicuota_iva">${IVAS.map(([n, t]) => `<option value="${n}" ${n === v.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select>`}
       <div id="caja-stock" ${v.tipo === "PRODUCTO" ? "" : "hidden"}>
         <label class="opcion"><input type="checkbox" id="controla_stock" ${v.controla_stock ? "checked" : ""}> 📦 Controlar existencias (se descuentan al vender)</label>
         ${campo("stock_minimo", "🔔 Avisar cuando queden (opcional)", v.stock_minimo_milli != null ? cantidadTexto(v.stock_minimo_milli) : "", "text", 'inputmode="decimal" placeholder="Ejemplo: 5"')}

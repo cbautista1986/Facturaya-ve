@@ -39,7 +39,9 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
     telefono: negocio?.telefono ?? emisorGuardado.telefono,
     email: negocio?.email ?? emisorGuardado.email,
     logo_base64: negocio?.logo_base64 ?? emisorGuardado.logo_base64 ?? null,
+    tipo_contribuyente: emisorGuardado.tipo_contribuyente || negocio?.tipo_contribuyente || "ORDINARIO",
   };
+  const esFormal = emisor.tipo_contribuyente === "FORMAL";
   const logoImg = await incrustarLogo(pdf, emisor.logo_base64);
   const esFactura = D.tipo === "FACTURA", esNc = !!D.es_nota_credito, esNd = !!D.es_nota_debito;
   const titulo = esNc ? "NOTA DE CRÉDITO" : esNd ? "NOTA DE DÉBITO" : esFactura ? "FACTURA" : "PRESUPUESTO";
@@ -95,6 +97,14 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
   y = Math.max(ey, dy) + 8;
+
+  if (esFormal && esFactura) {
+    const lsFormal = envolver("CONTRIBUYENTE FORMAL · SIN DERECHO A CRÉDITO FISCAL (Providencia SENIAT SNAT/2011/0071)", ANCHO - 2 * M - 16, 9, true);
+    const hFormal = lsFormal.length * 12 + 10;
+    caja(y, hFormal, [0.95, 0.97, 0.99], [0.16, 0.34, 0.66]);
+    lsFormal.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.12, 0.28, 0.54] }));
+    y += hFormal + 8;
+  }
 
   if (D.estado === "ANULADO") {
     const ls = envolver(`DOCUMENTO ANULADO el ${fecha(D.anulado_en)}. Motivo: ${D.motivo_anulacion || ""}`, ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;

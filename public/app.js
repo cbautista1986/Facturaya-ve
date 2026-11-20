@@ -41,9 +41,36 @@ function datosWhatsappContacto() {
   };
 }
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.5.1)</span>
-  <p class="suave">Descarga el ZIP completo v4.5.1 auditado (env obligatorio en permisos, instalación protegida por SUPER_ADMIN_EMAIL, cero PII, R2 10 años en streaming, 2FA con rate-limit, HSTS y package-lock.json fijado):</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.5.1)</button>
+const REGIMENES_UI = {
+  FORMAL: {
+    etiqueta: "🩺 Contribuyente Formal",
+    insignia: "azul",
+    corto: "Formal (Exento IVA)",
+    ayuda: "Para médicos, psicólogos, odontólogos y actividades 100% exentas (Art. 8 Ley IVA). Factura con IVA 0%, sin IGTF e imprime la leyenda obligatoria «Contribuyente Formal · Sin derecho a crédito fiscal».",
+  },
+  ORDINARIO: {
+    etiqueta: "🏢 Contribuyente Ordinario",
+    insignia: "verde",
+    corto: "Ordinario",
+    ayuda: "Para la mayoría de profesionales, comercios y empresas en Venezuela. Cobra IVA (16%, 8% o Exento) y NO cobra IGTF (0% incluso si te pagan en divisas).",
+  },
+  ESPECIAL: {
+    etiqueta: "⭐ Contribuyente Especial (SPE)",
+    insignia: "ambar",
+    corto: "Especial (SPE)",
+    ayuda: "Solo para empresas calificadas formalmente por el SENIAT como Sujeto Pasivo Especial (SPE). Cobra IVA y habilita la percepción y declaración de IGTF (3% SNAT/2022/000013) en pagos en divisas.",
+  },
+};
+const infoRegimen = (tipo) => REGIMENES_UI[tipo] || REGIMENES_UI.ORDINARIO;
+const opcionesRegimenHtml = (actual = "ORDINARIO") => [
+  ["ORDINARIO", "🏢 Contribuyente Ordinario (Estándar — IVA normal, sin IGTF)"],
+  ["FORMAL", "🩺 Contribuyente Formal (Médicos / Psicólogos / Exentos — IVA 0%, sin IGTF)"],
+  ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
+].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
+
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.6.0)</span>
+  <p class="suave">Descarga el ZIP completo v4.6.0 con soporte para Contribuyente Formal, Ordinario y Especial (SPE), IGTF exclusivo para Especiales, leyenda legal Formal en PDF, cambio protegido con clave y confirmación, y pruebas integrales:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.6.0)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="README.md">⬇️ README.md</button>
@@ -135,6 +162,11 @@ function vistaInstalar() {
       ${campo("direccion", "📍 Domicilio fiscal", "", "text", 'required autocomplete="street-address"')}
       ${campo("telefono", "📞 Teléfono", "", "tel", 'autocomplete="tel"')}
       ${campo("email", "✉️ Correo del administrador", "", "email", 'required autocomplete="username"')}
+      <label for="tipo_contribuyente">⚖️ Condición Fiscal / Tipo de Contribuyente (SENIAT)</label>
+      <select id="tipo_contribuyente" name="tipo_contribuyente">
+        ${opcionesRegimenHtml("ORDINARIO")}
+      </select>
+      <p class="pista" id="inst-regimen-pista">${esc(infoRegimen("ORDINARIO").ayuda)}</p>
       <label for="medio_facturacion">🧾 Modalidad digital (SNAT/2024/000102)</label>
       <select id="medio_facturacion" name="medio_facturacion">
         <option value="APP_SENIAT" selected>📱 Sistema Digital SENIAT (SNAT/2024/000102)</option>
@@ -144,6 +176,10 @@ function vistaInstalar() {
       <div id="ts-instalar" class="ts-caja"></div>
       ${ERROR}<button class="boton" type="submit">CREAR SISTEMA Y ENTRAR ➔</button>
     </form></section>${TARJETA_GITHUB_ZIP}`;
+  $("#tipo_contribuyente")?.addEventListener("change", (e) => {
+    const p = $("#inst-regimen-pista");
+    if (p) p.textContent = infoRegimen(e.target.value).ayuda;
+  });
   const tsInst = montarTurnstile($("#ts-instalar"), estado.turnstile_site_key, "instalar");
   enviar($("#f"), async (d) => {
     try {
@@ -248,10 +284,10 @@ function vistaLogin() {
             <p class="bento-ley">Sustento legal: Providencias SNAT/2011/0071 y SNAT/2024/000102 (compatible con Sistema Digital SENIAT e Imprenta Digital Autorizada).</p>
           </article>
           <article class="bento-card">
-            <span class="bento-num">02. Bimoneda BCV e IGTF</span>
-            <h3>Cálculo exacto en Bolívares y Dólares</h3>
-            <p>Sincroniza la tasa oficial del BCV o ajústala manualmente, congela la tasa en cada factura y calcula automáticamente el IVA y el IGTF del 3% en pagos en divisas.</p>
-            <p class="bento-ley">Sustento legal: Art. 128 Ley del BCV y Providencia SNAT/2022/000013.</p>
+            <span class="bento-num">02. Bimoneda BCV y regímenes SENIAT</span>
+            <h3>Cálculo exacto para Formal, Ordinario y Especial</h3>
+            <p>Sincroniza la tasa oficial del BCV o ajústala manualmente, congela la tasa en cada factura y adapta automáticamente IVA (0%, 8% y 16%) e IGTF del 3% exclusivo para Contribuyentes Especiales (SPE).</p>
+            <p class="bento-ley">Sustento legal: Art. 128 Ley del BCV, Art. 8 Ley de IVA y Providencia SNAT/2022/000013.</p>
           </article>
           <article class="bento-card">
             <span class="bento-num">03. Libros contables y retenciones</span>
@@ -289,7 +325,7 @@ function vistaLogin() {
           </div>
           <div class="legal-item">
             <strong>Providencia SNAT/2022/000013</strong>
-            <p>Cálculo, desglose y declaración quincenal del IGTF (3%) aplicable a pagos recibidos en moneda extranjera.</p>
+            <p>Cálculo, desglose y declaración quincenal del IGTF (3%) aplicable a pagos en moneda extranjera percibidos por Sujetos Pasivos Especiales (SPE).</p>
           </div>
           <div class="legal-item">
             <strong>Art. 70 y Art. 72 · RLIVA</strong>
@@ -383,6 +419,8 @@ function vistaLogin() {
 function vistaInicio() {
   const n = estado.negocio || {}, tasa = Number(n.tasa_bcv) || 0;
   const modoTasa = n.tasa_bcv_modo === "MANUAL" ? "MANUAL" : "AUTOMATICO";
+  const regInfo = infoRegimen(n.tipo_contribuyente);
+  const esFormal = n.tipo_contribuyente === "FORMAL";
   raiz.innerHTML = `
     ${barraSuper()}
     <header class="encabezado">${logoHeader(n)}<h1>Hola, ${esc(n.nombre_razon_social || "Mi Negocio")}</h1>
@@ -397,14 +435,15 @@ function vistaInicio() {
         <div id="tasa-vista">
           <span class="etiqueta">🟢 TASA OFICIAL BCV (ART. 128 LEY BCV)</span><br>
           <strong>${tasa ? `Bs. ${bs(tasa)}` : "Sin definir"}</strong>
-          <span class="insignia ${modoTasa === "MANUAL" ? "ambar" : "verde"}" id="tasa-modo-badge" style="margin-left:8px;vertical-align:middle">${modoTasa === "MANUAL" ? "✍️ Manual" : "🔄 Automático BCV"}</span><br>
+          <span class="insignia ${modoTasa === "MANUAL" ? "ambar" : "verde"}" id="tasa-modo-badge" style="margin-left:8px;vertical-align:middle">${modoTasa === "MANUAL" ? "✍️ Manual" : "🔄 Automático BCV"}</span>
+          <span class="insignia ${regInfo.insignia}" id="inicio-regimen-badge" style="margin-left:6px;vertical-align:middle">${esc(regInfo.corto)}</span><br>
           <small class="suave">${n.tasa_bcv_fecha ? `Actualizada: ${fechaLocal(n.tasa_bcv_fecha)}` : "Sincroniza o define la tasa en Ajustes"}</small>
         </div>
         ${puede("tasa") ? `<button class="boton chico contorno-azul" type="button" id="tasa-ir-ajustes" data-destino="#/ajustes" data-ayuda="Configurar tasa BCV automática o manual en Ajustes">⚙️ Ajustes</button>` : ""}
       </section>
       ${puede("admin") ? `<section class="tarjeta ganancia" data-destino="#/informes" data-nombre="Informes" data-ayuda="Informes para el contador: ventas, compras, ganancias, por cobrar e inventario"><span class="etiqueta">💰 TU GANANCIA NETA (ESTE MES)</span><strong id="gan-total">$ 0,00</strong>
         <small class="suave" id="gan-det">🟣 Servicios: $0 · 🔵 Productos: $0 · Toca para ver Libros SENIAT</small></section>`
-        : puede("informes_contador") ? `<section class="tarjeta ganancia" data-destino="#/informes" data-nombre="Libros SENIAT"><span class="etiqueta">📊 LIBROS CONTABLES (ART. 70 Y 72 RLIVA)</span><strong>Ventas, Compras y Resumen IVA</strong>
+        : puede("informes_contador") ? `<section class="tarjeta ganancia" data-destino="#/informes" data-nombre="Libros SENIAT"><span class="etiqueta">${esFormal ? "📊 RELACIÓN DE VENTAS Y COMPRAS (FORMAL)" : "📊 LIBROS CONTABLES (ART. 70 Y 72 RLIVA)"}</span><strong>${esFormal ? "Relación de Ventas, Compras e ISLR" : "Ventas, Compras y Resumen IVA"}</strong>
         <small class="suave">Descarga en PDF o Excel (CSV).</small></section>` : ""}
     </div>
     <div class="rejilla">
@@ -412,7 +451,7 @@ function vistaInicio() {
       <button class="accion ambar" data-destino="#/clientes" data-nombre="Clientes" data-ayuda="Tus clientes, RIF y correo"><span>👥</span>Clientes<small>Tus clientes</small></button>
       <button class="accion verde" data-destino="#/pagos" data-nombre="Pagos" data-ayuda="Por cobrar, pagos recibidos y tus datos de cobro"><span>💳</span>Pagos<small>Cobros y por cobrar</small></button>` : ""}
       ${puede("inventario") ? `<button class="accion morado" data-destino="#/inventario" data-nombre="Inventario" data-ayuda="Tus productos, servicios y compras"><span>📦</span>Inventario<small>Productos y compras</small></button>` : ""}
-      ${puede("informes_contador") ? `<button class="accion azul" data-destino="#/informes" data-nombre="Libros SENIAT" data-ayuda="Libros de ventas, compras, resumen IVA, IGTF, ISLR y Cierre Z"><span>📊</span>Libros SENIAT<small>Ventas, compras e IVA</small></button>` : ""}
+      ${puede("informes_contador") ? `<button class="accion azul" data-destino="#/informes" data-nombre="Libros SENIAT" data-ayuda="${esFormal ? "Relación de ventas y compras (Formal), ISLR y Cierre Z" : "Libros de ventas, compras, resumen IVA, ISLR y Cierre Z"}"><span>📊</span>Libros SENIAT<small>${esFormal ? "Relación ventas y compras" : "Ventas, compras e IVA"}</small></button>` : ""}
       ${puede("super") ? `<button class="accion morado" data-destino="#/inquilinos" data-nombre="Inquilinos" data-ayuda="Panel Multi-Tenant para crear y administrar clientes"><span>🏢</span>Inquilinos<small>Empresas afiliadas</small></button>` : ""}
     </div>
     <section class="tarjeta"><span class="etiqueta">🔔 ALERTAS RÁPIDAS</span><p class="suave" id="alertas-txt">Todo en orden ✅</p></section>
@@ -583,6 +622,11 @@ async function vistaInquilinos(subvista = "") {
           ${campo("nombre_negocio", "🏷️ Nombre o Razón Social (según RIF)", "", "text", 'required placeholder="Ej: COMERCIAL DEMO C.A."')}
           ${campo("rif", "🪪 RIF Fiscal (ej: J-12345678-9 o V-12345678-0)", "", "text", 'required placeholder="J-12345678-9 o V-12345678-0" autocapitalize="characters"')}
           ${campo("direccion", "📍 Domicilio Fiscal completo", "", "text", 'required placeholder="Ej: Av. Principal, Edif. Centro, Local 3, Caracas, Distrito Capital"')}
+          <label for="tipo_contribuyente">⚖️ Condición Fiscal / Tipo de Contribuyente (SENIAT)</label>
+          <select id="tipo_contribuyente" name="tipo_contribuyente">
+            ${opcionesRegimenHtml("ORDINARIO")}
+          </select>
+          <p class="pista" id="alta-regimen-pista">${esc(infoRegimen("ORDINARIO").ayuda)}</p>
 
           <hr>
           <span class="etiqueta">3️⃣ DATOS DE CONTACTO Y ACCESO DEL DUEÑO</span>
@@ -675,6 +719,10 @@ async function vistaInquilinos(subvista = "") {
       </section>`;
 
     $("#volver-inq").addEventListener("click", () => (location.hash = "#/inquilinos"));
+    $("#tipo_contribuyente")?.addEventListener("change", (e) => {
+      const p = $("#alta-regimen-pista");
+      if (p) p.textContent = infoRegimen(e.target.value).ayuda;
+    });
     $("#medio_facturacion").addEventListener("change", (e) => {
       $("#caja-alta-imprenta").hidden = e.target.value !== "IMPRENTA_DIGITAL";
     });
@@ -786,13 +834,14 @@ async function vistaInquilinos(subvista = "") {
           : inq.d1_uuid
             ? `${inq.d1_nombre || `facturaya_${inq.codigo.toLowerCase()}`} (Cloudflare D1)`
             : `${inq.d1_nombre || `facturaya_${inq.codigo.toLowerCase()}`} (${inq.codigo})`;
+        const regInq = infoRegimen(inq.tipo_contribuyente);
         return `<div class="reng${esActual ? " activo" : ""}">
           <div class="reng-cab">
             <strong>${esPrincipal ? "👑 " : "🏢 "}${esc(inq.nombre_negocio || inq.nombre_razon_social || "Empresa")} <small class="suave">(${esc(inq.rif)})</small></strong>
             <span class="insignia ${susp ? "rojo" : esActual ? "azul" : "verde"}">${susp ? "SUSPENDIDO" : esActual ? "ACTIVO (ACTUAL)" : "ACTIVO"}</span>
           </div>
           <small class="suave">
-            ${esPrincipal ? "<b>Tu negocio principal</b> · " : ""}Ranura: <b>${esc(inq.codigo)}</b> · Base D1: <b>${esc(bdTxt)}</b><br>
+            ${esPrincipal ? "<b>Tu negocio principal</b> · " : ""}Ranura: <b>${esc(inq.codigo)}</b> · Régimen: <b>${esc(regInq.etiqueta)}</b> · Base D1: <b>${esc(bdTxt)}</b><br>
             Dueño: <b>${esc(inq.nombre_dueno || "—")}</b> ${inq.cedula_dueno ? `(${esc(inq.cedula_dueno)})` : ""} · Correo: <b>${esc(inq.email_dueno || "—")}</b><br>
             Domicilio: ${esc(inq.direccion || "—")}${inq.zona_postal ? ` · Z.P. ${esc(inq.zona_postal)}` : ""}${esPrincipal ? "" : ` · Plan: <b>$ ${Number(inq.plan_usd || 10)}/mes</b>`}
           </small>
@@ -1836,10 +1885,27 @@ function vistaAjustes() {
         </div>
       </div>
       ${NEGOCIO.map(([id, et]) => campo(id, et, n[id] ?? "")).join("")}
-      <p class="pista">💳 Configura tus cuentas receptoras (Pago Móvil, Transferencia, Zelle, Binance, PayPal) en <b>Pagos → Mis datos</b>. El IGTF (3%) se activa automáticamente al facturar o cobrar en divisas.</p>
+      <p class="pista">💳 Configura tus cuentas receptoras (Pago Móvil, Transferencia, Zelle, Binance, PayPal) en <b>Pagos → Mis datos</b>. Para cambiar entre Contribuyente Formal, Ordinario o Especial (IGTF 3%), usa la tarjeta <b>Condición Fiscal</b> justo debajo.</p>
       <label class="opcion"><input type="checkbox" id="fiscal-confirmo" required> ☑️ Estoy seguro de guardar o modificar los datos fiscales y de contacto de este negocio (solo Dueño y Súper Admin).</label>
       ${ERROR}<button class="boton verde" type="submit" id="fiscal-guardar-btn" disabled>GUARDAR DATOS FISCALES Y LOGO</button>
     </form>
+    <section class="tarjeta" id="card-regimen-fiscal">
+      <div class="reng-cab">
+        <h2>⚖️ Condición Fiscal / Tipo de Contribuyente</h2>
+        <span class="insignia ${infoRegimen(n.tipo_contribuyente).insignia}" id="regimen-actual-badge">${esc(infoRegimen(n.tipo_contribuyente).etiqueta)}</span>
+      </div>
+      <p class="suave">Controla automáticamente qué impuestos, leyendas en PDF y reportes SENIAT muestra el sistema según tu calificación vigente ante el SENIAT. Los documentos emitidos anteriormente conservan su configuración histórica congelada.</p>
+      <form id="regimen-form">
+        <label for="regimen_tipo">🏛️ Tipo de contribuyente ante el SENIAT</label>
+        <select id="regimen_tipo" name="tipo_contribuyente">
+          ${opcionesRegimenHtml(n.tipo_contribuyente || "ORDINARIO")}
+        </select>
+        <p class="pista" id="regimen-pista">${esc(infoRegimen(n.tipo_contribuyente).ayuda)}</p>
+        ${campo("regimen_clave", "🔒 Tu contraseña actual (Dueño o Súper Admin)", "", "password", 'required autocomplete="current-password" placeholder="Ingresa tu contraseña para autorizar"')}
+        <label class="opcion"><input type="checkbox" id="regimen-confirmo" required> ☑️ Estoy seguro de cambiar la condición fiscal (Tipo de Contribuyente) de este negocio según su estatus vigente ante el SENIAT.</label>
+        ${ERROR}<button class="boton verde" type="submit" id="regimen-guardar-btn" disabled>GUARDAR CONDICIÓN FISCAL</button>
+      </form>
+    </section>
     <section class="tarjeta"><h2>👥 Usuarios y Empleados</h2><p class="suave">Exclusivo del Dueño: crea usuarios para tus empleados (cajero, supervisor, bodega, contador), cámbiales la contraseña o desactívalos.</p>
       <button class="boton chico" id="usuarios" type="button">Administrar usuarios y claves</button></section>
     ${tarjetaMedio()}
@@ -1848,7 +1914,7 @@ function vistaAjustes() {
       <p class="suave"><b>¿Qué hace esta API?</b> Conecta la cuenta gratuita de <b>Brevo</b> (o Resend) del negocio (<b>${esc(n.nombre_razon_social)}</b>) para enviar facturas, notas y recibos en PDF a tus clientes, además de despachar automáticamente los <b>Libros Contables SENIAT en Excel (CSV)</b> al inicio de cada mes al correo del Administrador y Contador.</p>
       <label class="opcion" style="margin-bottom:12px">
         <input type="checkbox" id="cierre-mensual-chk" ${cierreAutoActivo ? "checked" : ""}>
-        📊 Enviar automáticamente el Cierre Contable Mensual (Libros de Ventas, Compras, IVA, IGTF e ISLR en CSV) al inicio de cada mes al Administrador y Contador${n.ultimo_cierre_correo ? ` <small class="suave">(último enviado: ${esc(n.ultimo_cierre_correo)})</small>` : ""}.
+        📊 Enviar automáticamente el Cierre Contable Mensual (${n.tipo_contribuyente === "FORMAL" ? "Relación de Ventas, Compras e ISLR en CSV" : n.tipo_contribuyente === "ESPECIAL" ? "Libros de Ventas, Compras, IVA, IGTF e ISLR en CSV" : "Libros de Ventas, Compras, IVA e ISLR en CSV"}) al inicio de cada mes al Administrador y Contador${n.ultimo_cierre_correo ? ` <small class="suave">(último enviado: ${esc(n.ultimo_cierre_correo)})</small>` : ""}.
       </label>
       <form id="correo-cfg-form">
         <label for="correo_prov">Proveedor HTTP</label>
@@ -2047,6 +2113,25 @@ function vistaAjustes() {
 
   $("#fiscal-confirmo")?.addEventListener("change", () => {
     $("#fiscal-guardar-btn").disabled = !$("#fiscal-confirmo").checked;
+  });
+  $("#regimen-confirmo")?.addEventListener("change", () => {
+    $("#regimen-guardar-btn").disabled = !$("#regimen-confirmo").checked;
+  });
+  $("#regimen_tipo")?.addEventListener("change", (e) => {
+    const p = $("#regimen-pista");
+    if (p) p.textContent = infoRegimen(e.target.value).ayuda;
+  });
+  if ($("#regimen-form")) enviar($("#regimen-form"), async (d) => {
+    const r = await api("config/regimen", "PUT", {
+      tipo_contribuyente: d.tipo_contribuyente,
+      clave_actual: d.regimen_clave,
+      confirmo_regimen: $("#regimen-confirmo")?.checked,
+    });
+    $("#regimen_clave").value = "";
+    $("#regimen-confirmo").checked = false;
+    $("#regimen-guardar-btn").disabled = true;
+    aviso(`Condición fiscal actualizada a ${infoRegimen(r.tipo_contribuyente).etiqueta} ✅`);
+    await ruta();
   });
   $("#correo-confirmo")?.addEventListener("change", () => {
     $("#correo-guardar-btn").disabled = !$("#correo-confirmo").checked;

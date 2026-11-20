@@ -28,9 +28,31 @@ export const INFORMES = [
   { clave: "inventario", icono: "📦", nombre: "Inventario valorizado", ayuda: "Existencias y costo promedio ponderado", periodo: true },
 ];
 
+export function informesDisponibles(estado, esAdmin) {
+  const tipo = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
+  const esFormal = tipo === "FORMAL";
+  const esEspecial = tipo === "ESPECIAL";
+  const mostrarIgtf = esEspecial || !!estado?.tiene_documentos_igtf;
+  return INFORMES.filter((i) => {
+    if (i.clave === "ganancias" && !esAdmin) return false;
+    if (i.clave === "igtf" && !mostrarIgtf) return false;
+    if (i.clave === "resumen-iva" && esFormal) return false;
+    return true;
+  }).map((i) => {
+    if (esFormal && i.clave === "ventas") {
+      return { ...i, nombre: "Relación de ventas (Contribuyente Formal)", ayuda: "Facturas, Notas de Crédito y Notas de Débito exentas en Bs. (SNAT/2011/0071)" };
+    }
+    if (esFormal && i.clave === "compras") {
+      return { ...i, nombre: "Relación de compras (Contribuyente Formal)", ayuda: "Compras, gastos operativos y servicios en Bs. (SNAT/2011/0071)" };
+    }
+    return i;
+  });
+}
+
 const METODO_TXT = { PAGO_MOVIL: "Pago móvil", TRANSFERENCIA: "Transferencia", EFECTIVO: "Efectivo", ZELLE: "Zelle", BINANCE: "Binance Pay", PAYPAL: "PayPal", RETENCION_IVA: "Retención IVA SENIAT", RETENCION_ISLR: "Retención ISLR (Decreto 1.808)", OTRO: "Otro" };
 
-function modeloVentas(r) {
+function modeloVentas(r, opts = {}) {
+  const esFormal = opts?.tipo_contribuyente === "FORMAL";
   const alic = r.alicuotas.map((a) => a.alicuota_cent);
   const hayIgtf = r.filas.some((f) => f.igtf_bs);
   const hayRet = r.filas.some((f) => f.iva_retenido_bs);
@@ -57,12 +79,14 @@ function modeloVentas(r) {
     ...(hayRet ? ["", num(r.iva_retenido_bs ?? 0)] : []),
     ...(hayIgtf ? [num(r.igtf_bs ?? 0), num(r.igtf_usd ?? 0)] : []),
     num(r.total_bs), num(r.total_usd)]];
-  return { clave: "ventas", titulo: "Libro de ventas (Art. 72 RLIVA)", periodo: periodo(r),
+  return { clave: "ventas", titulo: esFormal ? "Relación de ventas (Contribuyente Formal)" : "Libro de ventas (Art. 72 RLIVA)", periodo: periodo(r),
     resumen: [["Facturas emitidas", String(r.n_vigentes)], ...(r.n_notas_credito ? [["Notas de crédito (restan)", String(r.n_notas_credito)]] : []), ...(r.n_notas_debito ? [["Notas de débito (suman)", String(r.n_notas_debito)]] : []), ["Anuladas (no suman)", String(r.n_anuladas)],
       ...(hayRet ? [["IVA retenido (Bs)", num(r.iva_retenido_bs)]] : []),
       ...(hayIgtf ? [["IGTF en Bs", num(r.igtf_bs)], ["IGTF en USD", num(r.igtf_usd)]] : []),
       ["Total neto en Bs", num(r.total_bs)], ["Total neto en USD", num(r.total_usd)]],
-    notas: ["Conforme al Art. 72 del Reglamento de la Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102. Montos expresados en Bolívares a tasa oficial BCV.",
+    notas: [esFormal
+      ? "Relación de ventas para Contribuyente Formal del IVA (Art. 8 Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102). Operaciones exentas en Bolívares a tasa oficial BCV."
+      : "Conforme al Art. 72 del Reglamento de la Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102. Montos expresados en Bolívares a tasa oficial BCV.",
       ...(r.iva_retenido_otros_periodos_bs ? [`Incluye ${num(r.iva_retenido_otros_periodos_bs)} Bs de retenciones de IVA recibidas en este período por facturas de otros meses; se detallan en la sección de retenciones.`] : [])],
     secciones: [{ titulo: "Facturas, Notas de Crédito y Notas de Débito", columnas, filas, totales },
       ...(r.retenciones_periodo?.length ? [{
@@ -75,7 +99,8 @@ function modeloVentas(r) {
 
 const tasaTxt = (e8) => (e8 == null ? "Sin tasa" : (e8 / 1e8).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
 const TIPO_COMPRA_TXT = { PRODUCTO: "Mercancía", GASTO: "Gasto / Servicio", MIXTA: "Mixta" };
-function modeloCompras(r) {
+function modeloCompras(r, opts = {}) {
+  const esFormal = opts?.tipo_contribuyente === "FORMAL";
   const alic = r.alicuotas.map((a) => a.alicuota_cent);
   const columnas = [izq("Fecha"), izq("RIF proveedor"), izq("Proveedor"), izq("N.º factura"), izq("N.º control"), izq("Tipo"), izq("Estado"), der("Tasa BCV"),
     ...alic.flatMap((a) => [der(`Base ${alicuota(a)} (Bs)`), ...(a === 0 ? [] : [der(`IVA ${alicuota(a)} (Bs)`)])]), der("Total (Bs)"), der("Total (USD)")];
@@ -89,10 +114,12 @@ function modeloCompras(r) {
     return [...base, ...celdas, num(f.total_bs), num(f.total_usd)];
   });
   const totales = [["TOTAL", "", "", "", "", "", `${r.n_vigentes} registrada(s)`, "", ...alic.flatMap((a) => { const t = r.alicuotas.find((x) => x.alicuota_cent === a); return [num(t.base_bs), ...(a === 0 ? [] : [num(t.iva_bs)])]; }), num(r.total_bs), num(r.total_usd)]];
-  return { clave: "compras", titulo: "Libro de compras (Art. 70 RLIVA)", periodo: periodo(r),
-    resumen: [["Compras registradas", String(r.n_vigentes)], ["Anuladas (no suman)", String(r.n_anuladas)], ["IVA crédito fiscal (Bs)", num(r.iva_bs)], ["Total en Bs", num(r.total_bs)],
+  return { clave: "compras", titulo: esFormal ? "Relación de compras (Contribuyente Formal)" : "Libro de compras (Art. 70 RLIVA)", periodo: periodo(r),
+    resumen: [["Compras registradas", String(r.n_vigentes)], ["Anuladas (no suman)", String(r.n_anuladas)], ...(!esFormal ? [["IVA crédito fiscal (Bs)", num(r.iva_bs)]] : [["IVA soportado como costo (Bs)", num(r.iva_bs)]]), ["Total en Bs", num(r.total_bs)],
       ...(r.n_sin_tasa ? [["Sin tasa (no suman en Bs)", String(r.n_sin_tasa)]] : [])],
-    notas: ["Conforme al Art. 70 del Reglamento de la Ley de IVA. Incluye compras de mercancía, gastos operativos y servicios registrados en Bolívares a la tasa BCV de cada factura.",
+    notas: [esFormal
+      ? "Relación de compras para Contribuyente Formal del IVA (Art. 8 Ley de IVA y SNAT/2011/0071). El IVA pagado en compras forma parte del costo o gasto deducible de ISLR y no genera crédito fiscal."
+      : "Conforme al Art. 70 del Reglamento de la Ley de IVA. Incluye compras de mercancía, gastos operativos y servicios registrados en Bolívares a la tasa BCV de cada factura.",
       ...(r.n_sin_tasa ? [`${r.n_sin_tasa} compra(s) previas no registran tasa BCV.`] : [])],
     secciones: [{ titulo: "Compras", columnas, filas, totales }] };
 }
@@ -317,7 +344,7 @@ function modeloInventario(r) {
         filas: r.movimientos.map((m) => [fecha(m.fecha), m.producto, MOV[m.tipo] || m.tipo, MOTIVO[m.motivo] || "", cantidadTexto(m.cantidad_milli), num(m.valor_usd)]), totales: [] }] };
 }
 
-export const construirModelo = (clave, datos) => ({
+export const construirModelo = (clave, datos, opts = {}) => ({
   "cierre-caja": modeloCierreCaja,
   ventas: modeloVentas,
   compras: modeloCompras,
@@ -327,7 +354,7 @@ export const construirModelo = (clave, datos) => ({
   ganancias: modeloGanancias,
   "por-cobrar": modeloPorCobrar,
   inventario: modeloInventario,
-})[clave](datos);
+})[clave](datos, opts);
 
 // ---------------------------------------------------------------- CSV (separador «;» y coma decimal: abre bien en Excel en español)
 const celdaCsv = (t) => { let s = String(t ?? "").replace(/\r?\n/g, " ").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");

@@ -1,8 +1,3 @@
-node_modules/
-.wrangler/
+node_modules
+.wrangler
 .dev.vars
-.env
-*.sqlite
-*.db
-dist/
-.DS_Store

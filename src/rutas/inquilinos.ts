@@ -41,6 +41,7 @@ import {
 } from "../inquilinos";
 import { migrar } from "../migraciones";
 import { NOMBRE_ROL, esSuperAdmin } from "../permisos";
+import { validarTipoContribuyenteEstricto } from "../regimen";
 import { claveR2Valida, ejecutarRespaldoR2, listarRespaldosR2, obtenerBucketR2 } from "../respaldos-r2";
 import { diagnosticarTodoElSistema, generarRespaldoMaestro, generarRespaldoNegocio, obtenerFirmaCoberturaReal, repararInquilino } from "../salud-bd";
 import { CLAVE_FALSA, claveTemporal, codigoRecuperacion, hashClave, normalizarCodigo, sha256, verificarClave } from "../seguridad";
@@ -73,7 +74,7 @@ inquilinos.get("/", async (c) => {
 
   const { results } = await rawDb
     .prepare(
-      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, plan_usd, activo, creado_en, d1_uuid, d1_nombre
+      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, tipo_contribuyente, plan_usd, activo, creado_en, d1_uuid, d1_nombre
        FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en DESC`
     )
     .all<InquilinoInfo>();
@@ -188,6 +189,10 @@ inquilinos.post("/", async (c) => {
   const logo_base64 = logoRaw || null;
 
   const medio_facturacion = texto(b.medio_facturacion, 20) === "IMPRENTA_DIGITAL" ? "IMPRENTA_DIGITAL" : "APP_SENIAT";
+  const tipoContribRaw = texto(b.tipo_contribuyente, 20);
+  const tipo_contribuyente = tipoContribRaw ? validarTipoContribuyenteEstricto(tipoContribRaw) : "ORDINARIO";
+  if (!tipo_contribuyente) return falla(c, 400, "Tipo de contribuyente no válido. Elige FORMAL, ORDINARIO o ESPECIAL.");
+  const igtf_activo = tipo_contribuyente === "ESPECIAL" ? 1 : 0;
   const modo_inicial = texto(b.modo_inicial, 12) === "PRACTICA" ? "PRACTICA" : "REAL";
   const plan_usd = Math.max(0, Math.min(999, Number(b.plan_usd ?? 10) || 10));
   const ranuraSolicitada = texto(b.ranura_db, 20).toUpperCase();
@@ -352,14 +357,15 @@ inquilinos.post("/", async (c) => {
   const lotes: D1PreparedStatement[] = [
     dbInquilino.prepare(
       `INSERT INTO perfil_emisor (
-         id, instalado, nombre_razon_social, rif, direccion_fiscal, telefono, email, logo_base64, medio_facturacion,
+         id, instalado, nombre_razon_social, rif, direccion_fiscal, telefono, email, logo_base64, medio_facturacion, tipo_contribuyente, igtf_activo,
          firma_personal, zona_postal, sector_seniat, rif_comprobante, rif_fecha_inscripcion, rif_fecha_actualizacion, rif_codigo_firma,
          representante_nombre, representante_cedula, representante_fecha_nac, representante_estado_civil, representante_cedula_venc
-       ) VALUES (1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          instalado = 1, nombre_razon_social = excluded.nombre_razon_social, rif = excluded.rif,
          direccion_fiscal = excluded.direccion_fiscal, telefono = excluded.telefono, email = excluded.email,
          logo_base64 = excluded.logo_base64, medio_facturacion = excluded.medio_facturacion,
+         tipo_contribuyente = excluded.tipo_contribuyente, igtf_activo = excluded.igtf_activo,
          firma_personal = excluded.firma_personal, zona_postal = excluded.zona_postal, sector_seniat = excluded.sector_seniat,
          rif_comprobante = excluded.rif_comprobante, rif_fecha_inscripcion = excluded.rif_fecha_inscripcion,
          rif_fecha_actualizacion = excluded.rif_fecha_actualizacion, rif_codigo_firma = excluded.rif_codigo_firma,
@@ -367,7 +373,7 @@ inquilinos.post("/", async (c) => {
          representante_fecha_nac = excluded.representante_fecha_nac, representante_estado_civil = excluded.representante_estado_civil,
          representante_cedula_venc = excluded.representante_cedula_venc`
     ).bind(
-      nombre_negocio, rif, direccion, telefono, email_dueno, logo_base64, medio_facturacion,
+      nombre_negocio, rif, direccion, telefono, email_dueno, logo_base64, medio_facturacion, tipo_contribuyente, igtf_activo,
       firma_personal, zona_postal, sector_seniat, rif_comprobante, rif_fecha_inscripcion, rif_fecha_actualizacion, rif_codigo_firma,
       nombre_dueno, cedula_dueno, representante_fecha_nac, representante_estado_civil, representante_cedula_venc
     ),
@@ -451,9 +457,9 @@ inquilinos.post("/", async (c) => {
   try {
     await rawDb.batch([
       rawDb.prepare(
-        `INSERT INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, plan_usd, activo, d1_uuid, d1_nombre, cedula_dueno, zona_postal, firma_personal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
-      ).bind(codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, plan_usd, d1Uuid, d1Nombre, cedula_dueno || "", zona_postal || "", firma_personal || ""),
+        `INSERT INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, activo, d1_uuid, d1_nombre, cedula_dueno, zona_postal, firma_personal)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
+      ).bind(codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, d1Uuid, d1Nombre, cedula_dueno || "", zona_postal || "", firma_personal || ""),
     ]);
   } catch (errReg) {
     await rollbackD1Nueva();
@@ -491,6 +497,7 @@ inquilinos.post("/", async (c) => {
     d1_nombre: d1Nombre,
     nombre_negocio,
     rif,
+    tipo_contribuyente,
     nombre_dueno,
     email_dueno,
     clave_temporal: tempClave,

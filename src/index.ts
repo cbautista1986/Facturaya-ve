@@ -23,6 +23,7 @@ import { aRifSeniat } from "../public/dinero.js";
 import { intentarCierreMensualAutomatico, mesAnteriorCaracas, obtenerTasaBcvGlobal, sincronizarTasaInquilinoSiAuto } from "./tasa-bcv";
 import { intentarArchivoMensualR2, intentarRespaldoDiarioR2, leerUltimoErrorR2, obtenerBucketR2 } from "./respaldos-r2";
 import { verificarCodigoTotp, verificarYConsumirCodigoRespaldo2fa } from "./totp";
+import { normalizarTipoContribuyente, reglasRegimen, validarTipoContribuyenteEstricto } from "./regimen";
 import clientes from "./rutas/clientes";
 import catalogo from "./rutas/catalogo";
 import documentos from "./rutas/documentos";
@@ -44,7 +45,7 @@ const OPCIONALES = [
   "firma_personal", "zona_postal", "sector_seniat", "rif_comprobante", "rif_fecha_inscripcion", "rif_fecha_actualizacion", "rif_codigo_firma",
   "representante_nombre", "representante_cedula", "representante_fecha_nac", "representante_estado_civil", "representante_cedula_venc",
 ];
-const COLUMNAS_NEGOCIO = [...OBLIGATORIOS, ...OPCIONALES, "logo_base64", "tasa_bcv", "tasa_bcv_fecha", "tasa_bcv_modo", "cierre_mensual_correo", "ultimo_cierre_correo", "medio_facturacion", "igtf_activo"].join(", ");
+const COLUMNAS_NEGOCIO = [...OBLIGATORIOS, ...OPCIONALES, "logo_base64", "tasa_bcv", "tasa_bcv_fecha", "tasa_bcv_modo", "cierre_mensual_correo", "ultimo_cierre_correo", "medio_facturacion", "igtf_activo", "tipo_contribuyente"].join(", ");
 
 function fijarCookieInquilino(c: Ctx, codigo: string) {
   const url = new URL(c.req.url);
@@ -286,6 +287,14 @@ app.get("/api/estado", async (c) => {
   }
   const esSuper = esSuperAdmin(usuario.rol, usuario.email, envObj);
   const rolEfectivo = esSuper ? "SUPER_ADMIN" : usuario.rol;
+  const tipoContrib = normalizarTipoContribuyente(negocio?.tipo_contribuyente, negocio?.igtf_activo);
+  if (negocio) {
+    negocio.tipo_contribuyente = tipoContrib;
+    negocio.igtf_activo = tipoContrib === "ESPECIAL" ? 1 : 0;
+  }
+  const tieneDocumentosIgtf = Boolean(
+    await c.env.DB.prepare(`SELECT 1 AS x FROM documentos WHERE tipo = 'FACTURA' AND aplica_igtf = 1 AND igtf_bs > 0 LIMIT 1`).first().catch(() => null),
+  );
   let listaInquilinos: InquilinoInfo[] = [];
   let facturasRealesN = 0;
   let totpActivoUsuario = false;
@@ -293,7 +302,7 @@ app.get("/api/estado", async (c) => {
   if (esSuper) {
     await asegurarTablasMultiTenant(rawDb);
     const { results } = await rawDb.prepare(
-      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, plan_usd, activo, creado_en, d1_uuid, d1_nombre
+      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, tipo_contribuyente, plan_usd, activo, creado_en, d1_uuid, d1_nombre
        FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en DESC`
     ).all<InquilinoInfo>();
     listaInquilinos = results;
@@ -323,7 +332,7 @@ app.get("/api/estado", async (c) => {
     usuario: { ...usuario, rol_nombre: NOMBRE_ROL[rolEfectivo] ?? usuario.rol, es_super: esSuper, totp_activo: totpActivoUsuario },
     permisos: permisosDe(usuario.rol, usuario.email, envObj), ve_costos: veCostos(usuario.rol, usuario.email, envObj),
     restaurando: !!(await c.env.DB.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first()),
-    negocio, modo: await modoActual(c.env.DB),
+    negocio, regimen: reglasRegimen(tipoContrib), tiene_documentos_igtf: tieneDocumentosIgtf, modo: await modoActual(c.env.DB),
     inquilino_actual: inqCod,
     ...(esSuper ? {
       inquilinos: listaInquilinos, facturas_reales_n: facturasRealesN,
@@ -370,6 +379,10 @@ app.post("/api/instalar", async (c) => {
 
   const envObj = c.env as unknown as Record<string, unknown>;
   const medioElegido = t("medio_facturacion") === "IMPRENTA_DIGITAL" ? "IMPRENTA_DIGITAL" : "APP_SENIAT";
+  const tipoContribRaw = t("tipo_contribuyente");
+  const tipoContrib = tipoContribRaw ? validarTipoContribuyenteEstricto(tipoContribRaw) : "ORDINARIO";
+  if (!tipoContrib) return falla(c, 400, "Tipo de contribuyente no válido. Elige FORMAL, ORDINARIO o ESPECIAL.");
+  const igtfInicial = tipoContrib === "ESPECIAL" ? 1 : 0;
   const cfgSuper = emailSuperAdminConfig(envObj);
   if (!cfgSuper) {
     return falla(c, 503, "Falta configurar el secreto SUPER_ADMIN_EMAIL en Cloudflare (Variables and Secrets) antes de instalar la plataforma.");
@@ -381,9 +394,9 @@ app.post("/api/instalar", async (c) => {
   const hash = await hashClave(clave), codigo = codigoRecuperacion();
   const r = await rawDb.batch([
     rawDb.prepare(
-      `INSERT OR REPLACE INTO perfil_emisor (id, instalado, nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, medio_facturacion)
-       SELECT 1, 1, ?, ?, ?, ?, ?, 0, ? WHERE NOT EXISTS (SELECT 1 FROM usuarios)`
-    ).bind(nombre, rif, direccion, telefono, email, medioElegido),
+      `INSERT OR REPLACE INTO perfil_emisor (id, instalado, nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, medio_facturacion, tipo_contribuyente, igtf_activo)
+       SELECT 1, 1, ?, ?, ?, ?, ?, 0, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM usuarios)`
+    ).bind(nombre, rif, direccion, telefono, email, medioElegido, tipoContrib, igtfInicial),
     rawDb.prepare(
       `INSERT INTO usuarios (nombre, email, password_hash, rol, codigo_recuperacion_hash) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM usuarios)`
     ).bind(nombre, email, hash, rolInicial, await hashClave(codigo.replace(/-/g, ""))),
@@ -392,9 +405,9 @@ app.post("/api/instalar", async (c) => {
   const id = Number(r[1].meta.last_row_id);
   await asegurarTablasMultiTenant(rawDb);
   await rawDb.prepare(
-    `INSERT OR REPLACE INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, plan_usd, activo)
-     VALUES ('principal', 'PRINCIPAL', ?, ?, ?, ?, ?, ?, ?, 0, 1)`
-  ).bind(nombre, rif, direccion, telefono || "", nombre, email, medioElegido).run();
+    `INSERT OR REPLACE INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, activo)
+     VALUES ('principal', 'PRINCIPAL', ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`
+  ).bind(nombre, rif, direccion, telefono || "", nombre, email, medioElegido, tipoContrib).run();
   await registrarCorreoDirectorio(rawDb, email, "principal", rolInicial, envObj);
   await abrirSesion(c, id, "principal");
   await auditar(c, id, "INSTALAR", email);
@@ -800,9 +813,8 @@ app.put("/api/config", async (c) => {
     if (!Number.isFinite(tasa) || tasa <= 0 || tasa > 1e9) return falla(c, 400, "La tasa BCV debe ser un número mayor que 0.");
     sets.push("tasa_bcv = ?", "tasa_bcv_fecha = datetime('now')"); valores.push(tasa);
   }
-  if ("igtf_activo" in b) {
-    sets.push("igtf_activo = ?");
-    valores.push(b.igtf_activo === true || b.igtf_activo === 1 || b.igtf_activo === "1" || b.igtf_activo === "on" ? 1 : 0);
+  if ("tipo_contribuyente" in b || "igtf_activo" in b) {
+    return falla(c, 400, "Para cambiar la condición fiscal (Formal, Ordinario o Especial) usa la sección «Condición Fiscal» en Ajustes con tu contraseña y confirmación.");
   }
   if ("cierre_mensual_correo" in b) {
     sets.push("cierre_mensual_correo = ?");
@@ -828,6 +840,63 @@ app.put("/api/config", async (c) => {
   }
   await auditar(c, usuario.id, "CONFIG", Object.keys(b).join(","));
   return c.json({ ok: true });
+});
+
+app.put("/api/config/regimen", async (c) => {
+  const usuario = c.get("usuario"), b = await leerJson(c);
+  if (b.__demasiadoGrande) return falla(c, 413, "La petición excede el tamaño permitido.");
+  const rawDb = c.get("rawDb") || c.env.DB, inqCod = c.get("inquilinoCodigo") || "principal";
+  const envObj = c.env as unknown as Record<string, unknown>;
+  if (!tiene(usuario.rol, "admin", usuario.email, envObj)) {
+    return falla(c, 403, "Solo el Dueño / Administrador o el Súper Administrador puede cambiar el tipo de contribuyente.");
+  }
+  const nuevoTipo = validarTipoContribuyenteEstricto(b.tipo_contribuyente);
+  if (!nuevoTipo) return falla(c, 400, "Tipo de contribuyente no válido. Elige FORMAL, ORDINARIO o ESPECIAL.");
+  const confirmo = b.confirmo_regimen === true || b.confirmo_regimen === "on" || b.confirmo_regimen === 1 || b.confirmo_regimen === "1";
+  if (!confirmo) return falla(c, 400, "Marca la casilla «Estoy seguro» para cambiar la condición fiscal del negocio.");
+  const claveActual = String(b.clave_actual ?? b.password ?? "");
+  if (!claveActual) return falla(c, 400, "Escribe tu contraseña actual para confirmar el cambio de condición fiscal.");
+
+  let hashReal: string | null = null;
+  if (esSuperAdmin(usuario.rol, usuario.email, envObj)) {
+    const filaSuper = await rawDb
+      .prepare(`SELECT password_hash FROM usuarios WHERE lower(email) = ? AND activo = 1 LIMIT 1`)
+      .bind(usuario.email.trim().toLowerCase())
+      .first<{ password_hash: string }>()
+      .catch(() => null);
+    hashReal = filaSuper?.password_hash ?? null;
+  }
+  if (!hashReal) {
+    const filaLocal = await c.env.DB
+      .prepare(`SELECT password_hash FROM usuarios WHERE id = ? AND activo = 1 LIMIT 1`)
+      .bind(usuario.id)
+      .first<{ password_hash: string }>()
+      .catch(() => null);
+    hashReal = filaLocal?.password_hash ?? null;
+  }
+  if (!hashReal || !(await verificarClave(claveActual, hashReal))) {
+    return falla(c, 403, "Contraseña incorrecta. No se modificó el tipo de contribuyente.");
+  }
+
+  const previo = await c.env.DB
+    .prepare(`SELECT tipo_contribuyente, igtf_activo FROM perfil_emisor WHERE id = 1`)
+    .first<{ tipo_contribuyente?: string | null; igtf_activo?: number | null }>()
+    .catch(() => null);
+  const tipoPrevio = normalizarTipoContribuyente(previo?.tipo_contribuyente, previo?.igtf_activo);
+  const nuevoIgtf = nuevoTipo === "ESPECIAL" ? 1 : 0;
+
+  await c.env.DB
+    .prepare(`UPDATE perfil_emisor SET tipo_contribuyente = ?, igtf_activo = ? WHERE id = 1`)
+    .bind(nuevoTipo, nuevoIgtf)
+    .run();
+  await rawDb
+    .prepare(`UPDATE _mt_inquilinos SET tipo_contribuyente = ? WHERE codigo = ?`)
+    .bind(nuevoTipo, inqCod)
+    .run()
+    .catch(() => {});
+  invalidarCacheInquilinos(rawDb);
+  await auditar(c, usuario.id, "TIPO_CONTRIBUYENTE_CAMBIO", `${tipoPrevio} -> ${nuevoTipo}`);
+  return c.json({ ok: true, tipo_contribuyente: nuevoTipo, igtf_activo: nuevoIgtf, regimen: reglasRegimen(nuevoTipo) });
 });
 
 app.post("/api/sistema/tasa-bcv/sincronizar", async (c) => {

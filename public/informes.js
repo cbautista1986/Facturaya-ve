@@ -1,7 +1,7 @@
 // Pantallas de INFORMES (Fase 6): menú de informes y cada informe con selector de periodo, vista compacta y exportación CSV / PDF.
 // Todo el contenido sale de informe-tabla.js (mismo modelo para pantalla, CSV y PDF); aquí solo se dibuja y se descarga.
 import { $, raiz, esc, api, aviso, navegacion, activar, descargar, cargarPdfLib, puede, ERROR } from "./comun.js";
-import { INFORMES, construirModelo, aCsv, construirPdfInforme, nombreArchivoInforme, hoyCaracas } from "./informe-tabla.js";
+import { informesDisponibles, construirModelo, aCsv, construirPdfInforme, nombreArchivoInforme, hoyCaracas } from "./informe-tabla.js";
 
 let periodo = null; // { preset, desde, hasta }: se recuerda al pasar de un informe a otro
 let pedido = 0;     // contador para ignorar respuestas tardías
@@ -18,16 +18,29 @@ function rangoDe(preset, hoy) {
 }
 
 function menu(estado) {
-  const disponibles = INFORMES.filter((i) => i.clave !== "ganancias" || puede("admin"));
+  const disponibles = informesDisponibles(estado, puede("admin"));
+  const tipoContrib = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
+  const esFormal = tipoContrib === "FORMAL";
+  const esEspecial = tipoContrib === "ESPECIAL";
   const hoy = hoyCaracas();
   const y = Number(hoy.slice(0, 4)), m = Number(hoy.slice(5, 7));
   const mesAnt = `${m === 1 ? y - 1 : y}-${String(m === 1 ? 12 : m - 1).padStart(2, "0")}`;
   const mesAct = hoy.slice(0, 7);
   const autoActivo = estado?.negocio?.cierre_mensual_correo !== 0;
   const ultimoEnvio = estado?.negocio?.ultimo_cierre_correo || "";
+  const subtituloInformes = esFormal
+    ? "Relación de ventas y compras en Bolívares (Contribuyente Formal · SNAT/2011/0071), Cierre Z de Caja, Retenciones ISLR y reportes gerenciales en PDF y Excel (CSV)."
+    : esEspecial
+      ? "Libros legales en Bolívares (Art. 70 y 72 RLIVA), Cierre Z de Caja, Retenciones ISLR/IVA, Declaración de IGTF 3% (SPE) y reportes gerenciales en PDF y Excel (CSV)."
+      : "Libros legales en Bolívares (Art. 70 y 72 RLIVA), Cierre Z de Caja, Resumen de IVA, Retenciones ISLR/IVA y reportes gerenciales en PDF y Excel (CSV).";
+  const descCierre = esFormal
+    ? "Envía el resumen ejecutivo y los archivos en CSV (Excel) —Relación de Ventas, Relación de Compras, Resumen de Ingresos y Retenciones ISLR— usando el correo transaccional de tu empresa hacia el Administrador y Contadores activos."
+    : esEspecial
+      ? "Envía el resumen ejecutivo y los <b>4 libros en CSV (Excel)</b> —Libro de Ventas, Libro de Compras, Resumen IVA/IGTF/Alcaldía y Retenciones IVA/ISLR— usando el correo transaccional de tu empresa hacia el Administrador y Contadores activos."
+      : "Envía el resumen ejecutivo y los <b>4 libros en CSV (Excel)</b> —Libro de Ventas, Libro de Compras, Resumen IVA/Alcaldía y Retenciones IVA/ISLR— usando el correo transaccional de tu empresa hacia el Administrador y Contadores activos.";
   raiz.innerHTML = `
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver al inicio" aria-label="Volver">←</button><h1>📊 Libros e Informes SENIAT</h1></header>
-    <p class="suave">Libros legales en Bolívares (Art. 70 y 72 RLIVA), Cierre Z de Caja, Retenciones ISLR/IVA, IGTF 3% y reportes gerenciales en PDF y Excel (CSV).</p>
+    <p class="suave">${subtituloInformes}</p>
     <div class="lista">${disponibles.map((i) => `<button type="button" class="fila" data-informe="${i.clave}" data-ayuda="${esc(i.ayuda)}">
       <span class="icono-tipo">${i.icono}</span><span class="dato"><strong>${esc(i.nombre)}</strong><small class="suave">${esc(i.ayuda)}</small></span><span aria-hidden="true">›</span></button>`).join("")}</div>
     <section class="tarjeta" id="cierre-correo-card">
@@ -35,7 +48,7 @@ function menu(estado) {
         <span class="etiqueta">✉️ CIERRE CONTABLE MENSUAL POR CORREO</span>
         <span class="insignia ${autoActivo ? "verde" : "gris"}">${autoActivo ? "🔄 Fin de mes automático" : "✍️ Solo envío manual"}</span>
       </div>
-      <p class="suave">Envía el resumen ejecutivo y los <b>4 libros en CSV (Excel)</b> —Libro de Ventas, Libro de Compras, Resumen IVA/Alcaldía y Retenciones IVA/ISLR— usando el correo transaccional de tu empresa hacia el Administrador y Contadores activos.${ultimoEnvio ? ` Último período enviado automáticamente: <b>${esc(ultimoEnvio)}</b>.` : ""}</p>
+      <p class="suave">${descCierre}${ultimoEnvio ? ` Último período enviado automáticamente: <b>${esc(ultimoEnvio)}</b>.` : ""}</p>
       <form id="cierre-correo-form">
         <div class="reng-fila">
           <label for="cierre-mes">📅 Mes a enviar
@@ -79,7 +92,7 @@ function tabla(s) {
 }
 
 export async function vistaInformes(estado, clave) {
-  const inf = INFORMES.find((i) => i.clave === clave && (i.clave !== "ganancias" || puede("admin")));
+  const inf = informesDisponibles(estado, puede("admin")).find((i) => i.clave === clave);
   if (!inf) return menu(estado);
   const hoy = hoyCaracas();
   if (!periodo) {
@@ -106,7 +119,7 @@ export async function vistaInformes(estado, clave) {
     try {
       const datos = await api(`informes/${clave}${inf.periodo ? `?desde=${periodo.desde}&hasta=${periodo.hasta}` : ""}`);
       if (mio !== pedido || !$("#resultado")) return; // llegó tarde: el usuario ya cambió de pantalla o de periodo
-      const m = construirModelo(clave, datos); ultimo = { m, datos };
+      const m = construirModelo(clave, datos, { tipo_contribuyente: estado?.negocio?.tipo_contribuyente || "ORDINARIO" }); ultimo = { m, datos };
       $("#resultado").innerHTML = `
         <section class="tarjeta resumen"><span class="etiqueta">${esc(m.periodo)}${datos.modo === "PRACTICA" ? " · 🧪 PRÁCTICA" : ""}</span>
           <div class="res-rejilla">${m.resumen.map(([k, v]) => `<div class="res"><small class="suave">${esc(k)}</small><strong>${esc(v)}</strong></div>`).join("")}</div></section>

@@ -248,6 +248,7 @@ export type InquilinoInfo = {
   firma_personal?: string | null;
   respaldo_descargado_en?: string | null;
   medio_facturacion: string;
+  tipo_contribuyente?: string;
   plan_usd: number;
   activo: number;
   creado_en: string;
@@ -266,6 +267,7 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
         nombre_dueno TEXT NOT NULL,
         email_dueno TEXT NOT NULL,
         medio_facturacion TEXT NOT NULL DEFAULT 'APP_SENIAT',
+        tipo_contribuyente TEXT NOT NULL DEFAULT 'ORDINARIO',
         plan_usd INTEGER NOT NULL DEFAULT 10,
         activo INTEGER NOT NULL DEFAULT 1,
         creado_en TEXT NOT NULL DEFAULT (datetime('now')),
@@ -296,6 +298,7 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN zona_postal TEXT DEFAULT ''`).run().catch(() => {});
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN firma_personal TEXT DEFAULT ''`).run().catch(() => {});
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN respaldo_descargado_en TEXT DEFAULT NULL`).run().catch(() => {});
+    await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN tipo_contribuyente TEXT NOT NULL DEFAULT 'ORDINARIO'`).run().catch(() => {});
     ddlMtAsegurado.add(rawDb);
   }
 
@@ -305,13 +308,13 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
   const existePrincipal = await rawDb.prepare(`SELECT codigo, nombre_negocio FROM _mt_inquilinos WHERE codigo = 'principal'`).first<{ codigo: string; nombre_negocio: string }>();
   if (!existePrincipal) {
     try {
-      const p = await rawDb.prepare(`SELECT instalado, nombre_razon_social, rif, direccion_fiscal, telefono, email, medio_facturacion, representante_cedula, zona_postal, firma_personal FROM perfil_emisor WHERE id = 1`).first<Record<string, any>>();
+      const p = await rawDb.prepare(`SELECT instalado, nombre_razon_social, rif, direccion_fiscal, telefono, email, medio_facturacion, tipo_contribuyente, representante_cedula, zona_postal, firma_personal FROM perfil_emisor WHERE id = 1`).first<Record<string, any>>();
       if (p?.instalado === 1) {
         const u = await rawDb.prepare(`SELECT nombre, email, rol FROM usuarios ORDER BY id ASC`).all<{ nombre: string; email: string; rol: string }>();
         const dueno = u.results.find((x) => x.rol === "SUPER_ADMIN" || x.rol === "ADMIN") ?? u.results[0];
         await rawDb.prepare(
-          `INSERT OR IGNORE INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, plan_usd, activo, d1_uuid, d1_nombre, cedula_dueno, zona_postal, firma_personal)
-           VALUES ('principal', 'PRINCIPAL', ?, ?, ?, ?, ?, ?, ?, 0, 1, NULL, 'facturacion_ve_db', ?, ?, ?)`
+          `INSERT OR IGNORE INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, activo, d1_uuid, d1_nombre, cedula_dueno, zona_postal, firma_personal)
+           VALUES ('principal', 'PRINCIPAL', ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, NULL, 'facturacion_ve_db', ?, ?, ?)`
         ).bind(
           p.nombre_razon_social || "Mi Negocio Principal",
           p.rif || "",
@@ -320,6 +323,7 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
           dueno?.nombre || "Administrador",
           dueno?.email || "",
           p.medio_facturacion || "APP_SENIAT",
+          p.tipo_contribuyente || "ORDINARIO",
           p.representante_cedula || "",
           p.zona_postal || "",
           p.firma_personal || ""

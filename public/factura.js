@@ -134,19 +134,25 @@ async function cargarBorrador(id) {
 }
 
 function editor(estado, existente, tipoNuevo) {
+  const tipoContrib = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
+  const esFormal = tipoContrib === "FORMAL";
+  const esEspecial = tipoContrib === "ESPECIAL";
   const d = existente ?? {
     id: null, tipo: tipoNuevo, cliente: null, nota: "", condicion: "CONTADO", dias_credito: "",
-    aplica_igtf: tipoNuevo === "FACTURA" && !!estado.negocio?.igtf_activo, lineas: [],
+    aplica_igtf: tipoNuevo === "FACTURA" && esEspecial && !!estado.negocio?.igtf_activo, lineas: [],
   };
+  if (!esEspecial) d.aplica_igtf = false;
+  if (esFormal) d.lineas.forEach((l) => { l.alicuota_iva = 0; });
   const tasa = tasaInfo(estado), nombre = NOMBRE[d.tipo];
   raiz.innerHTML = `
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver" aria-label="Volver">←</button><h1>${d.id ? `Editar ${nombre.toLowerCase()}` : d.tipo === "FACTURA" ? "Nueva factura" : "Nuevo presupuesto"}</h1></header>
     ${bannerPractica(estado)}
+    ${esFormal ? `<section class="aviso-control">🩺 <b>Contribuyente Formal (Art. 8 Ley IVA):</b> operaciones exentas de IVA (0%) y sin IGTF. La factura imprimirá la leyenda legal «Sin derecho a crédito fiscal».</section>` : ""}
     <section class="tarjeta" id="sec-cliente"></section>
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span><div id="lineas"></div>
       <div class="dos-botones"><button type="button" class="boton chico morado" id="add-inv">🏷️ Del inventario</button><button type="button" class="boton chico" id="add-srv">🛠️ Servicio al momento</button><button type="button" class="boton chico" id="add-prod">📦 Producto al vuelo</button></div>
       <div id="picker" hidden></div></section>
-    ${d.tipo === "FACTURA" ? `<section class="tarjeta"><div class="reng-cab"><span class="etiqueta">💱 MONEDA DE COBRO E IGTF 3% (SNAT/2022/000013)</span><span id="igtf-insignia" class="insignia ${d.aplica_igtf ? "verde" : "gris"}">${d.aplica_igtf ? "IGTF 3% Activo (Divisas)" : "Sin IGTF (Bolívares)"}</span></div>
+    ${d.tipo === "FACTURA" && esEspecial ? `<section class="tarjeta" id="card-igtf-factura"><div class="reng-cab"><span class="etiqueta">💱 MONEDA DE COBRO E IGTF 3% (SNAT/2022/000013 · SPE)</span><span id="igtf-insignia" class="insignia ${d.aplica_igtf ? "verde" : "gris"}">${d.aplica_igtf ? "IGTF 3% Activo (Divisas)" : "Sin IGTF (Bolívares)"}</span></div>
       <label for="medio_cobro_igtf">💳 ¿En qué moneda o medio pagará el cliente?</label>
       <select id="medio_cobro_igtf">
         <option value="BS" ${!d.aplica_igtf ? "selected" : ""}>🇻🇪 Bolívares (Pago Móvil / Transferencia Bs / Efectivo Bs) — Sin IGTF (0%)</option>
@@ -212,7 +218,8 @@ function editor(estado, existente, tipoNuevo) {
         <div class="reng-fila">
           <label>Cant.<input data-campo="cantidad" value="${esc(l.cantidad)}" inputmode="decimal" aria-label="Cantidad"></label>
           <label>Precio USD<input data-campo="precio" value="${esc(l.precio)}" inputmode="decimal" placeholder="0,00" aria-label="Precio en USD"></label>
-          <label>IVA${l.catalogo_id ? `<span class="iva-fijo">${l.alicuota_iva ? l.alicuota_iva + "%" : "Exento"}</span>`
+          <label>IVA${esFormal ? `<span class="iva-fijo">Exento (0%)</span>`
+            : l.catalogo_id ? `<span class="iva-fijo">${l.alicuota_iva ? l.alicuota_iva + "%" : "Exento"}</span>`
             : `<select data-campo="alicuota_iva" aria-label="IVA">${[[16, "16%"], [8, "8%"], [0, "Exento"]].map(([n, t]) => `<option value="${n}" ${n === l.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select>`}</label>
         </div>
         ${!l.catalogo_id && l.tipo === "PRODUCTO" ? `<label>🔒 Costo USD c/u (solo lo ves tú)<input data-campo="costo" value="${esc(l.costo ?? "")}" inputmode="decimal" placeholder="Opcional" aria-label="Costo en USD"></label>` : ""}
@@ -223,16 +230,16 @@ function editor(estado, existente, tipoNuevo) {
   const editarCampo = (e) => {
     const el = e.target.closest("[data-campo]"); if (!el) return;
     const l = d.lineas[Number(el.closest("[data-i]").dataset.i)], k = el.dataset.campo;
-    l[k] = k === "alicuota_iva" ? Number(el.value) : el.value; refrescar();
+    l[k] = k === "alicuota_iva" ? (esFormal ? 0 : Number(el.value)) : el.value; refrescar();
   };
   $("#lineas").addEventListener("input", editarCampo); $("#lineas").addEventListener("change", editarCampo);
   $("#lineas").addEventListener("click", (e) => { const q = e.target.closest("[data-quitar]"); if (q) { d.lineas.splice(Number(q.dataset.quitar), 1); pintarLineas(); } });
   $("#add-srv").addEventListener("click", () => {
-    d.lineas.push({ catalogo_id: null, tipo: "SERVICIO", descripcion: "", cantidad: "1", precio: "", alicuota_iva: 16, costo_usd: null });
+    d.lineas.push({ catalogo_id: null, tipo: "SERVICIO", descripcion: "", cantidad: "1", precio: "", alicuota_iva: esFormal ? 0 : 16, costo_usd: null });
     pintarLineas(); raiz.querySelector(`[data-i="${d.lineas.length - 1}"] [data-campo="descripcion"]`).focus();
   });
   $("#add-prod").addEventListener("click", () => {
-    d.lineas.push({ catalogo_id: null, tipo: "PRODUCTO", descripcion: "", cantidad: "1", precio: "", costo: "", alicuota_iva: 16, costo_usd: null });
+    d.lineas.push({ catalogo_id: null, tipo: "PRODUCTO", descripcion: "", cantidad: "1", precio: "", costo: "", alicuota_iva: esFormal ? 0 : 16, costo_usd: null });
     pintarLineas(); raiz.querySelector(`[data-i="${d.lineas.length - 1}"] [data-campo="descripcion"]`).focus();
   });
   $("#add-inv").addEventListener("click", () => {
@@ -247,7 +254,7 @@ function editor(estado, existente, tipoNuevo) {
           <div class="dato"><strong>${esc(i.nombre)}</strong><small class="suave">${i.precio_centavos == null ? "Precio a definir" : usd(i.precio_centavos)}${i.tipo === "PRODUCTO" && i.controla_stock ? ` · Stock ${cantidadTexto(i.stock_milli)}` : ""}</small></div></article>`).join("") || `<p class="suave">Nada por aquí. Crea productos y servicios en Inventario.</p>`;
         $("#inv-res").querySelectorAll("[data-it]").forEach((el) => el.addEventListener("click", () => {
           const it = activos.find((x) => String(x.id) === el.dataset.it);
-          d.lineas.push({ catalogo_id: it.id, tipo: it.tipo, descripcion: it.nombre, cantidad: "1", precio: aTexto(it.precio_centavos), alicuota_iva: it.alicuota_iva, costo_usd: it.costo_centavos, controla: it.tipo === "PRODUCTO" && !!it.controla_stock, stock_milli: it.stock_milli });
+          d.lineas.push({ catalogo_id: it.id, tipo: it.tipo, descripcion: it.nombre, cantidad: "1", precio: aTexto(it.precio_centavos), alicuota_iva: esFormal ? 0 : it.alicuota_iva, costo_usd: it.costo_centavos, controla: it.tipo === "PRODUCTO" && !!it.controla_stock, stock_milli: it.stock_milli });
           p.hidden = true; pintarLineas();
         }));
       } catch (e) { if ($("#inv-res")) $("#inv-res").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
@@ -298,8 +305,8 @@ function editor(estado, existente, tipoNuevo) {
   // ---- guardar y emitir
   const cuerpo = () => ({
     tipo: d.tipo, cliente_id: d.cliente?.id ?? null, nota: $("#nota").value, condicion: d.condicion, dias_credito: d.dias_credito,
-    aplica_igtf: d.tipo === "FACTURA" && d.aplica_igtf ? 1 : 0,
-    lineas: d.lineas.map((l) => ({ catalogo_id: l.catalogo_id, descripcion: l.descripcion, cantidad: l.cantidad, precio_usd: l.precio, alicuota_iva: l.alicuota_iva, ...(l.catalogo_id ? {} : { tipo: l.tipo, costo_usd: l.costo ?? "" }) })),
+    aplica_igtf: d.tipo === "FACTURA" && esEspecial && d.aplica_igtf ? 1 : 0,
+    lineas: d.lineas.map((l) => ({ catalogo_id: l.catalogo_id, descripcion: l.descripcion, cantidad: l.cantidad, precio_usd: l.precio, alicuota_iva: esFormal ? 0 : l.alicuota_iva, ...(l.catalogo_id ? {} : { tipo: l.tipo, costo_usd: l.costo ?? "" }) })),
   });
   const guardar = async () => { if (d.id) await api(`documentos/${d.id}`, "PUT", cuerpo()); else d.id = (await api("documentos", "POST", cuerpo())).id; };
   const ejecutar = async (fn) => {
@@ -346,6 +353,12 @@ async function ver(estado, id) {
   const datos = await api(`documentos/${encodeURIComponent(id)}`);
   const { documento: D, lineas, impuestos, pagos = [], notas_credito = [], notas_debito = [], factura_afectada: FA = null, pagado_usd = 0, acreditado_nc_usd = 0, saldo_usd = null } = datos;
   const [estTxt, estColor] = ESTADOS[D.estado], emitido = D.estado !== "BORRADOR", esNc = !!D.es_nota_credito, esNd = !!D.es_nota_debito, reglas = JSON.parse(D.parametros_json || "{}");
+  const tipoContrib = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
+  const esFormal = tipoContrib === "FORMAL";
+  const esEspecial = tipoContrib === "ESPECIAL";
+  const emisorDoc = JSON.parse(D.emisor_json || "{}");
+  const docEsFormal = (emisorDoc.tipo_contribuyente || tipoContrib) === "FORMAL";
+  const permitirIgtfNc = !!D.aplica_igtf || esEspecial;
   const cliente = D.cliente_nombre ? { nombre: D.cliente_nombre, rif: D.cliente_rif, email: D.cliente_email || "" } : D.cliente_id ? await api(`clientes/${D.cliente_id}`).then((r) => ({ nombre: r.cliente.nombre_apellido, rif: r.cliente.rif_cedula, email: r.cliente.email || "" })) : null;
   const nom = nombreDe(D);
   const titulo = esNc ? "Nota de crédito" : esNd ? "Nota de débito" : nom;
@@ -388,6 +401,7 @@ async function ver(estado, id) {
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver a la lista" aria-label="Volver">←</button>
       <h1>${esc(titulo)} ${emitido ? esc(numeroDoc(D)) : "(borrador)"}</h1><span class="insignia ${estColor}">${estTxt}</span></header>
     ${D.modo === "PRACTICA" ? bannerPractica({ modo: "PRACTICA" }) : ""}
+    ${docEsFormal && D.tipo === "FACTURA" ? `<section class="aviso-control">🩺 <b>CONTRIBUYENTE FORMAL · SIN DERECHO A CRÉDITO FISCAL</b> (Providencia SENIAT SNAT/2011/0071).</section>` : ""}
     ${D.estado === "ANULADO" ? `<section class="aviso-anulado">⛔ ANULADO el ${fechaDoc(D.anulado_en)} · Motivo: ${esc(D.motivo_anulacion)}</section>` : ""}
     ${esNc || esNd ? `<section class="tarjeta"><span class="etiqueta">${esNd ? "📈 FACTURA AFECTADA POR NOTA DE DÉBITO (SENIAT)" : "↩️ FACTURA AFECTADA (NORMATIVA SENIAT)"}</span>
       <div class="tot"><span>Factura original</span><b>${FA ? `<a href="#/factura/${FA.id}">Factura ${String(FA.numero).padStart(8, "0")}</a>` : esc(String(reglas.factura_afectada_numero ?? "").padStart(8, "0"))}</b></div>
@@ -444,21 +458,23 @@ async function ver(estado, id) {
           </div>`;
         }).join("")}
       </div>
-      <label class="opcion"><input type="checkbox" id="dev_igtf" ${D.aplica_igtf ? "checked" : ""}> Incluir reverso de IGTF (3%) en la Nota de Crédito</label>
+      ${permitirIgtfNc ? `<label class="opcion"><input type="checkbox" id="dev_igtf" ${D.aplica_igtf ? "checked" : ""}> Incluir reverso de IGTF (3%) en la Nota de Crédito</label>` : ""}
       <div id="dev-totales" class="tarjeta"></div>
       ${campo("motivo_nc", "Motivo de la devolución / Nota de Crédito (mínimo 5 letras)", "", "text", 'required minlength="5" maxlength="200" placeholder="Ej: Devolución de mercancía por el cliente"')}
       ${ERROR}<button class="boton morado" type="submit">EMITIR NOTA DE CRÉDITO</button>
     </form>
     <form id="nd-form" class="tarjeta" hidden>
       <h2>📈 Emitir Nota de Débito (Art. 25 SNAT/2011/0071)</h2>
-      <p class="pista">Registra un recargo, interés moratorio, flete o ajuste adicional sobre la Factura ${esc(numeroDoc(D))} que incrementa el débito fiscal en el Libro de Ventas.</p>
+      <p class="pista">Registra un recargo, interés moratorio, flete o ajuste adicional sobre la Factura ${esc(numeroDoc(D))}.</p>
       ${campo("motivo_nd", "Motivo de la Nota de Débito (mínimo 5 letras)", "", "text", 'required minlength="5" maxlength="200" placeholder="Ej: Recargo por flete adicional / ajuste de precio"')}
       ${campo("descripcion_nd", "Descripción del renglón / concepto", "", "text", 'required maxlength="200" placeholder="Ej: Servicio de flete adicional"')}
       <div class="reng-fila">
         <label>Monto base USD<input id="monto_nd" name="monto_nd" inputmode="decimal" required placeholder="0,00"></label>
-        <label>IVA<select id="alicuota_nd" name="alicuota_nd"><option value="16" selected>16% General</option><option value="8">8% Reducida</option><option value="0">Exento (0%)</option></select></label>
+        <label>IVA<select id="alicuota_nd" name="alicuota_nd">${esFormal
+          ? `<option value="0" selected>Exento (0% — Formal)</option>`
+          : `<option value="16" selected>16% General</option><option value="8">8% Reducida</option><option value="0">Exento (0%)</option>`}</select></label>
       </div>
-      <label class="opcion"><input type="checkbox" id="nd_igtf" ${D.aplica_igtf ? "checked" : ""}> Aplicar IGTF (3%) sobre esta Nota de Débito</label>
+      ${esEspecial ? `<label class="opcion"><input type="checkbox" id="nd_igtf" ${D.aplica_igtf ? "checked" : ""}> Aplicar IGTF (3%) sobre esta Nota de Débito</label>` : ""}
       <div id="nd-totales" class="tarjeta"></div>
       ${ERROR}<button class="boton" type="submit">EMITIR NOTA DE DÉBITO</button>
     </form>
@@ -513,11 +529,11 @@ async function ver(estado, id) {
       return;
     }
     try {
-      const alic = Math.round(Number($("#alicuota_nd")?.value || 16) * 100);
-      const calc = calcular([{ cantidad_milli: 1000, precio_usd: precio, alicuota_cent: alic, costo_usd: null }], tasaNc, { aplica_igtf: $("#nd_igtf")?.checked });
+      const alic = esFormal ? 0 : Math.round(Number($("#alicuota_nd")?.value ?? 16) * 100);
+      const calc = calcular([{ cantidad_milli: 1000, precio_usd: precio, alicuota_cent: alic, costo_usd: null }], tasaNc, { aplica_igtf: Boolean($("#nd_igtf")?.checked) });
       caja.innerHTML = `<span class="etiqueta">📋 RESUMEN DE LA NOTA DE DÉBITO</span>
         <div class="tot"><span>Base imponible / Subtotal</span><b>+${usd(calc.subtotal_usd)}${calc.subtotal_bs != null ? ` · +Bs. ${bs(calc.subtotal_bs / 100)}` : ""}</b></div>
-        <div class="tot"><span>IVA (${alic / 100}%)</span><b>+${usd(calc.iva_usd)}${calc.iva_bs != null ? ` · +Bs. ${bs(calc.iva_bs / 100)}` : ""}</b></div>
+        ${alic > 0 ? `<div class="tot"><span>IVA (${alic / 100}%)</span><b>+${usd(calc.iva_usd)}${calc.iva_bs != null ? ` · +Bs. ${bs(calc.iva_bs / 100)}` : ""}</b></div>` : ""}
         ${calc.igtf_usd > 0 ? `<div class="tot"><span>IGTF (3%)</span><b>+${usd(calc.igtf_usd)}${calc.igtf_bs != null ? ` · +Bs. ${bs(calc.igtf_bs / 100)}` : ""}</b></div>` : ""}
         <div class="tot grande"><span>TOTAL A CARGAR (ND)</span><b>+${usd(calc.total_usd)}${calc.total_bs != null ? ` (+Bs. ${bs(calc.total_bs / 100)})` : ""}</b></div>`;
     } catch (e) { caja.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
@@ -601,7 +617,7 @@ async function ver(estado, id) {
   if ($("#devolver-form")) enviar($("#devolver-form"), async (v) => {
     const ls = [...raiz.querySelectorAll("[data-dev-orden]")].map((inp) => ({ orden: Number(inp.dataset.devOrden), cantidad: inp.value }));
     if (!confirm(`¿Emitir Nota de Crédito sobre la Factura ${numeroDoc(D)}?\n\nEsta operación devolverá al inventario las unidades indicadas y reducirá el saldo de la factura.`)) return;
-    const r = await api(`documentos/${id}/devolver`, "POST", { motivo: v.motivo_nc, aplica_igtf: $("#dev_igtf").checked, lineas: ls });
+    const r = await api(`documentos/${id}/devolver`, "POST", { motivo: v.motivo_nc, aplica_igtf: Boolean($("#dev_igtf")?.checked), lineas: ls });
     aviso(`Nota de Crédito NC-${String(r.numero).padStart(8, "0")} emitida ✅`);
     location.hash = `#/factura/${r.id}`;
   });
@@ -609,8 +625,8 @@ async function ver(estado, id) {
     if (!confirm(`¿Emitir Nota de Débito sobre la Factura ${numeroDoc(D)}?\n\nSe registrará como documento independiente en el Libro de Ventas y Cuentas por Cobrar.`)) return;
     const r = await api(`documentos/${id}/nota-debito`, "POST", {
       motivo: v.motivo_nd,
-      aplica_igtf: $("#nd_igtf").checked,
-      lineas: [{ descripcion: v.descripcion_nd, cantidad: "1", precio_usd: v.monto_nd, alicuota_iva: Number(v.alicuota_nd) }],
+      aplica_igtf: Boolean($("#nd_igtf")?.checked),
+      lineas: [{ descripcion: v.descripcion_nd, cantidad: "1", precio_usd: v.monto_nd, alicuota_iva: esFormal ? 0 : Number(v.alicuota_nd) }],
     });
     aviso(`Nota de Débito ND-${String(r.numero).padStart(8, "0")} emitida ✅`);
     location.hash = `#/factura/${r.id}`;

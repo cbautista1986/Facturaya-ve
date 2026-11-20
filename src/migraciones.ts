@@ -743,6 +743,16 @@ export const MIGRACIONES: Migracion[] = [
       `ALTER TABLE usuarios ADD COLUMN totp_respaldo_json TEXT`,
     ],
   },
+  // 0019: Regímenes Fiscales SENIAT v4.6 (Contribuyente Formal, Ordinario y Especial / SPE):
+  // - Agrega `tipo_contribuyente` en `perfil_emisor` con valor por defecto ORDINARIO (compatible con empresas existentes).
+  // - Sincroniza cuentas existentes que ya tenían `igtf_activo = 1` como ESPECIAL.
+  {
+    id: "0019_tipo_contribuyente_v4_6",
+    sql: [
+      `ALTER TABLE perfil_emisor ADD COLUMN tipo_contribuyente TEXT NOT NULL DEFAULT 'ORDINARIO' CHECK (tipo_contribuyente IN ('FORMAL', 'ORDINARIO', 'ESPECIAL'))`,
+      `UPDATE perfil_emisor SET tipo_contribuyente = 'ESPECIAL' WHERE igtf_activo = 1`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

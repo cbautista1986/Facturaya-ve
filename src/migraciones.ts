@@ -753,6 +753,26 @@ export const MIGRACIONES: Migracion[] = [
       `UPDATE perfil_emisor SET tipo_contribuyente = 'ESPECIAL' WHERE igtf_activo = 1`,
     ],
   },
+  // 0020: Correo de Plataforma v4.7 (Historial por inquilino):
+  // - Crea únicamente la tabla `correo_envios` dentro de la D1 de cada inquilino (las tablas globales `_mt_correos_*` viven solo en la D1 principal).
+  {
+    id: "0020_correo_historial_v4_7",
+    sql: [
+      `CREATE TABLE IF NOT EXISTS correo_envios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        tipo TEXT NOT NULL DEFAULT 'GENERAL',
+        destinatario TEXT NOT NULL DEFAULT '',
+        asunto TEXT NOT NULL DEFAULT '',
+        proveedor TEXT NOT NULL DEFAULT '',
+        estado TEXT NOT NULL DEFAULT 'ENVIADO',
+        motivo TEXT NOT NULL DEFAULT '',
+        message_id TEXT DEFAULT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_correo_envios_fecha ON correo_envios(creado_en)`,
+      `CREATE INDEX IF NOT EXISTS idx_correo_envios_msgid ON correo_envios(message_id)`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

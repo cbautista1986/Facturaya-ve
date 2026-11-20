@@ -34,6 +34,7 @@ import compras from "./rutas/compras";
 import existencias from "./rutas/existencias";
 import informes from "./rutas/informes";
 import inquilinos from "./rutas/inquilinos";
+import correos, { webhookCorreo } from "./rutas/correos";
 
 const app = new Hono<Env>();
 const SESION_SEGUNDOS = 60 * 60 * 24 * 7;
@@ -131,8 +132,10 @@ app.use("/api/*", async (c, next) => {
           // Si falla transitoriamente D1, no marcar como migrado para reintentar en la siguiente petición
         }
       }
-      c.env = { ...c.env, DB: dbInq };
+      c.env = { ...c.env, DB: dbInq, __rawDb: rawDb, __inquilinoCodigo: inqCookie } as Env["Bindings"];
     }
+  } else {
+    c.env = { ...c.env, __rawDb: rawDb, __inquilinoCodigo: inqCookie } as Env["Bindings"];
   }
   c.set("inquilinoCodigo", inqCookie);
   await next();
@@ -157,7 +160,7 @@ function leerWhatsappPublico(raw?: string): { digitos: string; bonito: string } 
 const PUBLICAS = new Set(["/api/estado", "/api/instalar", "/api/login", "/api/logout", "/api/recuperar", "/api/recuperar-correo"]);
 app.use("/api/*", async (c, next) => {
   const ruta = c.req.path;
-  if (PUBLICAS.has(ruta)) return next();
+  if (PUBLICAS.has(ruta) || ruta.startsWith("/api/correo/eventos/")) return next();
   const u = await usuarioActual(c).catch(() => null);
   if (!u) return falla(c, 401, "Inicia sesión para continuar.");
   c.set("usuario", u);
@@ -723,8 +726,11 @@ app.post("/api/recuperar-correo", async (c) => {
   if (!destinatarios.length) return falla(c, 400, "No hay un correo de administrador configurado para recibir la recuperación.");
 
   const temporal = claveTemporal();
-  const envio = await enviarCorreo(db, c.env as unknown as Record<string, unknown>, {
+  const envio = await enviarCorreo(db, { ...envObjRecCor, __rawDb: rawDb, __inquilinoCodigo: infoInq.codigo }, {
     para: destinatarios,
+    alcance: "PLATAFORMA",
+    tipo: "RECUPERACION",
+    inquilinoCodigo: infoInq.codigo,
     asunto: `🔐 Recuperación de clave (${u.nombre} - ${NOMBRE_ROL[u.rol] ?? u.rol}) · ${perfil?.nombre_razon_social ?? "FacturaYa"}`,
     html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:20px;border:1px solid #dde3ec;border-radius:16px">
       <h2 style="margin-top:0;color:#1A73E8">🔐 Solicitud de restablecimiento de contraseña</h2>
@@ -950,6 +956,8 @@ app.route("/api/informes", informes);
 app.route("/api/usuarios", usuarios);
 app.route("/api/cuenta", cuenta);
 app.route("/api/sistema/restaurar", restaurar);
+app.route("/api/correo", webhookCorreo);
+app.route("/api/correos", correos);
 
 app.notFound((c) => c.json({ ok: false, error: "No encontrado." }, 404));
 app.onError((e, c) => {
@@ -1036,7 +1044,11 @@ const MAX_LOTE_CRON = 15;
         .catch(() => {});
     }
     if (diaMes >= 1 && diaMes <= 5) {
-      await intentarCierreMensualAutomatico(dbInq, env as unknown as Record<string, string>, mesAnt).catch(() => false);
+      await intentarCierreMensualAutomatico(
+        dbInq,
+        { ...(env as unknown as Record<string, unknown>), __rawDb: rawDb, __inquilinoCodigo: r.codigo } as unknown as Record<string, string>,
+        mesAnt
+      ).catch(() => false);
     }
   }
   // Respaldo automático diario firmado + archivo fiscal mensual de conservación (10+ años) en Cloudflare R2

@@ -39,7 +39,7 @@ export const PLAN: Plan[] = [
   { tabla: "auditoria", tipo: "auditoria", usuarios: ["usuario_id"] },
 ];
 // Tablas que se exportan pero NO se restauran porque las maneja el código (migraciones), se deduplican automáticamente o son temporales
-export const NO_RESTAURAR = ["_migraciones", "sesiones", "intentos_login", "verificaciones", "parametros_fiscales", "integraciones", "emisor_logos"]; // integraciones = claves de la imprenta: no viajan en los respaldos
+export const NO_RESTAURAR = ["_migraciones", "sesiones", "intentos_login", "verificaciones", "parametros_fiscales", "integraciones", "emisor_logos", "correo_envios"]; // integraciones = claves de la imprenta; correo_envios = historial operativo de entregas
 const VACIO_SI = ["clientes", "proveedores", "catalogo", "documentos", "pagos", "compras", "movimientos_stock"]; // sin una sola fila
 const MAX_LOTE = 100;
 const nombreValido = (t: string) => /^[a-z_]+$/.test(t);

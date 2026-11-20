@@ -240,7 +240,12 @@ sistema.post("/imprenta", async (c) => {
 
 // SERVICIO DE CORREO ELECTRÓNICO (Resend / Brevo) para enviar facturas a clientes y recuperación jerárquica de claves.
 sistema.get("/correo", async (c) => {
-  const cfg = await leerConfigCorreo(c.env.DB, c.env as unknown as Record<string, string>);
+  const db = c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
+  const [cfg, perfil] = await Promise.all([
+    leerConfigCorreo(db, envObj),
+    db.prepare(`SELECT nombre_razon_social, email FROM perfil_emisor WHERE id = 1`).first<{ nombre_razon_social: string; email: string | null }>().catch(() => null),
+  ]);
   return c.json({
     ok: true,
     proveedor: cfg.proveedor,
@@ -248,6 +253,12 @@ sistema.get("/correo", async (c) => {
     nombre_remitente: cfg.nombre_remitente,
     clave_configurada: !!cfg.clave,
     clave_final: cfg.clave ? cfg.clave.slice(-4) : "",
+    modo_plataforma: cfg.modo_plataforma,
+    proveedores_plataforma: cfg.proveedores_plataforma,
+    remitente_plataforma: cfg.remitente_plataforma,
+    nombre_plataforma: cfg.nombre_plataforma,
+    negocio_nombre: perfil?.nombre_razon_social || "",
+    reply_to: perfil?.email || "",
   });
 });
 
@@ -286,8 +297,10 @@ sistema.post("/correo/probar", async (c) => {
   const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario");
   const destino = texto(b.para || yo.email, 120).toLowerCase();
   if (!EMAIL.test(destino)) return falla(c, 400, "Escribe un correo de destino válido.");
-  const r = await enviarCorreo(db, c.env as unknown as Record<string, string>, {
+  const r = await enviarCorreo(db, c.env as unknown as Record<string, unknown>, {
     para: destino,
+    alcance: "PLATAFORMA",
+    tipo: "PRUEBA",
     asunto: "✅ Prueba de correo · FacturaYa Venezuela",
     html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:24px;border:1px solid #dde3ec;border-radius:16px">
       <h2 style="margin:0 0 12px;color:#1A73E8">✉️ Servicio de correo activo</h2>
@@ -298,7 +311,7 @@ sistema.post("/correo/probar", async (c) => {
   });
   if (!r.ok) return falla(c, 400, r.error);
   await auditar(c, yo.id, "CORREO_PRUEBA", destino);
-  return c.json({ ok: true, destino });
+  return c.json({ ok: true, destino, proveedor: r.proveedor });
 });
 
 sistema.post("/medio", async (c) => {

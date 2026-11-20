@@ -32,6 +32,7 @@ export const TABLAS_INQUILINO = [
   "compra_impuestos",
   "medio_historial",
   "integraciones",
+  "correo_envios",
 ] as const;
 
 export const TRIGGERS_CONOCIDOS_INQUILINO = [
@@ -79,6 +80,8 @@ export const OBJETOS_ESQUEMA_INQUILINO = [
   "idx_pagos_modo_fecha",
   "idx_auditoria_fecha",
   "idx_sesiones_expira",
+  "idx_correo_envios_fecha",
+  "idx_correo_envios_msgid",
 ] as const;
 
 const REGEX_OBJETOS = new RegExp(`\\b(${[...OBJETOS_ESQUEMA_INQUILINO].sort((a, b) => b.length - a.length).join("|")})\\b`, "g");
@@ -287,6 +290,64 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
       rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_super_vista (
         email TEXT PRIMARY KEY,
         inquilino_codigo TEXT NOT NULL,
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_correos_uso (
+        fecha_utc TEXT NOT NULL,
+        proveedor TEXT NOT NULL,
+        inquilino_codigo TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        enviados INTEGER NOT NULL DEFAULT 0,
+        entregados INTEGER NOT NULL DEFAULT 0,
+        fallidos INTEGER NOT NULL DEFAULT 0,
+        rebotes_duros INTEGER NOT NULL DEFAULT 0,
+        rebotes_blandos INTEGER NOT NULL DEFAULT 0,
+        quejas INTEGER NOT NULL DEFAULT 0,
+        bloqueados INTEGER NOT NULL DEFAULT 0,
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (fecha_utc, proveedor, inquilino_codigo, tipo)
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_correos_bloqueos (
+        email_hash TEXT PRIMARY KEY,
+        mascara TEXT NOT NULL DEFAULT '',
+        tipo TEXT NOT NULL DEFAULT 'REBOTE_BLANDO',
+        motivo TEXT NOT NULL DEFAULT '',
+        contador INTEGER NOT NULL DEFAULT 1,
+        bloqueado_hasta INTEGER NOT NULL DEFAULT 0,
+        inquilino_origen TEXT NOT NULL DEFAULT 'principal',
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_correos_circuito (
+        proveedor TEXT PRIMARY KEY,
+        abierto_hasta INTEGER NOT NULL DEFAULT 0,
+        fallos_consecutivos INTEGER NOT NULL DEFAULT 0,
+        ultimo_error TEXT NOT NULL DEFAULT '',
+        ultimo_estado_http INTEGER NOT NULL DEFAULT 0,
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_correos_indice (
+        message_id TEXT PRIMARY KEY,
+        proveedor TEXT NOT NULL,
+        inquilino_codigo TEXT NOT NULL,
+        tipo TEXT NOT NULL DEFAULT 'GENERAL',
+        email_hash TEXT NOT NULL DEFAULT '',
+        creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_correos_limites (
+        inquilino_codigo TEXT PRIMARY KEY,
+        alerta_diaria INTEGER NOT NULL DEFAULT 100,
+        fusible_diario INTEGER NOT NULL DEFAULT 500,
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_correos_alertas (
+        clave TEXT PRIMARY KEY,
+        nivel TEXT NOT NULL DEFAULT 'AVISO',
+        titulo TEXT NOT NULL,
+        detalle TEXT NOT NULL,
+        inquilino_codigo TEXT NOT NULL DEFAULT '',
+        proveedor TEXT NOT NULL DEFAULT '',
+        notificado_correo INTEGER NOT NULL DEFAULT 0,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now')),
         actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
       )`),
     ]);

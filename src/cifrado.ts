@@ -225,3 +225,39 @@ export async function verificarHmacRespaldo(
   }
   return false;
 }
+
+// HMAC-SHA256 con propósito separado (ej. hash de correos bloqueados) usando MASTER_KEY (fail-closed en producción).
+export async function hmacTextoPlataforma(
+  proposito: string,
+  textoPlano: string,
+  env?: Record<string, unknown>,
+  rawDb?: D1Database | null
+): Promise<string> {
+  const limpio = String(textoPlano ?? "").trim().toLowerCase();
+  if (!limpio) return "";
+  exigirLlaveMaestra(env);
+  if (!llaveMaestraConfigurada(env) && (rawDb || env?.DB)) {
+    await asegurarLlavePlataforma((rawDb || env?.DB) as D1Database, env);
+  }
+  const { semilla } = obtenerSemillaActiva(env);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(`hmac-${proposito}:${semilla}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(limpio));
+  return aHex(sig);
+}
+
+// Comparación en tiempo constante para validar secretos y firmas de webhooks.
+export function comparacionConstante(a: string, b: string): boolean {
+  const ab = enc.encode(String(a ?? ""));
+  const bb = enc.encode(String(b ?? ""));
+  if (ab.length !== bb.length || ab.length === 0) return false;
+  let diff = 0;
+  for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
+  return diff === 0;
+}
+

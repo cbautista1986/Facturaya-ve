@@ -47,6 +47,8 @@ const REGLAS: Regla[] = [
   [TODOS, /^\/api\/cuenta\/2fa(\/|$)/, ["admin"]],                       // 2FA TOTP: Súper Administrador y Dueño/Administrador de empresa
   [TODOS, /^\/api\/cuenta(\/|$)/, []],                                   // mi cuenta: cualquier usuario con sesión
   [TODOS, /^\/api\/inquilinos(\/|$)/, ["super"]],                        // gestión Multi-Tenant y API Cloudflare: EXCLUSIVO del Súper Administrador
+  [G, /^\/api\/correos\/historial$/, ["admin"]],                         // historial propio de envíos y rebotes del inquilino
+  [TODOS, /^\/api\/correos(\/|$)/, ["super"]],                           // panel global de correos, cuotas, circuitos y bloqueos: EXCLUSIVO Súper Admin
   [TODOS, /^\/api\/sistema\/reiniciar-fabrica(\/|$)/, ["super"]],        // Reinicio / borrado de base de datos: EXCLUSIVO del Súper Administrador
   [TODOS, /^\/api\/sistema\/(medio|imprenta|correo)(\/|$)/, ["admin"]],  // API Brevo, Imprenta Digital y Modalidad: Dueño del negocio (ADMIN) y Súper Admin
   [P, /^\/api\/sistema\/tasa-bcv\/sincronizar$/, ["admin", "tasa"]],     // sincronizar tasa BCV oficial (Dueño, Súper Admin o Supervisor)

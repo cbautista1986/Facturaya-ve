@@ -10,6 +10,7 @@ import { vistaPagos } from "./pagos.js";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
+import { renderHistorialCorreoInquilino, vistaPanelCorreosPlataforma } from "./correos.js";
 
 const NEGOCIO = [
   ["nombre_razon_social", "🏷️ Nombre o razón social (según RIF SENIAT)"],
@@ -68,9 +69,9 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.6.0)</span>
-  <p class="suave">Descarga el ZIP completo v4.6.0 con soporte para Contribuyente Formal, Ordinario y Especial (SPE), IGTF exclusivo para Especiales, leyenda legal Formal en PDF, cambio protegido con clave y confirmación, y pruebas integrales:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.6.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.7.0)</span>
+  <p class="suave">Descarga el ZIP completo v4.7.0 con Correo de Plataforma multi-inquilino (Brevo → Resend → Zoho ZeptoMail, failover, cuotas UTC, bloqueos HMAC por rebote/spam, panel Súper Admin e historial por empresa) + regímenes fiscales SENIAT:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.7.0)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="README.md">⬇️ README.md</button>
@@ -526,6 +527,9 @@ async function vistaInquilinos(subvista = "") {
         <button class="accion azul" data-destino="#/inquilinos/correos" data-nombre="Directorio de Correos">
           <span>📧</span><b>Directorio Correos (${directorio.length})</b><small>${directorio.length} usuario(s) en ${lista.length} empresa(s)</small>
         </button>
+        <button class="accion verde" data-destino="#/inquilinos/correos-plataforma" data-nombre="Correos de Plataforma">
+          <span>📨</span><b>Correos Plataforma</b><small>Cuotas UTC, rebotes y failover</small>
+        </button>
         <button class="accion morado" data-destino="#/ajustes" data-nombre="Ajustes Empresa Activa">
           <span>⚙️</span><b>Ajustes (${esc(activo)})</b><small>Empresa activa: ${esc(inqActualObj.nombre_negocio || "Principal")}</small>
         </button>
@@ -594,6 +598,11 @@ async function vistaInquilinos(subvista = "") {
 
   const barraVolverInq = (titulo) => `
     <header class="encabezado"><button class="icono" id="volver-inq" aria-label="Volver a Mis Inquilinos">←</button><h1>${titulo}</h1></header>`;
+
+  if (subvista === "correos-plataforma") {
+    await vistaPanelCorreosPlataforma(raiz, barraVolverInq, () => (location.hash = "#/inquilinos"));
+    return;
+  }
 
   // 2) Subvista: DAR DE ALTA CLIENTE (#/inquilinos/alta) — Limpio: solo datos legales SENIAT, contacto usual, correlativos iniciales y APIs opcionales
   if (subvista === "alta") {
@@ -1910,27 +1919,37 @@ function vistaAjustes() {
       <button class="boton chico" id="usuarios" type="button">Administrar usuarios y claves</button></section>
     ${tarjetaMedio()}
     <section class="tarjeta" id="correo-config">
-      <div class="reng-cab"><h2>✉️ Servicio de Correo API (Brevo / Resend) y Cierre Mensual</h2><span class="insignia gris" id="correo-estado">Cargando…</span></div>
-      <p class="suave"><b>¿Qué hace esta API?</b> Conecta la cuenta gratuita de <b>Brevo</b> (o Resend) del negocio (<b>${esc(n.nombre_razon_social)}</b>) para enviar facturas, notas y recibos en PDF a tus clientes, además de despachar automáticamente los <b>Libros Contables SENIAT en Excel (CSV)</b> al inicio de cada mes al correo del Administrador y Contador.</p>
+      <div class="reng-cab"><h2>✉️ Servicio de Correo y Cierre Mensual</h2><span class="insignia gris" id="correo-estado">Cargando…</span></div>
+      <div id="correo-plat-banner" hidden style="padding:12px;border-radius:12px;background:#f2fbf5;border:1px solid #cdecd8;margin-bottom:12px">
+        <div style="font-weight:700;color:#137333">✅ Correo de plataforma activo (incluido en tu plan)</div>
+        <p class="suave" id="correo-plat-detalle" style="margin:4px 0 0;font-size:13px"></p>
+      </div>
+      <p class="suave" id="correo-legado-desc"><b>¿Qué hace este servicio?</b> Envía facturas, notas y recibos en PDF a tus clientes y despacha automáticamente los <b>Libros Contables SENIAT en Excel (CSV)</b> al inicio de cada mes al correo del Administrador y Contador.</p>
       <label class="opcion" style="margin-bottom:12px">
         <input type="checkbox" id="cierre-mensual-chk" ${cierreAutoActivo ? "checked" : ""}>
         📊 Enviar automáticamente el Cierre Contable Mensual (${n.tipo_contribuyente === "FORMAL" ? "Relación de Ventas, Compras e ISLR en CSV" : n.tipo_contribuyente === "ESPECIAL" ? "Libros de Ventas, Compras, IVA, IGTF e ISLR en CSV" : "Libros de Ventas, Compras, IVA e ISLR en CSV"}) al inicio de cada mes al Administrador y Contador${n.ultimo_cierre_correo ? ` <small class="suave">(último enviado: ${esc(n.ultimo_cierre_correo)})</small>` : ""}.
       </label>
-      <form id="correo-cfg-form">
-        <label for="correo_prov">Proveedor HTTP</label>
-        <select id="correo_prov" name="proveedor">
-          <option value="BREVO">Brevo (api.brevo.com · 300/día gratis)</option>
-          <option value="RESEND">Resend (api.resend.com)</option>
-        </select>
-        ${campo("correo_rem", "✉️ Correo remitente verificado", n.email || "", "email", 'required placeholder="facturacion@negocio.com"')}
-        ${campo("correo_nom", "🏷️ Nombre del remitente", n.nombre_razon_social || "", "text", 'placeholder="Mi Negocio · FacturaYa"')}
-        ${campo("correo_key", "🔑 API Key (xkeysib-... o re_...)", "", "password", 'autocomplete="off" placeholder="xkeysib-xxxxxxxxx"')}
-        <small class="suave" id="correo-key-pista"></small>
-        ${campo("correo_pass", "🔒 Tu contraseña (Dueño o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
-        <label class="opcion"><input type="checkbox" id="correo-confirmo" required> ☑️ Estoy seguro de guardar o modificar la API de Correo de este negocio.</label>
-        ${ERROR}<button class="boton" type="submit" id="correo-guardar-btn" disabled>GUARDAR API DE CORREO</button>
-      </form>
-      <button class="boton chico contorno-azul" id="correo-probar" type="button">📨 Enviar correo de prueba</button>
+      <div id="correo-legado-wrap">
+        <form id="correo-cfg-form">
+          <label for="correo_prov">Proveedor HTTP</label>
+          <select id="correo_prov" name="proveedor">
+            <option value="BREVO">Brevo (api.brevo.com · 300/día gratis)</option>
+            <option value="RESEND">Resend (api.resend.com)</option>
+          </select>
+          ${campo("correo_rem", "✉️ Correo remitente verificado", n.email || "", "email", 'required placeholder="facturacion@negocio.com"')}
+          ${campo("correo_nom", "🏷️ Nombre del remitente", n.nombre_razon_social || "", "text", 'placeholder="Mi Negocio · FacturaYa"')}
+          ${campo("correo_key", "🔑 API Key (xkeysib-... o re_...)", "", "password", 'autocomplete="off" placeholder="xkeysib-xxxxxxxxx"')}
+          <small class="suave" id="correo-key-pista"></small>
+          ${campo("correo_pass", "🔒 Tu contraseña (Dueño o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
+          <label class="opcion"><input type="checkbox" id="correo-confirmo" required> ☑️ Estoy seguro de guardar o modificar la API de Correo de este negocio.</label>
+          ${ERROR}<button class="boton" type="submit" id="correo-guardar-btn" disabled>GUARDAR API DE CORREO</button>
+        </form>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="boton chico contorno-azul" id="correo-probar" type="button">📨 Enviar correo de prueba</button>
+        ${superAdmin ? `<button class="boton chico contorno" id="ir-panel-correos-plat" type="button">👑 Panel Global de Correos</button>` : ""}
+      </div>
+      <div id="correo-historial-box"></div>
     </section>
     ${formularioCodigo()}
     <section class="tarjeta"><h2>💾 Respaldo Online de mi Base de Datos</h2><p class="suave">Exclusivo del Dueño: descarga en cualquier momento una copia completa y verificada de tu base de datos (clientes, inventario, facturas, notas de crédito/débito y cobros) para tu resguardo. <b>Nota:</b> Ningún usuario puede borrar facturas ni eliminar la base de datos.</p>
@@ -2160,15 +2179,35 @@ function vistaAjustes() {
   enlazarCodigo(ruta);
   enlazarMedio(ruta).catch((e) => aviso(e.message));
   api("sistema/correo").then((cfg) => {
-    if (!$("#correo_prov")) return;
-    $("#correo_prov").value = cfg.proveedor || "BREVO";
-    if (cfg.remitente) $("#correo_rem").value = cfg.remitente;
-    if (cfg.nombre_remitente) $("#correo_nom").value = cfg.nombre_remitente;
     const est = $("#correo-estado");
-    est.textContent = cfg.clave_configurada ? `Activo · ${cfg.proveedor}` : "Sin configurar";
-    est.className = `insignia ${cfg.clave_configurada ? "verde" : "gris"}`;
-    $("#correo-key-pista").textContent = cfg.clave_configurada ? `API Key guardada (termina en …${cfg.clave_final}). Déjala en blanco para conservarla.` : "Aún no has guardado una API Key para este negocio.";
+    if (!est) return;
+    if (cfg.modo_plataforma) {
+      est.textContent = "Plataforma activa";
+      est.className = "insignia verde";
+      const ban = $("#correo-plat-banner");
+      const det = $("#correo-plat-detalle");
+      if (ban) ban.hidden = false;
+      if (det) {
+        const nomNeg = cfg.negocio_nombre || n.nombre_razon_social || "Tu negocio";
+        const reply = cfg.reply_to || n.email || "tu correo en Datos Fiscales";
+        det.innerHTML = `Remitente visible: <b>${esc(nomNeg)} (vía ${esc(cfg.nombre_plataforma || "FacturaYa Venezuela")})</b> &lt;${esc(cfg.remitente_plataforma || cfg.remitente)}&gt; · Respuestas directas (Reply-To) a: <b>${esc(reply)}</b>.`;
+      }
+      // Ocultar formulario legado de API Key para inquilinos cuando la plataforma envía por ellos (sin borrar claves previas)
+      const wrap = $("#correo-legado-wrap");
+      if (wrap) wrap.hidden = true;
+    } else {
+      if ($("#correo_prov")) $("#correo_prov").value = cfg.proveedor || "BREVO";
+      if (cfg.remitente && $("#correo_rem")) $("#correo_rem").value = cfg.remitente;
+      if (cfg.nombre_remitente && $("#correo_nom")) $("#correo_nom").value = cfg.nombre_remitente;
+      est.textContent = cfg.clave_configurada ? `Activo · ${cfg.proveedor}` : "Sin configurar";
+      est.className = `insignia ${cfg.clave_configurada ? "verde" : "gris"}`;
+      if ($("#correo-key-pista")) {
+        $("#correo-key-pista").textContent = cfg.clave_configurada ? `API Key guardada (termina en …${cfg.clave_final}). Déjala en blanco para conservarla.` : "Aún no has guardado una API Key para este negocio.";
+      }
+    }
   }).catch(() => {});
+  renderHistorialCorreoInquilino($("#correo-historial-box"));
+  $("#ir-panel-correos-plat")?.addEventListener("click", () => (location.hash = "#/inquilinos/correos-plataforma"));
   enviar($("#correo-cfg-form"), async (d) => {
     const cfg = await api("sistema/correo", "POST", {
       proveedor: d.proveedor,
@@ -2192,8 +2231,10 @@ function vistaAjustes() {
     try {
       const r = await api("sistema/correo/probar", "POST", { para: estado.usuario.email });
       aviso(`Correo de prueba enviado a ${r.destino} ✅`);
+      renderHistorialCorreoInquilino($("#correo-historial-box"));
     } catch (e) {
       aviso(e.message);
+      renderHistorialCorreoInquilino($("#correo-historial-box"));
     }
   });
   $("#restaurar-ir").addEventListener("click", () => (location.hash = "#/restaurar"));

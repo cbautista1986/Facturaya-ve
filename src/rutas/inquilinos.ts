@@ -472,8 +472,11 @@ inquilinos.post("/", async (c) => {
   let correo_enviado = false;
   const escHtml = (s: unknown) =>
     String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch] || ch);
-  const resCorreo = await enviarCorreo(dbInquilino, envObj, {
+  const resCorreo = await enviarCorreo(dbInquilino, { ...envObj, __rawDb: rawDb, __inquilinoCodigo: codigo }, {
     para: email_dueno,
+    alcance: "PLATAFORMA",
+    tipo: "ALTA",
+    inquilinoCodigo: codigo,
     asunto: `🎉 Bienvenido a FacturaYa Venezuela · Acceso de ${nombre_negocio}`,
     html: `<div style="font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:24px;border:1px solid #dde3ec;border-radius:16px;color:#1f2933">
       <h2 style="margin:0 0 12px;color:#1A73E8">🇻🇪 Bienvenido a FacturaYa Venezuela</h2>

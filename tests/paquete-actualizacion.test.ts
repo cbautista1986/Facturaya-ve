@@ -204,15 +204,15 @@ test("2. Adaptador Cloudflare API y D1 HTTP (auto-detección de Account ID, cuot
     assert.equal(estadoDespues.cuota_d1.usadas, 2);
     assert.equal(estadoDespues.cuota_d1.libres_gratis, 8);
 
-    // Probar adaptador D1 HTTP con migraciones completas (0001..0019) + batch sobre esa base remota
+    // Probar adaptador D1 HTTP con migraciones completas (0001..0020) + batch sobre esa base remota
     const dbHttp = crearDbCloudflareHttp("00000000000000000000000000000001", "cf_token_secreto_1234", creada.uuid, mockFetch);
     await migrar(dbHttp);
-    assert.ok(subrequestsQuery <= 26, `Se esperaban <= 26 subrequests en migrar(dbHttp), fueron ${subrequestsQuery}`);
+    assert.ok(subrequestsQuery <= 27, `Se esperaban <= 27 subrequests en migrar(dbHttp), fueron ${subrequestsQuery}`);
     const fila = await dbHttp.prepare("SELECT 1 AS ok, ? AS total").bind(5000).first<{ ok: number; total: number }>();
     assert.equal(fila?.ok, 1);
     assert.equal(fila?.total, 5000);
     const conteoMigraciones = await dbHttp.prepare("SELECT COUNT(*) AS n FROM _migraciones").first<{ n: number }>();
-    assert.equal(conteoMigraciones?.n, 19);
+    assert.equal(conteoMigraciones?.n, 20);
 
     // Eliminar base física y recuperar cuota
     const borrada = await eliminarBaseD1EnCloudflare(db, env, creada.uuid, mockFetch);

@@ -1064,8 +1064,11 @@ documentos.post("/:id/enviar-correo", async (c) => {
   const pdfBase64 = typeof b.pdf_base64 === "string" && b.pdf_base64.length > 50 && b.pdf_base64.length < 4_000_000 ? b.pdf_base64 : null;
   const nombrePdf = texto(b.nombre_archivo, 80) || `${tituloDoc.replace(/\s+/g, "-")}-${nroDoc}.pdf`;
 
-  const res = await enviarCorreo(db, c.env as unknown as Record<string, string>, {
+  const res = await enviarCorreo(db, c.env as unknown as Record<string, unknown>, {
     para: destino,
+    alcance: "INQUILINO",
+    tipo: "DOCUMENTO",
+    responderA: perfil?.email ? String(perfil.email).trim() : undefined,
     asunto: `${tituloDoc} ${nroDoc} · ${nombreNegocio}`,
     html,
     texto: textoPlano,

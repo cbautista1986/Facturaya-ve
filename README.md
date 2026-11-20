@@ -55,3 +55,20 @@ El repositorio incluye suites automatizadas en `tests/` que validan:
 - Integridad de migraciones, correlativos atómicos y aislamiento multi-contribuyente.
 - Compras de mercancía, gastos operativos y servicios mixtos.
 - Controles criptográficos (AES-256-GCM, firmas HMAC, 2FA TOTP RFC 6238, rate limiting y respaldos en R2).
+- Correo de plataforma multi-inquilino (failover Brevo → Resend → Zoho ZeptoMail, cuotas UTC, circuitos, rebotes duros/blandos, quejas de spam, bloqueos HMAC-SHA256 y webhooks autenticados).
+
+---
+
+## 5. Correo de Plataforma Multi-Inquilino (v4.7.0)
+
+El envío de facturas, recibos, cierres contables y recuperación de claves opera de forma centralizada mediante secretos de Cloudflare Workers (sin exigir cuentas externas a cada inquilino):
+
+- **Orden de proveedores (failover automático):** `Brevo → Resend → Zoho ZeptoMail` (Zoho permanece inactivo hasta configurar su clave).
+- **Secretos recomendados (`wrangler secret put`):**
+  - `BREVO_API_KEY`, `RESEND_API_KEY`, `ZEPTOMAIL_API_KEY` (si ninguno está configurado, el sistema conserva el modo legado por inquilino sin borrar claves previas).
+  - `BREVO_WEBHOOK_SECRET`, `RESEND_WEBHOOK_SECRET` (soporta firma Svix `whsec_...` o token), `ZEPTOMAIL_WEBHOOK_SECRET` para los endpoints `POST /api/correo/eventos/{brevo|resend|zeptomail}` (fail-closed si falta el secreto).
+- **Variables públicas opcionales (`wrangler.toml`):**
+  - `EMAIL_REMITENTE` (dirección validada del dominio de plataforma) y `EMAIL_NOMBRE_PLATAFORMA`.
+  - Cuotas diarias UTC opcionales: `BREVO_CUOTA_DIARIA` (300), `RESEND_CUOTA_DIARIA` (100), `ZEPTOMAIL_CUOTA_DIARIA` (10000).
+- **Identidad y privacidad:** los correos de documentos, recibos y cierre mensual salen como `<Nombre del negocio> (vía FacturaYa)` con `Reply-To` directo al correo del negocio. Los bloqueos globales (`_mt_correos_bloqueos`) se almacenan únicamente como HMAC-SHA256 con `MASTER_KEY`.
+

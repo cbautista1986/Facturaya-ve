@@ -524,6 +524,9 @@ export async function enviarCierreMensualInquilino(
   for (const dest of destinos) {
     const r = await enviarCorreo(db, env, {
       para: dest,
+      alcance: "INQUILINO",
+      tipo: "CIERRE",
+      responderA: perfil?.email ? String(perfil.email).trim() : undefined,
       asunto: `📊 Cierre Contable SENIAT (${mes}) · ${nombreNegocio}`,
       html,
       texto: textoPlano,

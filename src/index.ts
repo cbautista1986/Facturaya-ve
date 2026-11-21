@@ -6,7 +6,8 @@ import { migrar } from "./migraciones";
 import { CLAVE_FALSA, claveTemporal, codigoRecuperacion, hashClave, normalizarCodigo, sha256, tokenAleatorio, verificarClave } from "./seguridad";
 import { NOMBRE_ROL, emailSuperAdminConfig, esSuperAdmin, permisosDe, permitido, sinCostos, tiene, veCostos } from "./permisos";
 import { enviarCorreo } from "./correo";
-import { asegurarTablasMultiTenant, buscarInquilinoPorCorreo, esCorreoSuperAdmin, fijarVistaSuperAdmin, hidratarBindingsCloudflare, invalidarCacheInquilinos, obtenerDbInquilino, obtenerSuperAdminPrincipal, registrarCorreoDirectorio, tieneBindingDedicado, verificarInquilinoActivoCacheado, type InquilinoInfo } from "./inquilinos";
+import { asegurarTablasMultiTenant, buscarInquilinoPorCorreo, esCorreoSuperAdmin, fijarVistaSuperAdmin, hidratarBindingsCloudflare, invalidarCacheInquilinos, obtenerDbInquilino, obtenerEstadoInquilino, obtenerSuperAdminPrincipal, registrarCorreoDirectorio, tieneBindingDedicado, type InquilinoInfo } from "./inquilinos";
+import { ejecutarCobroAutomaticoDia1 } from "./suscripciones";
 import { usuarios, cuenta } from "./rutas/usuarios";
 import { restaurar } from "./rutas/restaurar";
 import { EMAIL, RIF, ahora, auditar, falla, fechaCaracas, ip, leerJson, modoActual, usuarioActual, type Ctx, type Env } from "./comun";
@@ -153,6 +154,14 @@ function digitosWhatsappContacto(raw?: string): string | null {
   return dig;
 }
 
+function mensajeSuspension(motivo?: string): string {
+  const m = String(motivo || "").trim().toUpperCase();
+  if (!m || m === "FALTA_PAGO") {
+    return "⚠️ Servicio suspendido por falta de pago. Envía la captura o comprobante de tu pago a pagos@facturayave.com para reactivar el acceso.";
+  }
+  return "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.";
+}
+
 // CONTROL CENTRAL DE PERMISOS (Fase 7.1 + Multi-Tenant): toda petición a /api pasa por aquí antes de llegar a su módulo.
 const PUBLICAS = new Set(["/api/estado", "/api/contacto/whatsapp", "/api/instalar", "/api/login", "/api/logout", "/api/recuperar", "/api/recuperar-correo"]);
 app.use("/api/*", async (c, next) => {
@@ -165,9 +174,9 @@ app.use("/api/*", async (c, next) => {
   const inqCod = c.get("inquilinoCodigo") || "principal";
   if (inqCod !== "principal" && !esSuperAdmin(u.rol, u.email, envObj)) {
     const rawDb = c.get("rawDb") || c.env.DB;
-    const activo = await verificarInquilinoActivoCacheado(rawDb, inqCod);
-    if (!activo) {
-      return falla(c, 403, "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
+    const estadoInq = await obtenerEstadoInquilino(rawDb, inqCod);
+    if (!estadoInq.activo) {
+      return falla(c, 403, mensajeSuspension(estadoInq.motivo_suspension));
     }
   }
   if (!permitido(u.rol, c.req.method, ruta, u.email, envObj)) return falla(c, 403, "Tu usuario no tiene permiso para esto.");
@@ -182,11 +191,16 @@ app.use("/api/*", async (c, next) => {
   }
 });
 
-// Redirección privada a WhatsApp comercial: el número nunca se expone en HTML, JS ni JSON público (protección anti-bots/scrapers).
+// Redirección privada a WhatsApp: el número nunca se expone en HTML, JS ni JSON público (protección anti-bots/scrapers).
+// Soporta ?modo=soporte para clientes activos dentro de la app, y mensaje comercial para visitantes en la portada.
 app.get("/api/contacto/whatsapp", (c) => {
   const digitos = digitosWhatsappContacto(c.env.WHATSAPP_CONTACTO);
   if (!digitos) return falla(c, 404, "Canal de WhatsApp no disponible.");
-  const mensaje = "Hola, deseo información para activar FacturaYa Venezuela en mi empresa.";
+  const modo = String(c.req.query("modo") ?? "").trim().toLowerCase();
+  const mensaje =
+    modo === "soporte"
+      ? "Hola, soy cliente activo de FacturaYa Venezuela. Dejo mis datos de empresa y consulta para atención de soporte:"
+      : "Hola, deseo información para activar FacturaYa Venezuela en mi empresa.";
   const destino = `https://wa.me/${digitos}?text=${encodeURIComponent(mensaje)}`;
   return new Response(null, {
     status: 302,
@@ -230,6 +244,24 @@ app.get("/api/estado", async (c) => {
     }
   }
   if (!usuario) {
+    if (inqCod !== "principal") {
+      const estadoInq = await rawDb
+        .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
+        .bind(inqCod)
+        .first<{ activo: number; motivo_suspension?: string }>()
+        .catch(() => null);
+      if (estadoInq && estadoInq.activo === 0) {
+        return c.json({
+          instalado: true,
+          sesion: false,
+          suspendido: true,
+          motivo_suspension: estadoInq.motivo_suspension || "FALTA_PAGO",
+          mensaje_suspension: mensajeSuspension(estadoInq.motivo_suspension),
+          turnstile_site_key: turnstileKey,
+          ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
+        });
+      }
+    }
     return c.json({
       instalado: true,
       sesion: false,
@@ -238,9 +270,20 @@ app.get("/api/estado", async (c) => {
     });
   }
   if (inqCod !== "principal" && !esSuperAdmin(usuario.rol, usuario.email, envObj)) {
-    const estadoInq = await rawDb.prepare(`SELECT activo FROM _mt_inquilinos WHERE codigo = ?`).bind(inqCod).first<{ activo: number }>();
+    const estadoInq = await rawDb
+      .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
+      .bind(inqCod)
+      .first<{ activo: number; motivo_suspension?: string }>();
     if (estadoInq && estadoInq.activo === 0) {
-      return c.json({ instalado: true, sesion: false, suspendido: true });
+      return c.json({
+        instalado: true,
+        sesion: false,
+        suspendido: true,
+        motivo_suspension: estadoInq.motivo_suspension || "FALTA_PAGO",
+        mensaje_suspension: mensajeSuspension(estadoInq.motivo_suspension),
+        turnstile_site_key: turnstileKey,
+        ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
+      });
     }
   }
   let negocio = await c.env.DB.prepare(`SELECT ${COLUMNAS_NEGOCIO} FROM perfil_emisor WHERE id = 1`).first<Record<string, unknown>>().catch(() => null);
@@ -318,7 +361,14 @@ app.get("/api/estado", async (c) => {
   if (esSuper) {
     await asegurarTablasMultiTenant(rawDb);
     const { results } = await rawDb.prepare(
-      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, tipo_contribuyente, plan_usd, activo, creado_en, d1_uuid, d1_nombre
+      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, tipo_contribuyente, plan_usd,
+              COALESCE(NULLIF(fecha_alta, ''), substr(creado_en, 1, 10)) AS fecha_alta,
+              COALESCE(precio_promo_usd_cent, 500) AS precio_promo_usd_cent,
+              COALESCE(meses_promo, 3) AS meses_promo,
+              COALESCE(precio_regular_usd_cent, 1000) AS precio_regular_usd_cent,
+              COALESCE(cobro_auto_dia1, 0) AS cobro_auto_dia1,
+              COALESCE(motivo_suspension, '') AS motivo_suspension,
+              activo, creado_en, d1_uuid, d1_nombre
        FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en DESC`
     ).all<InquilinoInfo>();
     listaInquilinos = results;
@@ -455,7 +505,7 @@ app.post("/api/login", async (c) => {
   const esSuperLogin = await esCorreoSuperAdmin(rawDb, email, envObjLogin);
   let infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjLogin);
   if (!infoInq.activo) {
-    return falla(c, 403, "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
+    return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
   }
   let db = obtenerDbInquilino({ ...envObjLogin, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
@@ -638,7 +688,7 @@ app.post("/api/recuperar", async (c) => {
 
   const envObjRec = c.env as unknown as Record<string, unknown>;
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRec);
-  if (!infoInq.activo) return falla(c, 403, "⚠️ El servicio de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
+  if (!infoInq.activo) return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
   const db = obtenerDbInquilino({ ...envObjRec, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
   c.env = { ...c.env, DB: db };
@@ -710,7 +760,7 @@ app.post("/api/recuperar-correo", async (c) => {
 
   const envObjRecCor = c.env as unknown as Record<string, unknown>;
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRecCor);
-  if (!infoInq.activo) return falla(c, 403, "⚠️ El servicio de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
+  if (!infoInq.activo) return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
   const db = obtenerDbInquilino({ ...envObjRecCor, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
   c.env = { ...c.env, DB: db };
@@ -748,7 +798,7 @@ app.post("/api/recuperar-correo", async (c) => {
     html: `<div style="font-family:sans-serif;max-width:520px;margin:0 auto;padding:20px;border:1px solid #dde3ec;border-radius:16px">
       <h2 style="margin-top:0;color:#1A73E8">🔐 Solicitud de restablecimiento de contraseña</h2>
       <p>Se ha solicitado restablecer la contraseña en <b>${perfil?.nombre_razon_social ?? "FacturaYa"}</b> (${perfil?.rif ?? ""}).</p>
-      <p>Por seguridad jerárquica, esta clave temporal se envía <b>exclusivamente al Administrador Principal / Dueño del negocio</b>:</p>
+      <p>Por seguridad jerárquica, esta clave temporal se envía <b>exclusivamente al Administrador Principal del negocio</b>:</p>
       <ul style="background:#f8fafd;padding:14px 28px;border-radius:12px">
         <li><b>Usuario solicitante:</b> ${u.nombre} (${u.email})</li>
         <li><b>Rol:</b> ${NOMBRE_ROL[u.rol] ?? u.rol}</li>
@@ -868,7 +918,7 @@ app.put("/api/config/regimen", async (c) => {
   const rawDb = c.get("rawDb") || c.env.DB, inqCod = c.get("inquilinoCodigo") || "principal";
   const envObj = c.env as unknown as Record<string, unknown>;
   if (!tiene(usuario.rol, "admin", usuario.email, envObj)) {
-    return falla(c, 403, "Solo el Dueño / Administrador o el Súper Administrador puede cambiar el tipo de contribuyente.");
+    return falla(c, 403, "Solo el Administrador o el Súper Administrador puede cambiar el tipo de contribuyente.");
   }
   const nuevoTipo = validarTipoContribuyenteEstricto(b.tipo_contribuyente);
   if (!nuevoTipo) return falla(c, 400, "Tipo de contribuyente no válido. Elige FORMAL, ORDINARIO o ESPECIAL.");
@@ -1064,6 +1114,10 @@ const MAX_LOTE_CRON = 15;
         mesAnt
       ).catch(() => false);
     }
+  }
+  // Cobro mensual SaaS opcional (SOLO día 1 hora Caracas y SOLO empresas con cobro_auto_dia1 = 1; NUNCA suspende)
+  if (diaMes === 1) {
+    await ejecutarCobroAutomaticoDia1(rawDb, envObj, hoyIso).catch((e) => console.error("[cobro-saas-cron]:", e));
   }
   // Respaldo automático diario firmado + archivo fiscal mensual de conservación (10+ años) en Cloudflare R2
   await intentarRespaldoDiarioR2(rawDb, envObj, hoyIso).catch((e) => console.error("[respaldo-r2] cron diario:", e));

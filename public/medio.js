@@ -1,4 +1,4 @@
-// Tarjeta MODALIDAD DE FACTURACIÓN DIGITAL en Ajustes (solo el dueño): Aplicación SENIAT o Imprenta Digital (API), una sola a la vez.
+// Tarjeta MODALIDAD DE FACTURACIÓN DIGITAL en Ajustes (solo el administrador): Aplicación SENIAT o Imprenta Digital (API), una sola a la vez.
 import { $, esc, api, aviso, campo, enviar, ERROR } from "./comun.js";
 
 export const NOMBRE_MEDIO = {
@@ -25,13 +25,13 @@ export async function enlazarMedio(alCambiar) {
       <label class="opcion"><input type="checkbox" id="medio-confirmo"> ☑️ Estoy seguro de cambiar la modalidad de facturación digital (define si los números de control fiscal se asignan vía Sistema Digital SENIAT o vía Imprenta Digital Autorizada).</label>
       ${ERROR}<button class="boton chico" type="submit" id="medio-ir" disabled>${medio === "SIN_DEFINIR" ? "Guardar modalidad" : "Cambiar modalidad"}</button></form>
     ${medio === "IMPRENTA_DIGITAL" ? `<hr><h3>🌐 API de Imprenta Digital Autorizada</h3>
-      <p class="suave"><b>¿Qué hace esta configuración?</b> Conecta tu negocio con tu Imprenta Digital Autorizada (ej. The Factory HKA / Unidigital, Providencia SNAT/2024/000102) para solicitar automáticamente Números de Control Fiscal al emitir facturas y notas de crédito. El token se almacena cifrado con AES-256-GCM. Solo el Dueño del negocio y el Súper Admin pueden editarla.</p>
+      <p class="suave"><b>¿Qué hace esta configuración?</b> Conecta tu negocio con tu Imprenta Digital Autorizada (ej. The Factory HKA / Unidigital, Providencia SNAT/2024/000102) para solicitar automáticamente Números de Control Fiscal al emitir facturas y notas de crédito. El token se almacena cifrado con AES-256-GCM. Solo el Administrador del negocio y el Súper Admin pueden editarla.</p>
       <form id="imp-form">${campo("imp_proveedor", "Proveedor autorizado", imprenta.proveedor, "text", 'required maxlength="60" autocomplete="off" placeholder="Ej: The Factory HKA / Unidigital"')}
         ${campo("imp_url", "URL de la API (https://…)", imprenta.url, "url", 'required maxlength="200" autocomplete="off" placeholder="https://api.miimprenta.com/v1"')}
         ${campo("imp_usuario", "Usuario o RIF", imprenta.usuario, "text", 'maxlength="100" autocomplete="off"')}
         ${campo("imp_clave", imprenta.clave_configurada ? `Token API (••••${esc(imprenta.clave_final)}; vacío para conservar)` : "Token / API Key", "", "password", `maxlength="200" autocomplete="off"${imprenta.clave_configurada ? "" : " required"}`)}
         <label for="imp_ambiente">Ambiente</label><select id="imp_ambiente" name="imp_ambiente"><option value="PRUEBAS" ${imprenta.ambiente === "PRUEBAS" ? "selected" : ""}>Pruebas (Sandbox)</option><option value="PRODUCCION" ${imprenta.ambiente === "PRODUCCION" ? "selected" : ""}>Producción</option></select>
-        ${campo("imp_password", "🔒 Tu contraseña (Dueño o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
+        ${campo("imp_password", "🔒 Tu contraseña (Administrador o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
         <label class="opcion"><input type="checkbox" id="imp-confirmo" required> ☑️ Estoy seguro de guardar o modificar la API de Imprenta Digital de este negocio.</label>
         ${ERROR}<button class="boton chico" type="submit" id="imp-ir" disabled>Guardar API de Imprenta</button></form>` : ""}
     ${historial.length ? `<small class="suave">Historial: ${historial.map((h) => `${esc(String(h.cambiado_en).slice(0, 10))}: ${esc(NOMBRE_MEDIO[h.medio_anterior] ?? h.medio_anterior)} → ${esc(NOMBRE_MEDIO[h.medio_nuevo] ?? h.medio_nuevo)}${h.por ? ` (${esc(h.por)})` : ""}`).join(" · ")}</small>` : ""}`;

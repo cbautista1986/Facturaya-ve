@@ -1,10 +1,10 @@
-// Pantallas de USUARIOS Y CUENTA (Fase 7.1): lista y alta de usuarios (solo el dueño), claves temporales, código de recuperación,
+// Pantallas de USUARIOS Y CUENTA (Fase 7.1): lista y alta de usuarios (solo el administrador), claves temporales, código de recuperación,
 // recuperar la clave olvidada y cambio de clave. Las claves temporales y los códigos se muestran UNA sola vez.
 import { $, raiz, esc, api, aviso, campo, enviar, montarTurnstile, ERROR } from "./comun.js";
 
 const ETIQUETA_ROL = {
   SUPER_ADMIN: "Súper Administrador (Plataforma)",
-  ADMIN: "Dueño / administrador",
+  ADMIN: "Administrador",
   SUPERVISOR: "Supervisor",
   CAJERO: "Cajero",
   BODEGA: "Bodega",
@@ -44,16 +44,16 @@ export function pantallaCodigo(codigo, { titulo = "🔐 Tu código de recuperaci
   $("#seguir").addEventListener("click", alContinuar);
 }
 
-// Olvidé mi contraseña: 1) Recuperación jerárquica por correo al Administrador / Dueño, o 2) Código maestro de un solo uso
+// Olvidé mi contraseña: 1) Recuperación jerárquica por correo al Administrador, o 2) Código maestro de un solo uso
 export function vistaRecuperar(alVolver, turnstileKey = null) {
   raiz.innerHTML = `
     <section class="tarjeta"><h1>✉️ Recuperar clave por correo</h1>
-      <p class="suave">Por seguridad jerárquica, la clave temporal de cualquier usuario se envía siempre al <b>correo del Administrador (Dueño)</b>.</p>
+      <p class="suave">Por seguridad jerárquica, la clave temporal de cualquier usuario se envía siempre al <b>correo del Administrador</b>.</p>
       <form id="f-correo">
         ${campo("email_correo", "✉️ Correo del usuario a recuperar", "", "email", 'required autocomplete="username" placeholder="usuario@tunegocio.com"')}
         <div id="ts-rec-correo" class="ts-caja"></div>
         <p id="ok-correo" class="ganancia-txt" hidden></p>
-        ${ERROR}<button class="boton verde" type="submit">ENVIAR CLAVE AL CORREO DEL DUEÑO ➔</button>
+        ${ERROR}<button class="boton verde" type="submit">ENVIAR CLAVE AL CORREO DEL ADMINISTRADOR ➔</button>
       </form>
     </section>
     <section class="tarjeta"><h2>🔐 O recuperar con Código Maestro (1 uso)</h2>
@@ -118,7 +118,7 @@ export function enlazarCodigo(alVolver) {
   enviar($("#cod"), async (d) => { const r = await api("cuenta/codigo-recuperacion", "POST", d); pantallaCodigo(r.codigo, { boton: "LISTO ➔", alContinuar: alVolver }); });
 }
 
-// Lista y gestión de usuarios (solo el dueño)
+// Lista y gestión de usuarios (solo el administrador)
 export async function vistaUsuarios(estado) {
   const { usuarios, roles } = await api("usuarios");
   if (!location.hash.startsWith("#/usuarios")) return; // la persona ya se fue a otra pantalla mientras cargaba: no se la pisa
@@ -146,7 +146,7 @@ export async function vistaUsuarios(estado) {
       </form>`}
     </section>`).join("")}</div>
     <section class="tarjeta"><h2>➕ Nuevo usuario / empleado</h2>
-      <p class="suave">Exclusivo del Dueño (Administrador): crea cuentas para tus cajeros, supervisores, bodega o contador.</p>
+      <p class="suave">Exclusivo del Administrador: crea cuentas para tus cajeros, supervisores, bodega o contador.</p>
       <form id="nuevo">${campo("nombre", "👤 Nombre", "", "text", "required")}${campo("email", "✉️ Correo (será su usuario)", "", "email", 'required autocomplete="off"')}
         <label for="rol">Rol</label><select id="rol" name="rol">${opciones("CAJERO")}</select>
         <p class="pista">Se le da una clave temporal que verás una sola vez; al entrar deberá elegir la suya.</p>

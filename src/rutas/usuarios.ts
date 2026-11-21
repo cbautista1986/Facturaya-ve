@@ -38,7 +38,7 @@ usuarios.post("/", async (c) => {
   const nombre = texto(b.nombre, 120), email = texto(b.email, 120).toLowerCase(), rol = texto(b.rol, 16);
   if (nombre.length < 2) return falla(c, 400, "Escribe el nombre de la persona.");
   if (!EMAIL.test(email)) return falla(c, 400, "El correo no es válido.");
-  if (!(ROLES as readonly string[]).includes(rol)) return falla(c, 400, "Elige un rol válido: dueño, supervisor, cajero, bodega o contador.");
+  if (!(ROLES as readonly string[]).includes(rol)) return falla(c, 400, "Elige un rol válido: administrador, supervisor, cajero, bodega o contador.");
   if (rol === "SUPER_ADMIN" && !esSuperAdmin(yo.rol, yo.email, envObj)) return falla(c, 403, "Solo el Súper Administrador puede asignar ese rol.");
   await asegurarTablasMultiTenant(rawDb);
   const otroNegocio = await rawDb.prepare(`SELECT inquilino_codigo FROM _mt_directorio WHERE email = ?`).bind(email).first<{ inquilino_codigo: string }>();

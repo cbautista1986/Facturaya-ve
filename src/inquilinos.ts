@@ -157,22 +157,27 @@ export function invalidarCacheInquilinos(rawDb?: D1Database) {
 }
 
 export async function verificarInquilinoActivoCacheado(rawDb: D1Database, codigo: string): Promise<boolean> {
-  if (!codigo || codigo === "principal") return true;
+  const est = await obtenerEstadoInquilino(rawDb, codigo);
+  return est.activo;
+}
+
+export async function obtenerEstadoInquilino(rawDb: D1Database, codigo: string): Promise<{ activo: boolean; motivo_suspension: string }> {
+  if (!codigo || codigo === "principal") return { activo: true, motivo_suspension: "" };
   const ahora = Date.now();
   const c = cachePorRawDb.get(rawDb);
-  if (c && ahora - c.ts < CACHE_TTL_MS && c.activos.has(codigo)) {
-    return c.activos.get(codigo)!;
+  if (c && ahora - c.ts < CACHE_TTL_MS && c.activos.has(codigo) && c.activos.get(codigo) === true) {
+    return { activo: true, motivo_suspension: "" };
   }
   const estadoInq = await rawDb
-    .prepare(`SELECT activo FROM _mt_inquilinos WHERE codigo = ?`)
+    .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
     .bind(codigo)
-    .first<{ activo: number }>()
+    .first<{ activo: number; motivo_suspension?: string }>()
     .catch(() => null);
   const activo = !estadoInq || estadoInq.activo === 1;
   if (c && ahora - c.ts < CACHE_TTL_MS) {
     c.activos.set(codigo, activo);
   }
-  return activo;
+  return { activo, motivo_suspension: String(estadoInq?.motivo_suspension || "") };
 }
 
 // Hidrata en `env` adaptadores D1 HTTP para todos los inquilinos que tengan `d1_uuid` creado por API de Cloudflare (cuando no tengan ya binding nativo en wrangler.toml)
@@ -253,6 +258,12 @@ export type InquilinoInfo = {
   medio_facturacion: string;
   tipo_contribuyente?: string;
   plan_usd: number;
+  fecha_alta?: string | null;
+  precio_promo_usd_cent?: number;
+  meses_promo?: number;
+  precio_regular_usd_cent?: number;
+  cobro_auto_dia1?: number;
+  motivo_suspension?: string | null;
   activo: number;
   creado_en: string;
 };
@@ -272,6 +283,12 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
         medio_facturacion TEXT NOT NULL DEFAULT 'APP_SENIAT',
         tipo_contribuyente TEXT NOT NULL DEFAULT 'ORDINARIO',
         plan_usd INTEGER NOT NULL DEFAULT 10,
+        fecha_alta TEXT DEFAULT '',
+        precio_promo_usd_cent INTEGER NOT NULL DEFAULT 500,
+        meses_promo INTEGER NOT NULL DEFAULT 3,
+        precio_regular_usd_cent INTEGER NOT NULL DEFAULT 1000,
+        cobro_auto_dia1 INTEGER NOT NULL DEFAULT 0,
+        motivo_suspension TEXT DEFAULT '',
         activo INTEGER NOT NULL DEFAULT 1,
         creado_en TEXT NOT NULL DEFAULT (datetime('now')),
         d1_uuid TEXT DEFAULT NULL,
@@ -350,9 +367,34 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
         creado_en TEXT NOT NULL DEFAULT (datetime('now')),
         actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
       )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_cobros_saas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        inquilino_codigo TEXT NOT NULL,
+        periodo_ym TEXT NOT NULL,
+        documento_id INTEGER DEFAULT NULL,
+        numero_factura INTEGER DEFAULT NULL,
+        control_fiscal TEXT DEFAULT NULL,
+        medio TEXT NOT NULL DEFAULT 'APP_SENIAT',
+        monto_usd_cent INTEGER NOT NULL,
+        total_usd_cent INTEGER NOT NULL,
+        total_bs_cent INTEGER NOT NULL,
+        tasa_e8 INTEGER NOT NULL,
+        prorrateado INTEGER NOT NULL DEFAULT 0,
+        dias_cobrados INTEGER NOT NULL DEFAULT 30,
+        dias_mes INTEGER NOT NULL DEFAULT 30,
+        es_promo INTEGER NOT NULL DEFAULT 0,
+        concepto TEXT NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'EMITIDO',
+        correo_enviado INTEGER NOT NULL DEFAULT 0,
+        correo_error TEXT DEFAULT '',
+        referencia_pago TEXT DEFAULT '',
+        enviado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        pagado_en TEXT DEFAULT NULL,
+        UNIQUE(inquilino_codigo, periodo_ym)
+      )`),
     ]);
 
-    // Asegurar columnas adicionales en instalaciones previas
+    // Asegurar columnas adicionales en instalaciones previas (append-only seguro)
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN d1_uuid TEXT DEFAULT NULL`).run().catch(() => {});
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN d1_nombre TEXT DEFAULT NULL`).run().catch(() => {});
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN cedula_dueno TEXT DEFAULT ''`).run().catch(() => {});
@@ -360,6 +402,12 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN firma_personal TEXT DEFAULT ''`).run().catch(() => {});
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN respaldo_descargado_en TEXT DEFAULT NULL`).run().catch(() => {});
     await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN tipo_contribuyente TEXT NOT NULL DEFAULT 'ORDINARIO'`).run().catch(() => {});
+    await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN fecha_alta TEXT DEFAULT ''`).run().catch(() => {});
+    await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN precio_promo_usd_cent INTEGER NOT NULL DEFAULT 500`).run().catch(() => {});
+    await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN meses_promo INTEGER NOT NULL DEFAULT 3`).run().catch(() => {});
+    await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN precio_regular_usd_cent INTEGER NOT NULL DEFAULT 1000`).run().catch(() => {});
+    await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN cobro_auto_dia1 INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+    await rawDb.prepare(`ALTER TABLE _mt_inquilinos ADD COLUMN motivo_suspension TEXT DEFAULT ''`).run().catch(() => {});
     ddlMtAsegurado.add(rawDb);
   }
 
@@ -562,23 +610,26 @@ export async function registrarCorreoDirectorio(rawDb: D1Database, email: string
   ).bind(limpio, destino, rol).run();
 }
 
-export async function buscarInquilinoPorCorreo(rawDb: D1Database, email: string, env: Record<string, unknown>): Promise<{ codigo: string; activo: boolean; nombre_negocio: string }> {
+export async function buscarInquilinoPorCorreo(rawDb: D1Database, email: string, env: Record<string, unknown>): Promise<{ codigo: string; activo: boolean; nombre_negocio: string; motivo_suspension?: string }> {
   const limpio = String(email || "").trim().toLowerCase();
   await asegurarTablasMultiTenant(rawDb, env);
   if (await esCorreoSuperAdmin(rawDb, limpio, env)) {
     const vista = await rawDb.prepare(`SELECT inquilino_codigo FROM _mt_super_vista WHERE email = ?`).bind(limpio).first<{ inquilino_codigo: string }>();
     const cod = vista?.inquilino_codigo || "principal";
     const info = await rawDb.prepare(`SELECT nombre_negocio FROM _mt_inquilinos WHERE codigo = ?`).bind(cod).first<{ nombre_negocio: string }>();
-    return { codigo: cod, activo: true, nombre_negocio: info?.nombre_negocio || "Negocio Principal" };
+    return { codigo: cod, activo: true, nombre_negocio: info?.nombre_negocio || "Negocio Principal", motivo_suspension: "" };
   }
   const dir = await rawDb.prepare(`SELECT inquilino_codigo FROM _mt_directorio WHERE email = ?`).bind(limpio).first<{ inquilino_codigo: string }>();
   const codigo = dir?.inquilino_codigo || "principal";
   if (codigo === "principal") {
-    return { codigo: "principal", activo: true, nombre_negocio: "Negocio Principal" };
+    return { codigo: "principal", activo: true, nombre_negocio: "Negocio Principal", motivo_suspension: "" };
   }
-  const inq = await rawDb.prepare(`SELECT activo, nombre_negocio FROM _mt_inquilinos WHERE codigo = ?`).bind(codigo).first<{ activo: number; nombre_negocio: string }>();
-  if (!inq) return { codigo: "principal", activo: true, nombre_negocio: "Negocio Principal" };
-  return { codigo, activo: inq.activo === 1, nombre_negocio: inq.nombre_negocio };
+  const inq = await rawDb
+    .prepare(`SELECT activo, nombre_negocio, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
+    .bind(codigo)
+    .first<{ activo: number; nombre_negocio: string; motivo_suspension?: string }>();
+  if (!inq) return { codigo: "principal", activo: true, nombre_negocio: "Negocio Principal", motivo_suspension: "" };
+  return { codigo, activo: inq.activo === 1, nombre_negocio: inq.nombre_negocio, motivo_suspension: String(inq.motivo_suspension || "") };
 }
 
 export async function fijarVistaSuperAdmin(rawDb: D1Database, codigo: string, emailSuper: string | undefined, env: Record<string, unknown>) {

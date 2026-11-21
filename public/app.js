@@ -16,8 +16,8 @@ const NEGOCIO = [
   ["nombre_razon_social", "🏷️ Nombre o razón social (según RIF SENIAT)"],
   ["rif", "🪪 RIF fiscal (ej: V-12345678-0 o J-12345678-9)"],
   ["direccion_fiscal", "📍 Domicilio fiscal completo (según RIF)"],
-  ["representante_nombre", "👤 Nombre completo del Dueño / Representante Legal"],
-  ["representante_cedula", "🪪 Cédula de Identidad del Dueño (ej: V-12345678)"],
+  ["representante_nombre", "👤 Nombre completo del Administrador / Representante Legal"],
+  ["representante_cedula", "🪪 Cédula de Identidad del Administrador (ej: V-12345678)"],
   ["telefono", "📞 Teléfono / WhatsApp de contacto"],
   ["email", "✉️ Correo del negocio"],
 ];
@@ -27,13 +27,13 @@ const esEntornoPreview = location.hostname.endsWith(".run.app") || location.host
 const URL_PORTAL_OFICIAL = "https://facturayave.com";
 const ICONO_WA_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.52 3.48A11.86 11.86 0 0 0 12.06 0C5.5 0 .16 5.34.16 11.9c0 2.1.55 4.15 1.59 5.95L0 24l6.33-1.66a11.84 11.84 0 0 0 5.73 1.46h.01c6.56 0 11.9-5.34 11.9-11.9 0-3.18-1.24-6.17-3.45-8.42ZM12.07 21.8h-.01a9.87 9.87 0 0 1-5.04-1.38l-.36-.21-3.76.99 1-3.66-.24-.38a9.84 9.84 0 0 1-1.51-5.26c0-5.45 4.44-9.89 9.91-9.89 2.65 0 5.13 1.03 7 2.9a9.83 9.83 0 0 1 2.9 7c0 5.46-4.44 9.89-9.89 9.89Zm5.42-7.41c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.61-.92-2.21-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.48 0 1.46 1.07 2.88 1.22 3.08.15.2 2.1 3.21 5.08 4.5.71.31 1.26.49 1.69.63.71.23 1.36.2 1.87.12.57-.09 1.76-.72 2.01-1.41.25-.69.25-1.29.17-1.41-.07-.12-.27-.2-.57-.35Z"/></svg>`;
 
-function datosWhatsappContacto() {
+function datosWhatsappContacto(modo = "comercial") {
   const raw = estado?.whatsapp_contacto;
   if (!raw) return null;
   const activo = raw === true || (typeof raw === "object" && (raw.activo === true || Boolean(raw.digitos))) || (typeof raw === "string" && raw.trim().length > 0);
   if (!activo) return null;
   // Nunca se expone el número en el HTML ni en el cliente: la redirección ocurre en el servidor (/api/contacto/whatsapp).
-  return { url: "/api/contacto/whatsapp" };
+  return { url: modo === "soporte" ? "/api/contacto/whatsapp?modo=soporte" : "/api/contacto/whatsapp" };
 }
 
 const REGIMENES_UI = {
@@ -63,16 +63,16 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.7.2)</span>
-  <p class="suave">Descarga el ZIP completo v4.7.2 con <b>workers_dev = false</b> y <b>TURNSTILE_HOSTNAMES</b> fijados en <code>wrangler.toml</code>, correos corporativos integrados (<b>contacto@</b> anti-bots afuera, <b>soporte@</b> y <b>pagos@</b> adentro) y <code>Reply-To</code> automático hacia soporte:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.7.2)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.8.0)</span>
+  <p class="suave">Descarga el ZIP completo v4.8.0 con motor SaaS de suscripciones ($5×3 meses → $10 a tasa BCV, prorrateo mes 1, cobro manual + switch día 1), suspensión 100% manual con contraseña, WhatsApp diferenciado para soporte, rol Administrador y SEO completo (<code>sitemap.xml</code> + JSON-LD):</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.8.0)</button>
   <div class="dos-botones">
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="README.md">⬇️ README.md</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="_headers">⬇️ public/_headers</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="package.json">⬇️ package.json</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="correo-plataforma.ts">⬇️ src/correo-plataforma.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="suscripciones.ts">⬇️ src/suscripciones.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="rutas-inquilinos.ts">⬇️ src/rutas/inquilinos.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="index.html">⬇️ public/index.html</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="sitemap.xml">⬇️ public/sitemap.xml</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="package.json">⬇️ package.json</button>
   </div></section>` : "";
 
 function correoCorporativo(usuario) {
@@ -239,12 +239,15 @@ function vistaInstalar() {
 
 function vistaLogin() {
   document.body.classList.add("modo-portada");
-  const wa = datosWhatsappContacto();
+  const wa = datosWhatsappContacto("comercial");
+  const avisoSuspHtml = estado?.suspendido
+    ? `<div class="aviso-susp-login" role="alert">${esc(estado.mensaje_suspension || "⚠️ Servicio suspendido por falta de pago. Envía la captura o comprobante de tu pago a pagos@facturayave.com para reactivar el acceso.")}</div>`
+    : "";
   raiz.innerHTML = `
     <div class="portada">
       <header class="portada-topbar" id="inicio-portada">
         <button type="button" class="portada-marca" data-scroll="inicio-portada" aria-label="FacturaYa Venezuela">
-          <img src="/favicon.svg?v=20261121v472" alt="" width="34" height="34">
+          <img src="/favicon.svg?v=20261121v480" alt="" width="34" height="34">
           <span>FacturaYa Venezuela</span>
         </button>
         <nav class="portada-nav" aria-label="Secciones principales">
@@ -257,6 +260,7 @@ function vistaLogin() {
           <button type="button" class="portada-btn-nav" data-scroll="acceso-empresa">Iniciar sesión</button>
         </div>
       </header>
+      ${avisoSuspHtml}
 
       <section class="portada-hero" aria-labelledby="hero-titulo">
         <div class="portada-hero-texto">
@@ -277,7 +281,7 @@ function vistaLogin() {
           <div class="doc-demo">
             <div class="doc-demo-cab">
               <div class="doc-demo-emisor">
-                <img src="/favicon.svg?v=20261121v472" alt="" width="36" height="36">
+                <img src="/favicon.svg?v=20261121v480" alt="" width="36" height="36">
                 <div>
                   <strong>Tu Empresa C.A.</strong>
                   <span>RIF J-00000000-0 · Caracas</span>
@@ -343,7 +347,7 @@ function vistaLogin() {
           <article class="bento-card bento-wide" id="equipos">
             <span class="bento-num">04. Inventario, gastos y control por roles</span>
             <h3>Tu equipo trabaja ordenado y tus márgenes quedan protegidos</h3>
-            <p>Asigna accesos independientes para Dueño, Supervisor, Cajero, Bodega y Contador. Los cajeros facturan y cobran sin ver costos ni ganancias, y tu contador entra en modo solo lectura para descargar los libros del mes.</p>
+            <p>Asigna accesos independientes para Administrador, Supervisor, Cajero, Bodega y Contador. Los cajeros facturan y cobran sin ver costos ni ganancias, y tu contador entra en modo solo lectura para descargar los libros del mes.</p>
             <p class="bento-ley">Privacidad y respaldo: datos aislados por empresa y copias de seguridad automáticas firmadas en la nube.</p>
           </article>
         </div>
@@ -400,12 +404,13 @@ function vistaLogin() {
           <h2 id="tit-acceso">Ingresa a tu negocio</h2>
           <p>Inicia sesión en <b>www.facturayave.com</b> con el correo y la contraseña asignados a tu empresa. Funciona igual en teléfono, tablet y computadora.</p>
           <ul class="portada-acceso-puntos">
-            <li>Acceso por usuario y rol (Dueño, Supervisor, Cajero, Bodega o Contador).</li>
+            <li>Acceso por usuario y rol (Administrador, Supervisor, Cajero, Bodega o Contador).</li>
             <li>Sesiones cifradas con verificación en 2 pasos (2FA) disponible para administradores.</li>
-            <li>¿Olvidaste tu clave? Solicita una clave temporal al correo principal del Dueño.</li>
+            <li>¿Olvidaste tu clave? Solicita una clave temporal al correo principal del Administrador.</li>
           </ul>
         </div>
         <div class="portada-acceso-card">
+          ${avisoSuspHtml}
           <form id="f">
             ${campo("email", "Correo electrónico", "", "email", 'required autocomplete="username" placeholder="tucorreo@empresa.com"')}
             ${campo("clave", "Contraseña", "", "password", 'required autocomplete="current-password"')}
@@ -416,7 +421,7 @@ function vistaLogin() {
             <div id="ts-login" class="ts-caja"></div>
             ${ERROR}<button class="boton" type="submit" id="btn-login">Ingresar al sistema</button>
           </form>
-          <button class="boton contorno-azul" id="olvide" type="button" style="margin-top:12px">¿Olvidaste tu contraseña? Recíbela en el correo del Dueño</button>
+          <button class="boton contorno-azul" id="olvide" type="button" style="margin-top:12px">¿Olvidaste tu contraseña? Recíbela en el correo del Administrador</button>
         </div>
       </section>
 
@@ -540,6 +545,9 @@ async function vistaInquilinos(subvista = "") {
   const txtLibresD1 = libresD1.toLocaleString("es-VE");
   const esPlan5Usd = data.plan_d1 === "PRO_5USD" || limiteD1 > 10;
   const activasN = lista.filter((x) => x.activo !== 0 && x.activo !== false && x.estado !== "SUSPENDIDO").length;
+  const periodoActual = data.periodo_actual || new Date().toISOString().slice(0, 7);
+  const tasaPrincipal = Number(data.tasa_bcv_principal || 0);
+  const medioPrincipal = data.medio_principal || "APP_SENIAT";
 
   // 1) Menú Principal de Mis Inquilinos con Botones Cuadrados + Selector Rápido Buscable (100+ BD)
   if (!subvista) {
@@ -666,7 +674,7 @@ async function vistaInquilinos(subvista = "") {
       <div id="credenciales-nuevo"></div>
       <section class="tarjeta">
         <h2>📋 Alta de Cliente (SENIAT + Contacto + Correlativos Iniciales)</h2>
-        <p class="suave">Al crear la empresa se provisiona automáticamente su base de datos <b>Cloudflare D1</b> dedicada. Solo se piden los datos estrictamente exigidos por el SENIAT y de contacto del dueño. El <b>Logo</b> y las <b>APIs</b> son opcionales.</p>
+        <p class="suave">Al crear la empresa se provisiona automáticamente su base de datos <b>Cloudflare D1</b> dedicada. Solo se piden los datos estrictamente exigidos por el SENIAT y de contacto del administrador. El <b>Logo</b> y las <b>APIs</b> son opcionales.</p>
         <form id="form-nuevo-inq">
           <span class="etiqueta">1️⃣ RANURA DE BASE DE DATOS CLOUDFLARE D1 (AUTO-ESCALABLE)</span>
           <label for="ranura_db">🗄️ Ranura D1 dedicada (${esPlan5Usd ? "Plan $5/mes activo: hasta 50.000 BD D1" : "Beta 10 BD · Plan $5 escala hasta 50.000 BD"} · ${ranurasOcupadasN} ocupadas)</label>
@@ -686,12 +694,12 @@ async function vistaInquilinos(subvista = "") {
           <p class="pista" id="alta-regimen-pista">${esc(infoRegimen("ORDINARIO").ayuda)}</p>
 
           <hr>
-          <span class="etiqueta">3️⃣ DATOS DE CONTACTO Y ACCESO DEL DUEÑO</span>
-          ${campo("nombre_dueno", "👤 Nombre Completo del Dueño (Administrador)", "", "text", 'required placeholder="Ej: Nombre y Apellido"')}
+          <span class="etiqueta">3️⃣ DATOS DE CONTACTO Y ACCESO DEL ADMINISTRADOR</span>
+          ${campo("nombre_dueno", "👤 Nombre Completo del Administrador / Representante Legal", "", "text", 'required placeholder="Ej: Nombre y Apellido"')}
           ${campo("cedula_dueno", "🪪 Cédula de Identidad", "", "text", 'required placeholder="Ej: V-12345678"')}
           <div class="dos-botones">
             <div>${campo("telefono", "📞 Teléfono / WhatsApp", "", "tel", 'required placeholder="0414-0000000"')}</div>
-            <div>${campo("email_dueno", "✉️ Correo Electrónico (será su usuario)", "", "email", 'required placeholder="dueno@empresa.com"')}</div>
+            <div>${campo("email_dueno", "✉️ Correo Electrónico (será su usuario)", "", "email", 'required placeholder="admin@empresa.com"')}</div>
           </div>
 
           <hr>
@@ -753,14 +761,17 @@ async function vistaInquilinos(subvista = "") {
                 <option value="BREVO" selected>Brevo Free (api.brevo.com · 300 correos/día gratis)</option>
                 <option value="RESEND">Resend (api.resend.com)</option>
               </select>
-              ${campo("correo_remitente", "✉️ Correo remitente verificado en Brevo", "", "email", 'placeholder="Si lo dejas vacío usa el correo del dueño"')}
+              ${campo("correo_remitente", "✉️ Correo remitente verificado en Brevo", "", "email", 'placeholder="Si lo dejas vacío usa el correo del administrador"')}
               ${campo("correo_nombre", "🏷️ Nombre del remitente", "", "text", 'placeholder="Si lo dejas vacío usa la razón social"')}
               ${campo("correo_clave", "🔑 API Key de Brevo (xkeysib-...) o Resend (re_...)", "", "password", 'autocomplete="off" placeholder="Opcional: puedes colocarla hoy o después en Ajustes"')}
             </div>
           </details>
 
           <hr>
+          <span class="etiqueta">7️⃣ SUSCRIPCIÓN MENSUAL SAAS (CORTE DÍA 1 · PRORRATEO MES 1 · TASA BCV)</span>
+          <p class="suave">Si se da de alta después del día 1, el primer mes se calcula automáticamente con prorrateo exacto. La Imprenta Digital la paga cada cliente directamente a su proveedor.</p>
           <div class="dos-botones">
+            <div>${campo("fecha_alta", "📅 Fecha de alta", new Date().toISOString().slice(0, 10), "date", "required")}</div>
             <div>
               <label for="modo_inicial">🚀 Modo inicial</label>
               <select id="modo_inicial" name="modo_inicial">
@@ -768,9 +779,21 @@ async function vistaInquilinos(subvista = "") {
                 <option value="PRACTICA">🧪 Modo Práctica (Entrenamiento)</option>
               </select>
             </div>
-            <div>${campo("plan_usd", "💵 Mensualidad (USD)", "10", "number", 'min="0" max="999"')}</div>
           </div>
-          <p class="pista">📌 Los correlativos iniciales de Factura y Control se fijan al dar de alta el sistema; luego avanzan de forma automática e inmutable según el SENIAT.</p>
+          <div class="dos-botones">
+            <div>${campo("precio_promo_usd", "🏷️ Tarifa promo (USD/mes)", "5", "number", 'min="0" max="999" step="0.01"')}</div>
+            <div>${campo("meses_promo", "🗓️ Meses promocionales", "3", "number", 'min="0" max="36" step="1"')}</div>
+          </div>
+          <div class="dos-botones">
+            <div>${campo("precio_regular_usd", "💵 Tarifa regular desde mes 4 (USD/mes)", "10", "number", 'min="1" max="999" step="0.01"')}</div>
+            <div style="display:flex;align-items:flex-end">
+              <label class="saas-switch" style="margin-bottom:8px">
+                <input type="checkbox" id="cobro_auto_dia1" name="cobro_auto_dia1">
+                <span>Enviar cobro automático día 1</span>
+              </label>
+            </div>
+          </div>
+          <p class="pista">📌 Los correlativos iniciales de Factura y Control se fijan al dar de alta el sistema; luego avanzan de forma automática e inmutable según el SENIAT. Ninguna empresa se suspende automáticamente.</p>
           ${ERROR}<button class="boton verde" type="submit">🚀 CREAR BASE DE DATOS D1 Y DAR DE ALTA CLIENTE</button>
         </form>
       </section>`;
@@ -804,6 +827,8 @@ async function vistaInquilinos(subvista = "") {
 
     enviar($("#form-nuevo-inq"), async (d) => {
       d.logo_base64 = logoAlta || "";
+      d.cobro_auto_dia1 = $("#cobro_auto_dia1")?.checked ? 1 : 0;
+      d.plan_usd = d.precio_regular_usd || 10;
       const r = await api("inquilinos", "POST", d);
       const c = r.credenciales || r;
       const corr = c.correlativos_iniciales || {};
@@ -813,10 +838,11 @@ async function vistaInquilinos(subvista = "") {
       const msgWa = `Hola ${d.nombre_dueno}, tu sistema *FacturaYa Venezuela* para *${nombreEmp}* (${c.rif}) ya está activo en su base dedicada *${c.codigo}*.\n\n🔗 *Acceso:* ${URL_PORTAL_OFICIAL}\n✉️ *Usuario:* ${c.email_dueno}\n🔑 *Contraseña temporal:* ${c.clave_temporal}\n🛡️ *Código maestro de respaldo (1 uso):* ${c.codigo_recuperacion}\n🧾 *Correlativo inicial:* Factura N.º ${facIni} · Control N.º ${ctrlIni}\n\nAl ingresar por primera vez el sistema te solicitará definir tu contraseña personal.`;
       $("#credenciales-nuevo").innerHTML = `<section class="tarjeta secreto">
         <div class="reng-cab"><span class="etiqueta">🎉 CLIENTE DADO DE ALTA EN ${esc(c.codigo)} (${esc(c.d1_nombre || `facturaya_${c.codigo.toLowerCase()}`)})</span><span class="insignia verde">Activa</span></div>
-        <p class="suave"><b>${esc(nombreEmp)}</b> · Credenciales iniciales del dueño (<b>${esc(c.email_dueno)}</b>):</p>
+        <p class="suave"><b>${esc(nombreEmp)}</b> · Credenciales iniciales del administrador (<b>${esc(c.email_dueno)}</b>):</p>
         <p class="codigo">${esc(c.clave_temporal)}</p>
         <p class="suave">Código maestro (1 uso): <b>${esc(c.codigo_recuperacion)}</b><br>
-        🧾 Correlativo inicial SENIAT: <b>Factura N.º ${esc(facIni)}</b> · <b>Control N.º ${esc(ctrlIni)}</b></p>
+        🧾 Correlativo inicial SENIAT: <b>Factura N.º ${esc(facIni)}</b> · <b>Control N.º ${esc(ctrlIni)}</b><br>
+        📅 Fecha de alta: <b>${esc(c.fecha_alta || d.fecha_alta || "")}</b></p>
         <div class="dos-botones">
           <button type="button" class="boton verde" id="copiar-acc">📋 Copiar bienvenida WhatsApp</button>
           <button type="button" class="boton" id="entrar-nuevo">⚙️ Entrar a Ajustes del Cliente</button>
@@ -851,10 +877,11 @@ async function vistaInquilinos(subvista = "") {
     raiz.innerHTML = `
       ${barraVolverInq("🏢 Empresas Afiliadas")}
       <section class="tarjeta">
-        <div class="reng-cab"><span class="etiqueta">👑 GESTIÓN DE INQUILINOS (${lista.length} EMPRESAS)</span><button type="button" class="boton chico verde" id="ir-alta-btn">➕ Dar de Alta Cliente</button></div>
-        <p class="suave">Si un cliente se retrasa 1 mes puedes <b>⏸️ Suspender</b> su facturación. Si cumple 3 meses de mora y decides darlo de baja, el sistema te exige <b>primero descargar su base de datos completa</b> antes de habilitar el borrado definitivo.</p>
-        <input type="search" id="emp-buscar" placeholder="🔍 Buscar empresa, RIF, ranura DB_X, dueño o correo…" autocomplete="off">
-        <div class="chips">
+        <div class="reng-cab"><span class="etiqueta">👑 GESTIÓN DE INQUILINOS Y COBROS SAAS (${lista.length} EMPRESAS)</span><button type="button" class="boton chico verde" id="ir-alta-btn">➕ Dar de Alta Cliente</button></div>
+        <p class="suave">Período actual: <b>${esc(periodoActual)}</b> · Tasa BCV principal: <b>${tasaPrincipal ? `Bs. ${bs(tasaPrincipal)}` : "Sin definir"}</b> · Emisor principal: <b>${medioPrincipal === "IMPRENTA_DIGITAL" ? "Imprenta Digital (API)" : "Sistema Digital SENIAT"}</b>.<br>
+        El cobro mensual emite la factura en tu negocio principal y envía el correo con tus datos de Pago Móvil/Binance (<b>Reply-To: pagos@facturayave.com</b>). La suspensión y reactivación son <b>100% manuales con tu contraseña</b>.</p>
+        <input type="search" id="emp-buscar" placeholder="🔍 Buscar empresa, RIF, ranura DB_X, administrador o correo…" autocomplete="off">
+        <div class="chips tres">
           <button type="button" class="chip activo" data-emp-chip="TODAS">Todas (${lista.length})</button>
           <button type="button" class="chip" data-emp-chip="ACTIVAS">Activas (${activasN})</button>
           <button type="button" class="chip" data-emp-chip="SUSPENDIDAS">Suspendidas (${suspTotal})</button>
@@ -892,26 +919,127 @@ async function vistaInquilinos(subvista = "") {
             ? `${inq.d1_nombre || `facturaya_${inq.codigo.toLowerCase()}`} (Cloudflare D1)`
             : `${inq.d1_nombre || `facturaya_${inq.codigo.toLowerCase()}`} (${inq.codigo})`;
         const regInq = infoRegimen(inq.tipo_contribuyente);
+        const fechaAlta = String(inq.fecha_alta || inq.creado_en || "").slice(0, 10) || "—";
+        const promoUsd = (Number(inq.precio_promo_usd_cent ?? 500) / 100).toFixed(2);
+        const regUsd = (Number(inq.precio_regular_usd_cent ?? 1000) / 100).toFixed(2);
+        const mesesPromo = Number(inq.meses_promo ?? 3);
+        const autoDia1 = Number(inq.cobro_auto_dia1 ?? 0) === 1;
+        const cobroMes = inq.cobro_mes_actual || null;
+        const proy = inq.proyeccion_mes || null;
+        const facNumTxt = cobroMes?.numero_factura ? String(cobroMes.numero_factura).padStart(8, "0") : "";
+        const badgeCobro = cobroMes
+          ? cobroMes.estado === "PAGADO"
+            ? `<span class="insignia verde">✅ Pagado (${esc(periodoActual)})</span>`
+            : `<span class="insignia ambar">📨 Facturado #${esc(facNumTxt)} · Pendiente</span>`
+          : `<span class="insignia gris">⏳ Sin facturar (${esc(periodoActual)})</span>`;
+        const etapaTxt = proy
+          ? proy.es_promo
+            ? `Promo USD ${promoUsd} (Mes ${proy.indice_mes}/${mesesPromo})${proy.prorrateado ? ` · Prorrateo ${proy.dias_cobrados}/${proy.dias_mes}d` : ""}`
+            : `Regular USD ${regUsd} (Mes ${proy.indice_mes})`
+          : `Promo USD ${promoUsd} (${mesesPromo}m) → Regular USD ${regUsd}`;
+
         return `<div class="reng${esActual ? " activo" : ""}">
           <div class="reng-cab">
             <strong>${esPrincipal ? "👑 " : "🏢 "}${esc(inq.nombre_negocio || inq.nombre_razon_social || "Empresa")} <small class="suave">(${esc(inq.rif)})</small></strong>
-            <span class="insignia ${susp ? "rojo" : esActual ? "azul" : "verde"}">${susp ? "SUSPENDIDO" : esActual ? "ACTIVO (ACTUAL)" : "ACTIVO"}</span>
+            <span class="insignia ${susp ? "rojo" : esActual ? "azul" : "verde"}">${susp ? (inq.motivo_suspension === "FALTA_PAGO" ? "SUSPENDIDO · FALTA DE PAGO" : "SUSPENDIDO") : esActual ? "ACTIVO (ACTUAL)" : "ACTIVO"}</span>
           </div>
           <small class="suave">
             ${esPrincipal ? "<b>Tu negocio principal</b> · " : ""}Ranura: <b>${esc(inq.codigo)}</b> · Régimen: <b>${esc(regInq.etiqueta)}</b> · Base D1: <b>${esc(bdTxt)}</b><br>
-            Dueño: <b>${esc(inq.nombre_dueno || "—")}</b> ${inq.cedula_dueno ? `(${esc(inq.cedula_dueno)})` : ""} · Correo: <b>${esc(inq.email_dueno || "—")}</b><br>
-            Domicilio: ${esc(inq.direccion || "—")}${inq.zona_postal ? ` · Z.P. ${esc(inq.zona_postal)}` : ""}${esPrincipal ? "" : ` · Plan: <b>$ ${Number(inq.plan_usd || 10)}/mes</b>`}
+            Administrador: <b>${esc(inq.nombre_dueno || "—")}</b> ${inq.cedula_dueno ? `(${esc(inq.cedula_dueno)})` : ""} · Correo: <b>${esc(inq.email_dueno || "—")}</b><br>
+            Domicilio: ${esc(inq.direccion || "—")}${inq.zona_postal ? ` · Z.P. ${esc(inq.zona_postal)}` : ""}
           </small>
-          <div class="dos-botones">
+
+          ${!esPrincipal ? `<div class="saas-caja">
+            <div class="saas-cab">
+              <span class="etiqueta" style="margin:0">💳 SUSCRIPCIÓN SAAS</span>
+              ${badgeCobro}
+            </div>
+            <div class="saas-meta">
+              📅 Fecha de alta: <b>${esc(fechaAlta)}</b> · Tarifa: <b>${esc(etapaTxt)}</b><br>
+              ${cobroMes
+                ? `🧾 Factura <b>#${esc(facNumTxt)}</b> · Total: <b>${usd(cobroMes.total_usd_cent)}</b> (<b>Bs. ${bs(cobroMes.total_bs_cent / 100)}</b>) · Correo: <b>${cobroMes.correo_enviado ? "Enviado ✅" : "Pendiente"}</b>${cobroMes.estado === "PAGADO" && cobroMes.referencia_pago ? ` · Ref: <b>${esc(cobroMes.referencia_pago)}</b>` : ""}`
+                : proy
+                  ? `💵 Estimado ${esc(periodoActual)}: <b>${usd(proy.total_usd_cent)}</b> (<b>Bs. ${bs(proy.total_bs_cent / 100)}</b> a tasa BCV)`
+                  : `⚠️ Define o sincroniza la tasa BCV en tu empresa principal para calcular en Bolívares.`}
+            </div>
+            <label class="saas-switch">
+              <input type="checkbox" data-auto-dia1="${esc(inq.codigo)}" ${autoDia1 ? "checked" : ""}>
+              <span>Cobro automático día 1 del mes <small class="suave">(nunca suspende)</small></span>
+            </label>
+            <div class="dos-botones" style="margin-top:6px">
+              ${!cobroMes
+                ? `<button type="button" class="boton chico azul" data-preview-cobro="${esc(inq.codigo)}">📧 Facturar y cobrar mes</button>`
+                : `<button type="button" class="boton chico contorno-azul" data-reenviar-cobro="${esc(inq.codigo)}">📨 Reenviar factura</button>`}
+              ${cobroMes && cobroMes.estado !== "PAGADO"
+                ? `<button type="button" class="boton chico verde" data-abrir-pago="${esc(inq.codigo)}">💰 Registrar pago recibido</button>`
+                : ""}
+            </div>
+            <div id="saas-prev-${esc(inq.codigo)}" hidden></div>
+            ${cobroMes && cobroMes.estado !== "PAGADO" ? `<form class="saas-preview" id="form-pago-saas-${esc(inq.codigo)}" data-pago-saas-form="${esc(inq.codigo)}" data-cobro-id="${cobroMes.id}" hidden>
+              <span class="etiqueta">💰 REGISTRAR PAGO RECIBIDO (${esc(periodoActual)} · FAC #${esc(facNumTxt)})</span>
+              <p class="saas-meta">Emite el recibo oficial en tu empresa principal y marca este mes como <b>PAGADO</b>.</p>
+              <div class="dos-botones">
+                <div>
+                  <label>Método</label>
+                  <select name="metodo">
+                    <option value="PAGO_MOVIL">Pago Móvil (Bs)</option>
+                    <option value="BINANCE">Binance Pay (USDT)</option>
+                    <option value="TRANSFERENCIA">Transferencia</option>
+                    <option value="ZELLE">Zelle</option>
+                    <option value="PAYPAL">PayPal</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Moneda</label>
+                  <select name="moneda">
+                    <option value="BS">Bolívares (Bs)</option>
+                    <option value="USD">Dólares / USDT</option>
+                  </select>
+                </div>
+              </div>
+              <input type="text" name="referencia" placeholder="N.º de referencia del Pago Móvil o Binance" maxlength="60" autocomplete="off">
+              <div class="dos-botones" style="margin-top:6px">
+                <button type="submit" class="boton chico verde">✅ Confirmar pago y emitir recibo</button>
+                <button type="button" class="boton chico contorno" data-cerrar-pago="${esc(inq.codigo)}">Cancelar</button>
+              </div>
+            </form>` : ""}
+            <details style="margin-top:8px">
+              <summary style="cursor:pointer;font-size:12.5px;font-weight:600;color:var(--azul)">⚙️ Editar fecha de alta y tarifas ($${esc(promoUsd)} / $${esc(regUsd)})</summary>
+              <form data-suscripcion-form="${esc(inq.codigo)}" style="margin-top:8px">
+                <div class="dos-botones">
+                  <div><label>Fecha de alta</label><input type="date" name="fecha_alta" value="${esc(fechaAlta)}" required></div>
+                  <div><label>Meses promo</label><input type="number" name="meses_promo" min="0" max="36" value="${mesesPromo}" required></div>
+                </div>
+                <div class="dos-botones">
+                  <div><label>Promo USD</label><input type="number" name="precio_promo_usd" min="0" max="999" step="0.01" value="${esc(promoUsd)}" required></div>
+                  <div><label>Regular USD</label><input type="number" name="precio_regular_usd" min="1" max="999" step="0.01" value="${esc(regUsd)}" required></div>
+                </div>
+                <button type="submit" class="boton chico contorno-azul" style="margin-top:6px">💾 Guardar condiciones SaaS</button>
+              </form>
+            </details>
+          </div>` : ""}
+
+          <div class="dos-botones" style="margin-top:8px">
             ${esActual
               ? `<button type="button" class="boton chico verde" data-ir-ajustes="1">⚙️ Ir a Ajustes</button>`
               : `<button type="button" class="boton chico" data-cambiar-inq="${esc(inq.codigo)}">🔄 Entrar / Configurar</button>`}
             ${!esPrincipal
-              ? `<button type="button" class="boton chico ${susp ? "contorno-azul" : "contorno"}" data-estado-inq="${esc(inq.codigo)}" data-nuevo-estado="${susp ? "ACTIVO" : "SUSPENDIDO"}">${susp ? "▶️ Reactivar servicio" : "⏸️ Suspender facturación"}</button>`
+              ? `<button type="button" class="boton chico ${susp ? "verde" : "contorno"}" data-abrir-susp="${esc(inq.codigo)}">${susp ? "▶️ Reactivar empresa" : "⏸️ Suspender por falta de pago"}</button>`
               : ""}
           </div>
           ${!esPrincipal
-            ? `<div class="dos-botones">
+            ? `<form class="susp-form${susp ? " reactivar" : ""}" id="form-susp-${esc(inq.codigo)}" data-susp-form="${esc(inq.codigo)}" data-objetivo-activo="${susp ? "1" : "0"}" hidden>
+                <span class="etiqueta">${susp ? "▶️ REACTIVACIÓN MANUAL DE EMPRESA" : "⏸️ SUSPENSIÓN MANUAL POR FALTA DE PAGO"}</span>
+                <p class="saas-meta">${susp
+                  ? "Restaura de inmediato el acceso del Administrador y sus usuarios tras confirmar el comprobante en <b>pagos@facturayave.com</b>."
+                  : "Cerrará de inmediato la sesión del <b>Administrador y todos los usuarios</b> de esta empresa y bloqueará su ingreso mostrando el aviso de suspensión por falta de pago."}</p>
+                <input type="password" name="clave" placeholder="🔒 Tu contraseña de Súper Admin (obligatoria)" required autocomplete="current-password" style="margin-top:6px">
+                <div class="dos-botones" style="margin-top:6px">
+                  <button type="submit" class="boton chico ${susp ? "verde" : "rojo"}">${susp ? "▶️ Confirmar reactivación" : "⏸️ Confirmar suspensión y cerrar sesiones"}</button>
+                  <button type="button" class="boton chico contorno" data-cancelar-susp="${esc(inq.codigo)}">Cancelar</button>
+                </div>
+              </form>
+              <div class="dos-botones">
                 <button type="button" class="boton chico contorno-azul" data-respaldo-inq="${esc(inq.codigo)}" data-nombre-inq="${esc(inq.nombre_negocio || inq.codigo)}">📦 Descargar BD Cliente</button>
                 <button type="button" class="boton chico contorno" data-abrir-baja="${esc(inq.codigo)}">🗑️ Dar de Baja y Liberar ${esc(inq.codigo)}</button>
               </div>
@@ -951,12 +1079,180 @@ async function vistaInquilinos(subvista = "") {
         aviso(`Empresa activa: ${codigo} ✅`);
         await ruta();
       }));
-      cont.querySelectorAll("[data-estado-inq]").forEach((b) => b.addEventListener("click", async () => {
-        const codigo = b.dataset.estadoInq, nuevo = b.dataset.nuevoEstado;
-        await api(`inquilinos/${encodeURIComponent(codigo)}/estado`, "PUT", { activo: nuevo === "ACTIVO", estado: nuevo });
-        aviso(`Estado actualizado a ${nuevo} ✅`);
-        await vistaInquilinos("empresas");
+
+      // Switch de cobro automático día 1
+      cont.querySelectorAll("[data-auto-dia1]").forEach((chk) => {
+        chk.addEventListener("change", async () => {
+          const cod = chk.dataset.autoDia1;
+          const activoAuto = chk.checked;
+          chk.disabled = true;
+          try {
+            await api(`inquilinos/${encodeURIComponent(cod)}/suscripcion`, "PUT", { cobro_auto_dia1: activoAuto });
+            aviso(activoAuto ? `Cobro automático día 1 activado para ${cod} ✅` : `Cobro automático día 1 desactivado para ${cod} ✅`);
+          } catch (e) {
+            chk.checked = !activoAuto;
+            aviso(e.message);
+          } finally {
+            chk.disabled = false;
+          }
+        });
+      });
+
+      // Editar fecha de alta / tarifas SaaS
+      cont.querySelectorAll("[data-suscripcion-form]").forEach((f) => {
+        f.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const cod = f.dataset.suscripcionForm;
+          const fd = new FormData(f);
+          try {
+            await api(`inquilinos/${encodeURIComponent(cod)}/suscripcion`, "PUT", {
+              fecha_alta: String(fd.get("fecha_alta") || ""),
+              meses_promo: Number(fd.get("meses_promo") || 0),
+              precio_promo_usd: Number(fd.get("precio_promo_usd") || 0),
+              precio_regular_usd: Number(fd.get("precio_regular_usd") || 10),
+            });
+            aviso(`Condiciones SaaS actualizadas para ${cod} ✅`);
+            await vistaInquilinos("empresas");
+          } catch (e) {
+            aviso(e.message);
+          }
+        });
+      });
+
+      // Vista previa y emisión real de factura mensual + correo (pagos@facturayave.com)
+      cont.querySelectorAll("[data-preview-cobro]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const cod = btn.dataset.previewCobro;
+          const caja = document.getElementById(`saas-prev-${cod}`);
+          if (!caja) return;
+          if (!caja.hidden) { caja.hidden = true; return; }
+          btn.disabled = true;
+          try {
+            const prev = await api(`inquilinos/${encodeURIComponent(cod)}/cobrar`, "POST", { solo_vista_previa: true });
+            const cal = prev.calculo;
+            const metodosHtml = (prev.metodos || []).length
+              ? prev.metodos.map((m) => `<div><b>${esc(m.etiqueta)}:</b> ${esc(m.lineas.join(" · "))}</div>`).join("")
+              : `<div class="suave">⚠️ Aún no tienes Pago Móvil ni Binance activos en tu empresa principal (Pagos → Mis datos).</div>`;
+            caja.innerHTML = `<div class="saas-preview">
+              <div class="etiqueta" style="margin-bottom:6px">📧 VISTA PREVIA DE FACTURA Y COBRO (${esc(cal.periodo_ym)})</div>
+              <div class="saas-preview-row"><span>Concepto</span><b>${esc(cal.concepto)}</b></div>
+              <div class="saas-preview-row"><span>Tasa BCV</span><b>Bs. ${bs(prev.tasa_bcv)} / USD</b></div>
+              <div class="saas-preview-row"><span>Total USD ref.</span><b>${usd(cal.total_usd_cent)}</b></div>
+              <div class="saas-preview-row"><span>Total legal Bs</span><b>Bs. ${bs(cal.total_bs_cent / 100)}</b></div>
+              <div class="saas-preview-row"><span>Emisión en tu principal</span><b>${prev.emisor_medio === "IMPRENTA_DIGITAL" ? "Imprenta Digital (API)" : "Sistema Digital SENIAT"}</b></div>
+              <div class="saas-meta" style="margin-top:8px"><b>Datos de pago que irán en el correo (Reply-To: pagos@facturayave.com):</b><br>${metodosHtml}</div>
+              <div class="dos-botones" style="margin-top:10px">
+                <button type="button" class="boton chico verde" data-emitir-cobro="${esc(cod)}">✅ Emitir factura y enviar correo</button>
+                <button type="button" class="boton chico contorno" data-cerrar-prev="${esc(cod)}">Cancelar</button>
+              </div>
+            </div>`;
+            caja.hidden = false;
+            caja.querySelector("[data-cerrar-prev]")?.addEventListener("click", () => { caja.hidden = true; });
+            caja.querySelector("[data-emitir-cobro]")?.addEventListener("click", async (evBtn) => {
+              const bEmitir = evBtn.currentTarget;
+              bEmitir.disabled = true;
+              try {
+                const res = await api(`inquilinos/${encodeURIComponent(cod)}/cobrar`, "POST", { periodo_ym: cal.periodo_ym });
+                const nFac = res.cobro?.numero_factura ? String(res.cobro.numero_factura).padStart(8, "0") : "";
+                aviso(res.correo?.enviado
+                  ? `Factura #${nFac} emitida y correo enviado a ${cod} ✅`
+                  : `Factura #${nFac} emitida en tu principal ✅ (Correo pendiente: ${res.correo?.motivo || "revisa proveedor de correo"})`);
+                await vistaInquilinos("empresas");
+              } catch (err) {
+                aviso(err.message);
+                bEmitir.disabled = false;
+              }
+            });
+          } catch (e) {
+            aviso(e.message);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+
+      // Reenviar correo de cobro ya emitido (sin duplicar factura)
+      cont.querySelectorAll("[data-reenviar-cobro]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const cod = btn.dataset.reenviarCobro;
+          btn.disabled = true;
+          try {
+            const res = await api(`inquilinos/${encodeURIComponent(cod)}/cobrar`, "POST", { periodo_ym: periodoActual, reenviar_correo: true });
+            aviso(res.correo?.enviado ? `Factura reenviada al correo de ${cod} ✅` : `No se pudo reenviar el correo: ${res.correo?.motivo || "error"}`);
+            await vistaInquilinos("empresas");
+          } catch (e) {
+            aviso(e.message);
+          } finally {
+            btn.disabled = false;
+          }
+        });
+      });
+
+      // Registrar pago recibido (recibo atómico en principal)
+      cont.querySelectorAll("[data-abrir-pago]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const f = document.getElementById(`form-pago-saas-${btn.dataset.abrirPago}`);
+          if (f) f.hidden = !f.hidden;
+        });
+      });
+      cont.querySelectorAll("[data-cerrar-pago]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const f = document.getElementById(`form-pago-saas-${btn.dataset.cerrarPago}`);
+          if (f) f.hidden = true;
+        });
+      });
+      cont.querySelectorAll("[data-pago-saas-form]").forEach((f) => {
+        f.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const cod = f.dataset.pagoSaasForm;
+          const cobroId = f.dataset.cobroId;
+          const fd = new FormData(f);
+          try {
+            const res = await api(`inquilinos/${encodeURIComponent(cod)}/cobros/${encodeURIComponent(cobroId)}/pagar`, "POST", {
+              metodo: String(fd.get("metodo") || "PAGO_MOVIL"),
+              moneda: String(fd.get("moneda") || "BS"),
+              referencia: String(fd.get("referencia") || "").trim(),
+            });
+            aviso(`Pago registrado ✅ Recibo #${res.recibo_numero || "emitido"} en tu negocio principal.`);
+            await vistaInquilinos("empresas");
+          } catch (e) {
+            aviso(e.message);
+          }
+        });
+      });
+
+      // Suspensión / Reactivación 100% manual con contraseña del Súper Admin
+      cont.querySelectorAll("[data-abrir-susp]").forEach((b) => b.addEventListener("click", () => {
+        const f = document.getElementById(`form-susp-${b.dataset.abrirSusp}`);
+        if (f) f.hidden = !f.hidden;
       }));
+      cont.querySelectorAll("[data-cancelar-susp]").forEach((b) => b.addEventListener("click", () => {
+        const f = document.getElementById(`form-susp-${b.dataset.cancelarSusp}`);
+        if (f) f.hidden = true;
+      }));
+      cont.querySelectorAll("[data-susp-form]").forEach((f) => {
+        f.addEventListener("submit", async (ev) => {
+          ev.preventDefault();
+          const cod = f.dataset.suspForm;
+          const objetivoActivo = f.dataset.objetivoActivo === "1";
+          const fd = new FormData(f);
+          const clave = String(fd.get("clave") || "");
+          try {
+            const res = await api(`inquilinos/${encodeURIComponent(cod)}/estado`, "PUT", {
+              activo: objetivoActivo,
+              clave,
+              motivo: objetivoActivo ? "" : "FALTA_PAGO",
+            });
+            aviso(objetivoActivo
+              ? `Empresa ${cod} reactivada ✅`
+              : `Empresa ${cod} suspendida por falta de pago (${res.sesiones_cerradas || 0} sesión(es) cerrada(s)) ✅`);
+            await vistaInquilinos("empresas");
+          } catch (e) {
+            aviso(e.message);
+          }
+        });
+      });
+
       cont.querySelectorAll("[data-respaldo-inq]").forEach((b) => b.addEventListener("click", async () => {
         const codigo = b.dataset.respaldoInq;
         b.disabled = true;
@@ -1899,7 +2195,7 @@ function vistaAjustes() {
       <button class="boton chico contorno" id="cambiar-clave" type="button">Cambiar mi contraseña</button></section>
     ${admin ? `<section class="tarjeta" id="card-2fa">
       <div class="reng-cab"><h2>🛡️ Autenticación en 2 Pasos (2FA · ${superAdmin ? "Súper Admin" : "Administrador"})</h2><span class="insignia gris" id="totp-badge">Consultando…</span></div>
-      <p class="suave">Protege tu acceso de ${superAdmin ? "Súper Administrador" : "Dueño / Administrador"} con códigos temporales de 6 dígitos en <b>Google Authenticator</b> o <b>Authy</b> (estándar RFC 6238). Incluye 8 códigos de respaldo de un solo uso y protección contra fuerza bruta.</p>
+      <p class="suave">Protege tu acceso de ${superAdmin ? "Súper Administrador" : "Administrador"} con códigos temporales de 6 dígitos en <b>Google Authenticator</b> o <b>Authy</b> (estándar RFC 6238). Incluye 8 códigos de respaldo de un solo uso y protección contra fuerza bruta.</p>
       <div id="totp-zona"><p class="suave">Cargando estado 2FA…</p></div>
     </section>` : ""}
     ${puedeTasa ? `<section class="tarjeta" id="ajustes-tasa-card">
@@ -1931,7 +2227,7 @@ function vistaAjustes() {
       <button class="boton" id="ir-inquilinos" type="button">🏢 Abrir Menú de Mis Inquilinos</button>
     </section>` : ""}
     ${admin ? `<form id="f" class="tarjeta">
-      <div class="reng-cab"><h2>🏷️ Datos Fiscales, RIF SENIAT y Logo</h2><span class="insignia verde">Dueño / Súper Admin</span></div>
+      <div class="reng-cab"><h2>🏷️ Datos Fiscales, RIF SENIAT y Logo</h2><span class="insignia verde">Administrador / Súper Admin</span></div>
       <p class="suave"><b>¿Qué hace esta sección?</b> Define los datos fiscales oficiales del RIF (Art. 13 Providencia SNAT/2011/0071), los datos del representante legal y el logo que se imprimen en el encabezado de tus facturas, presupuestos, notas de crédito, notas de débito y recibos. Si dejas el logo en blanco, los documentos salen sin logo.</p>
       <label>🖼️ Logo en PDF y encabezado (opcional)</label>
       <div class="logo-caja">
@@ -1943,7 +2239,7 @@ function vistaAjustes() {
       </div>
       ${NEGOCIO.map(([id, et]) => campo(id, et, n[id] ?? "")).join("")}
       <p class="pista">💳 Configura tus cuentas receptoras (Pago Móvil, Transferencia, Zelle, Binance, PayPal) en <b>Pagos → Mis datos</b>. Para cambiar entre Contribuyente Formal, Ordinario o Especial (IGTF 3%), usa la tarjeta <b>Condición Fiscal</b> justo debajo.</p>
-      <label class="opcion"><input type="checkbox" id="fiscal-confirmo" required> ☑️ Estoy seguro de guardar o modificar los datos fiscales y de contacto de este negocio (solo Dueño y Súper Admin).</label>
+      <label class="opcion"><input type="checkbox" id="fiscal-confirmo" required> ☑️ Estoy seguro de guardar o modificar los datos fiscales y de contacto de este negocio (solo Administrador y Súper Admin).</label>
       ${ERROR}<button class="boton verde" type="submit" id="fiscal-guardar-btn" disabled>GUARDAR DATOS FISCALES Y LOGO</button>
     </form>
     <section class="tarjeta" id="card-regimen-fiscal">
@@ -1958,12 +2254,12 @@ function vistaAjustes() {
           ${opcionesRegimenHtml(n.tipo_contribuyente || "ORDINARIO")}
         </select>
         <p class="pista" id="regimen-pista">${esc(infoRegimen(n.tipo_contribuyente).ayuda)}</p>
-        ${campo("regimen_clave", "🔒 Tu contraseña actual (Dueño o Súper Admin)", "", "password", 'required autocomplete="current-password" placeholder="Ingresa tu contraseña para autorizar"')}
+        ${campo("regimen_clave", "🔒 Tu contraseña actual (Administrador o Súper Admin)", "", "password", 'required autocomplete="current-password" placeholder="Ingresa tu contraseña para autorizar"')}
         <label class="opcion"><input type="checkbox" id="regimen-confirmo" required> ☑️ Estoy seguro de cambiar la condición fiscal (Tipo de Contribuyente) de este negocio según su estatus vigente ante el SENIAT.</label>
         ${ERROR}<button class="boton verde" type="submit" id="regimen-guardar-btn" disabled>GUARDAR CONDICIÓN FISCAL</button>
       </form>
     </section>
-    <section class="tarjeta"><h2>👥 Usuarios y Empleados</h2><p class="suave">Exclusivo del Dueño: crea usuarios para tus empleados (cajero, supervisor, bodega, contador), cámbiales la contraseña o desactívalos.</p>
+    <section class="tarjeta"><h2>👥 Usuarios y Empleados</h2><p class="suave">Exclusivo del Administrador: crea usuarios para tus empleados (cajero, supervisor, bodega, contador), cámbiales la contraseña o desactívalos.</p>
       <button class="boton chico" id="usuarios" type="button">Administrar usuarios y claves</button></section>
     ${tarjetaMedio()}
     <section class="tarjeta" id="correo-config">
@@ -1988,7 +2284,7 @@ function vistaAjustes() {
           ${campo("correo_nom", "🏷️ Nombre del remitente", n.nombre_razon_social || "", "text", 'placeholder="Mi Negocio · FacturaYa"')}
           ${campo("correo_key", "🔑 API Key (xkeysib-... o re_...)", "", "password", 'autocomplete="off" placeholder="xkeysib-xxxxxxxxx"')}
           <small class="suave" id="correo-key-pista"></small>
-          ${campo("correo_pass", "🔒 Tu contraseña (Dueño o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
+          ${campo("correo_pass", "🔒 Tu contraseña (Administrador o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
           <label class="opcion"><input type="checkbox" id="correo-confirmo" required> ☑️ Estoy seguro de guardar o modificar la API de Correo de este negocio.</label>
           ${ERROR}<button class="boton" type="submit" id="correo-guardar-btn" disabled>GUARDAR API DE CORREO</button>
         </form>
@@ -2000,7 +2296,7 @@ function vistaAjustes() {
       <div id="correo-historial-box"></div>
     </section>
     ${formularioCodigo()}
-    <section class="tarjeta"><h2>💾 Respaldo Online de mi Base de Datos</h2><p class="suave">Exclusivo del Dueño: descarga en cualquier momento una copia completa y verificada de tu base de datos (clientes, inventario, facturas, notas de crédito/débito y cobros) para tu resguardo. <b>Nota:</b> Ningún usuario puede borrar facturas ni eliminar la base de datos.</p>
+    <section class="tarjeta"><h2>💾 Respaldo Online de mi Base de Datos</h2><p class="suave">Exclusivo del Administrador: descarga en cualquier momento una copia completa y verificada de tu base de datos (clientes, inventario, facturas, notas de crédito/débito y cobros) para tu resguardo. <b>Nota:</b> Ningún usuario puede borrar facturas ni eliminar la base de datos.</p>
       <button class="boton" id="respaldo" type="button">⬇️ Descargar respaldo completo (.json)</button></section>
     ${tarjetaRestaurar()}
     ${estado.modo === "PRACTICA" ? `<section class="tarjeta"><h2>🧪 Pasar a En Vivo (SNAT/2011/0071)</h2>
@@ -2058,13 +2354,13 @@ function vistaAjustes() {
             <button type="button" class="boton chico soporte-btn-copiar" data-copiar-correo="pagos">📋 Copiar</button>
           </div>
         </div>
-        ${datosWhatsappContacto() ? `<div class="soporte-item">
+        ${datosWhatsappContacto("soporte") ? `<div class="soporte-item">
           <div class="soporte-item-info">
-            <div class="soporte-item-tit">💬 Atención directa por WhatsApp</div>
-            <div class="soporte-item-sub">Canal directo oficial de FacturaYa Venezuela.</div>
+            <div class="soporte-item-tit">💬 Soporte por WhatsApp (clientes activos)</div>
+            <div class="soporte-item-sub">Deja tus datos de empresa y consulta por WhatsApp; te responderemos en breve.</div>
           </div>
           <div class="soporte-item-acciones">
-            <a class="boton chico verde" href="${esc(datosWhatsappContacto().url)}" target="_blank" rel="nofollow noopener noreferrer">Abrir WhatsApp</a>
+            <a class="boton chico verde" href="${esc(datosWhatsappContacto("soporte").url)}" target="_blank" rel="nofollow noopener noreferrer">Escribir a soporte</a>
           </div>
         </div>` : ""}
       </div>

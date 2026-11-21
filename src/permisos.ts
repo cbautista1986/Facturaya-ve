@@ -4,7 +4,7 @@ export const ROLES = ["SUPER_ADMIN", "ADMIN", "SUPERVISOR", "CAJERO", "BODEGA", 
 export type Rol = (typeof ROLES)[number];
 export const NOMBRE_ROL: Record<string, string> = {
   SUPER_ADMIN: "Súper Administrador (Plataforma)",
-  ADMIN: "Dueño / Administrador",
+  ADMIN: "Administrador",
   SUPERVISOR: "Supervisor",
   CAJERO: "Cajero (Facturación y Cobros)",
   BODEGA: "Bodega (Inventario y Compras)",

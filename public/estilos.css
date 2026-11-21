@@ -363,6 +363,23 @@ body.modo-portada main { max-width: 1160px; padding: 0 16px 56px; }
 .soporte-item-acciones .soporte-btn-copiar { background: var(--tarjeta); color: var(--texto); border: 1.5px solid var(--borde); }
 .soporte-item-acciones .soporte-btn-copiar:hover { border-color: var(--azul); color: var(--azul); }
 
+/* Panel SaaS de suscripción, cobro mensual y suspensión manual (Claro y Oscuro) */
+.saas-caja { margin-top: 10px; padding: 12px; border-radius: 12px; background: var(--caja-suave-bg); border: 1px solid var(--borde); color: var(--texto); }
+.saas-cab { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.saas-meta { font-size: 12.5px; color: var(--suave); line-height: 1.5; }
+.saas-meta b { color: var(--texto); }
+.saas-switch { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--texto); cursor: pointer; margin: 8px 0 4px; }
+.saas-switch input { width: 18px; height: 18px; min-height: 18px; margin: 0; flex: none; accent-color: var(--azul); }
+.saas-preview { margin-top: 8px; padding: 12px; border-radius: 12px; background: var(--tarjeta); border: 1px solid var(--azul); color: var(--texto); font-variant-numeric: tabular-nums; }
+.saas-preview-row { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 0; border-bottom: 1px dashed var(--borde); }
+.saas-preview-row:last-of-type { border-bottom: 0; }
+.saas-preview-row span { color: var(--suave); }
+.saas-preview-row b { color: var(--texto); text-align: right; }
+.susp-form { margin-top: 8px; padding: 12px; border-radius: 12px; background: var(--kpi-err-bg); border: 1px solid var(--kpi-err-bd); color: var(--texto); }
+.susp-form.reactivar { background: var(--kpi-ok-bg); border-color: var(--kpi-ok-bd); }
+.aviso-susp-login { padding: 14px 16px; border-radius: 14px; background: var(--kpi-err-bg); border: 1px solid var(--kpi-err-bd); color: var(--texto); font-size: 14px; line-height: 1.5; margin-bottom: 14px; }
+.seo-prehidratacion { max-width: 720px; margin: 24px auto; }
+
 /* =========================================================================
    ADAPTACIÓN RESPONSIVA GLOBAL (CELULAR · TABLET · COMPUTADORA)
    Mismo diseño, mismos colores y mismas palabras — pantalla aprovechada

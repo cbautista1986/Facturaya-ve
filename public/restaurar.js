@@ -1,4 +1,4 @@
-// Pantalla RESTAURAR RESPALDO (Fase 7.2, solo el dueño): elegir el archivo, ver qué trae, confirmar con la contraseña y seguir el avance.
+// Pantalla RESTAURAR RESPALDO (Fase 7.2, solo el administrador): elegir el archivo, ver qué trae, confirmar con la contraseña y seguir el avance.
 // El trabajo pesado (leer, verificar la huella, enviar por lotes) está en restaurar-nucleo.js; el servidor decide si el sistema está vacío y valida todo.
 import { $, raiz, esc, api, aviso, campo, ERROR } from "./comun.js";
 import { leerRespaldo, restaurar } from "./restaurar-nucleo.js";
@@ -12,7 +12,7 @@ export function tarjetaRestaurar() {
     <button class="boton chico contorno" id="restaurar-ir" type="button">Restaurar un respaldo</button></section>`;
 }
 
-// Pantalla para quien NO es el dueño mientras se restaura
+// Pantalla para quien NO es el administrador mientras se restaura
 export function pantallaOcupado(alReintentar) {
   raiz.innerHTML = `<section class="tarjeta"><h1>♻️ Sistema en mantenimiento</h1>
     <p class="suave">El administrador está restaurando un respaldo. En unos minutos podrás seguir trabajando. No hace falta que hagas nada.</p>

@@ -5,7 +5,16 @@
 // y dar de baja definitiva a un ex-cliente liberando su base D1 y su ranura DB_X para el próximo cliente.
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
-import { aRifSeniat } from "../../public/dinero.js";
+import { aRifSeniat, aTasaE8 } from "../../public/dinero.js";
+import {
+  MESES_PROMO_DEFECTO,
+  PRECIO_PROMO_DEFECTO_CENT,
+  PRECIO_REGULAR_DEFECTO_CENT,
+  calcularCobroSuscripcion,
+  emitirYEnviarCobroSaas,
+  registrarPagoCobroSaas,
+  type FilaCobroSaas,
+} from "../suscripciones";
 import { cifrarSecreto, exigirLlaveMaestra } from "../cifrado";
 import {
   consultarDesplieguesYBuilds,
@@ -41,7 +50,7 @@ import {
 } from "../inquilinos";
 import { migrar } from "../migraciones";
 import { NOMBRE_ROL, esSuperAdmin } from "../permisos";
-import { validarTipoContribuyenteEstricto } from "../regimen";
+import { reglasRegimen, validarTipoContribuyenteEstricto } from "../regimen";
 import { claveR2Valida, ejecutarRespaldoR2, listarRespaldosR2, obtenerBucketR2 } from "../respaldos-r2";
 import { diagnosticarTodoElSistema, generarRespaldoMaestro, generarRespaldoNegocio, obtenerFirmaCoberturaReal, repararInquilino } from "../salud-bd";
 import { CLAVE_FALSA, claveTemporal, codigoRecuperacion, hashClave, normalizarCodigo, sha256, verificarClave } from "../seguridad";
@@ -74,7 +83,14 @@ inquilinos.get("/", async (c) => {
 
   const { results } = await rawDb
     .prepare(
-      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, tipo_contribuyente, plan_usd, activo, creado_en, d1_uuid, d1_nombre
+      `SELECT codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, cedula_dueno, zona_postal, firma_personal, respaldo_descargado_en, medio_facturacion, tipo_contribuyente, plan_usd,
+              COALESCE(NULLIF(fecha_alta, ''), substr(creado_en, 1, 10)) AS fecha_alta,
+              COALESCE(precio_promo_usd_cent, 500) AS precio_promo_usd_cent,
+              COALESCE(meses_promo, 3) AS meses_promo,
+              COALESCE(precio_regular_usd_cent, 1000) AS precio_regular_usd_cent,
+              COALESCE(cobro_auto_dia1, 0) AS cobro_auto_dia1,
+              COALESCE(motivo_suspension, '') AS motivo_suspension,
+              activo, creado_en, d1_uuid, d1_nombre
        FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en DESC`
     )
     .all<InquilinoInfo>();
@@ -139,10 +155,57 @@ inquilinos.get("/", async (c) => {
   const usadasD1 = results.length;
   const libresD1 = Math.max(0, limiteD1 - usadasD1);
 
+  const hoy = fechaCaracas();
+  const periodoActual = hoy.slice(0, 7);
+  const perfilPrin = await rawDb
+    .prepare(`SELECT tasa_bcv, medio_facturacion, tipo_contribuyente, igtf_activo FROM perfil_emisor WHERE id = 1`)
+    .first<{ tasa_bcv?: number; medio_facturacion?: string; tipo_contribuyente?: string; igtf_activo?: number }>()
+    .catch(() => null);
+  const tasaE8Prin = aTasaE8(String(perfilPrin?.tasa_bcv ?? ""));
+  const alicuotaPrin = reglasRegimen(perfilPrin?.tipo_contribuyente, perfilPrin?.igtf_activo).cobraIva ? 1600 : 0;
+
+  const { results: todosCobros } = await rawDb
+    .prepare(`SELECT * FROM _mt_cobros_saas ORDER BY periodo_ym DESC, id DESC LIMIT 400`)
+    .all<FilaCobroSaas>()
+    .catch(() => ({ results: [] as FilaCobroSaas[] }));
+  const cobrosPorInq = new Map<string, FilaCobroSaas[]>();
+  for (const cb of todosCobros || []) {
+    const arr = cobrosPorInq.get(cb.inquilino_codigo) || [];
+    if (arr.length < 6) arr.push(cb);
+    cobrosPorInq.set(cb.inquilino_codigo, arr);
+  }
+
+  const inquilinosEnriquecidos = results.map((r) => {
+    const recientes = cobrosPorInq.get(r.codigo) || [];
+    const cobroActual = recientes.find((x) => x.periodo_ym === periodoActual) || null;
+    let proyeccion = null;
+    if (r.codigo !== "principal" && tasaE8Prin && !Number.isNaN(tasaE8Prin) && tasaE8Prin > 0) {
+      try {
+        proyeccion = calcularCobroSuscripcion({
+          fecha_alta: String(r.fecha_alta || hoy).slice(0, 10),
+          periodo_ym: periodoActual,
+          precio_promo_usd_cent: Number(r.precio_promo_usd_cent ?? PRECIO_PROMO_DEFECTO_CENT),
+          meses_promo: Number(r.meses_promo ?? MESES_PROMO_DEFECTO),
+          precio_regular_usd_cent: Number(r.precio_regular_usd_cent ?? PRECIO_REGULAR_DEFECTO_CENT),
+          tasa_e8: tasaE8Prin,
+          alicuota_cent: alicuotaPrin,
+        });
+      } catch {
+        proyeccion = null;
+      }
+    }
+    return {
+      ...r,
+      cobro_mes_actual: cobroActual,
+      cobros_recientes: recientes,
+      proyeccion_mes: proyeccion,
+    };
+  });
+
   return c.json({
     ok: true,
     inquilino_actual: vista?.inquilino_codigo || "principal",
-    inquilinos: results,
+    inquilinos: inquilinosEnriquecidos,
     directorio: dirRows.results,
     bindings_fisicos: bindingsFisicos,
     ranuras_d1: ranurasDisponibles,
@@ -152,6 +215,9 @@ inquilinos.get("/", async (c) => {
     limite_d1: limiteD1,
     usadas_d1: usadasD1,
     libres_d1: libresD1,
+    periodo_actual: periodoActual,
+    tasa_bcv_principal: Number(perfilPrin?.tasa_bcv || 0),
+    medio_principal: perfilPrin?.medio_facturacion === "IMPRENTA_DIGITAL" ? "IMPRENTA_DIGITAL" : "APP_SENIAT",
   });
 });
 
@@ -194,7 +260,22 @@ inquilinos.post("/", async (c) => {
   if (!tipo_contribuyente) return falla(c, 400, "Tipo de contribuyente no válido. Elige FORMAL, ORDINARIO o ESPECIAL.");
   const igtf_activo = tipo_contribuyente === "ESPECIAL" ? 1 : 0;
   const modo_inicial = texto(b.modo_inicial, 12) === "PRACTICA" ? "PRACTICA" : "REAL";
-  const plan_usd = Math.max(0, Math.min(999, Number(b.plan_usd ?? 10) || 10));
+  const plan_usd = Math.max(0, Math.min(999, Number(b.plan_usd ?? b.precio_regular_usd ?? 10) || 10));
+  const fechaAltaRaw = texto(b.fecha_alta, 20);
+  const fecha_alta = /^\d{4}-\d{2}-\d{2}$/.test(fechaAltaRaw) ? fechaAltaRaw : fechaCaracas();
+  const aCentUsd = (val: unknown, defecto: number) => {
+    if (val === undefined || val === null || String(val).trim() === "") return defecto;
+    const n = Number(String(val).replace(",", "."));
+    if (!Number.isFinite(n) || n < 0 || n > 9999) return defecto;
+    return Math.round(n * 100);
+  };
+  const precio_promo_usd_cent = aCentUsd(b.precio_promo_usd, PRECIO_PROMO_DEFECTO_CENT);
+  const precio_regular_usd_cent = aCentUsd(b.precio_regular_usd ?? b.plan_usd, PRECIO_REGULAR_DEFECTO_CENT);
+  const mesesPromoNum = b.meses_promo === undefined || b.meses_promo === null || String(b.meses_promo).trim() === ""
+    ? MESES_PROMO_DEFECTO
+    : Math.trunc(Number(b.meses_promo));
+  const meses_promo = Number.isInteger(mesesPromoNum) && mesesPromoNum >= 0 && mesesPromoNum <= 36 ? mesesPromoNum : MESES_PROMO_DEFECTO;
+  const cobro_auto_dia1 = b.cobro_auto_dia1 === true || b.cobro_auto_dia1 === 1 || b.cobro_auto_dia1 === "1" || b.cobro_auto_dia1 === "on" ? 1 : 0;
   const ranuraSolicitada = texto(b.ranura_db, 20).toUpperCase();
 
   // Correlativos iniciales SENIAT (para clientes nuevos desde 1 o que pasan de facturero manual / otro sistema a digital)
@@ -216,10 +297,10 @@ inquilinos.post("/", async (c) => {
   if (nombre_negocio.length < 2) return falla(c, 400, "Escribe el nombre o razón social que figura en el RIF.");
   if (!RIF.test(rifEntrada)) return falla(c, 400, "RIF no válido. Usa formato V-12345678-9 o J-12345678-9.");
   if (direccion.length < 4) return falla(c, 400, "Escribe el domicilio fiscal completo del negocio.");
-  if (nombre_dueno.length < 2) return falla(c, 400, "Escribe los nombres y apellidos del dueño / representante legal.");
-  if (!EMAIL.test(email_dueno)) return falla(c, 400, "Escribe un correo válido para el dueño.");
+  if (nombre_dueno.length < 2) return falla(c, 400, "Escribe los nombres y apellidos del administrador / representante legal.");
+  if (!EMAIL.test(email_dueno)) return falla(c, 400, "Escribe un correo válido para el administrador.");
   const envObjCheck = c.env as unknown as Record<string, unknown>;
-  if (await esCorreoSuperAdmin(rawDb, email_dueno, envObjCheck)) return falla(c, 400, "El correo del dueño del cliente debe ser distinto a tu correo de Súper Administrador.");
+  if (await esCorreoSuperAdmin(rawDb, email_dueno, envObjCheck)) return falla(c, 400, "El correo del administrador del cliente debe ser distinto a tu correo de Súper Administrador.");
 
   // Validar APIs opcionales si fueron llenadas en el Alta
   const correo_proveedor = texto(b.correo_proveedor, 20).toUpperCase() === "RESEND" ? "RESEND" : "BREVO";
@@ -457,9 +538,9 @@ inquilinos.post("/", async (c) => {
   try {
     await rawDb.batch([
       rawDb.prepare(
-        `INSERT INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, activo, d1_uuid, d1_nombre, cedula_dueno, zona_postal, firma_personal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`
-      ).bind(codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, d1Uuid, d1Nombre, cedula_dueno || "", zona_postal || "", firma_personal || ""),
+        `INSERT INTO _mt_inquilinos (codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, fecha_alta, precio_promo_usd_cent, meses_promo, precio_regular_usd_cent, cobro_auto_dia1, motivo_suspension, activo, d1_uuid, d1_nombre, cedula_dueno, zona_postal, firma_personal)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, ?, ?, ?, ?, ?)`
+      ).bind(codigo, tipo_db, nombre_negocio, rif, direccion, telefono, nombre_dueno, email_dueno, medio_facturacion, tipo_contribuyente, plan_usd, fecha_alta, precio_promo_usd_cent, meses_promo, precio_regular_usd_cent, cobro_auto_dia1, d1Uuid, d1Nombre, cedula_dueno || "", zona_postal || "", firma_personal || ""),
     ]);
   } catch (errReg) {
     await rollbackD1Nueva();
@@ -502,6 +583,11 @@ inquilinos.post("/", async (c) => {
     nombre_negocio,
     rif,
     tipo_contribuyente,
+    fecha_alta,
+    precio_promo_usd_cent,
+    meses_promo,
+    precio_regular_usd_cent,
+    cobro_auto_dia1: !!cobro_auto_dia1,
     nombre_dueno,
     email_dueno,
     clave_temporal: tempClave,
@@ -569,25 +655,199 @@ inquilinos.post("/cambiar", async (c) => {
   return c.json({ ok: true, inquilino_actual: codigo });
 });
 
-// Suspender o reactivar el servicio de un inquilino
+// Suspender o reactivar el servicio de un inquilino (100% MANUAL y protegido con contraseña del Súper Admin).
+// Al suspender cierra de inmediato todas las sesiones del Administrador y demás usuarios de esa empresa.
 inquilinos.put("/:codigo/estado", async (c) => {
   const rawDb = c.get("rawDb") || c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
   await asegurarTablasMultiTenant(rawDb);
   const codigo = texto(c.req.param("codigo"), 20);
   if (codigo === "principal") return falla(c, 400, "Tu negocio principal no se puede suspender.");
   const b = await leerJson(c);
+  const clave = String(b.clave ?? "");
+  if (!clave || !(await verificarClaveSuperAdmin(rawDb, clave, envObj))) {
+    return falla(c, 403, "Contraseña de Súper Administrador incorrecta. Se requiere tu contraseña para suspender o reactivar una empresa.");
+  }
   const activo = "activo" in b ? (b.activo ? 1 : 0) : (String(b.estado ?? "").toUpperCase() === "SUSPENDIDO" ? 0 : 1);
-  const r = await rawDb.prepare(`UPDATE _mt_inquilinos SET activo = ? WHERE codigo = ?`).bind(activo, codigo).run();
+  const motivo = activo ? "" : (texto(b.motivo, 40).toUpperCase() || "FALTA_PAGO");
+  const r = await rawDb
+    .prepare(`UPDATE _mt_inquilinos SET activo = ?, motivo_suspension = ? WHERE codigo = ?`)
+    .bind(activo, motivo, codigo)
+    .run();
   if (!r.meta.changes) return falla(c, 404, "Inquilino no encontrado.");
   invalidarCacheInquilinos(rawDb);
+  let sesionesCerradas = 0;
   if (!activo) {
-    const envObj = c.env as unknown as Record<string, unknown>;
     await hidratarBindingsCloudflare(rawDb, envObj);
     const dbInq = obtenerDbInquilino({ ...envObj, DB: rawDb }, codigo);
-    await dbInq.prepare(`DELETE FROM sesiones WHERE usuario_id NOT IN (SELECT id FROM usuarios WHERE rol = 'SUPER_ADMIN')`).run();
+    const del = await dbInq
+      .prepare(`DELETE FROM sesiones WHERE usuario_id NOT IN (SELECT id FROM usuarios WHERE rol = 'SUPER_ADMIN')`)
+      .run();
+    sesionesCerradas = Number(del.meta?.changes || 0);
   }
-  await auditar(c, c.get("usuario").id, "INQUILINO_ESTADO", `${codigo} -> ${activo ? "ACTIVO" : "SUSPENDIDO"}`);
-  return c.json({ ok: true, activo: !!activo });
+  await auditar(
+    c,
+    c.get("usuario").id,
+    "INQUILINO_ESTADO",
+    `${codigo} -> ${activo ? "ACTIVO" : `SUSPENDIDO (${motivo}) · ${sesionesCerradas} sesión(es) cerrada(s)`}`
+  );
+  return c.json({ ok: true, activo: !!activo, motivo_suspension: motivo, sesiones_cerradas: sesionesCerradas });
+});
+
+// Configurar fecha de alta, tarifa promocional/regular y switch de cobro automático día 1 (NUNCA suspende)
+inquilinos.put("/:codigo/suscripcion", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  await asegurarTablasMultiTenant(rawDb);
+  const codigo = texto(c.req.param("codigo"), 20);
+  if (codigo === "principal") return falla(c, 400, "Tu empresa principal no lleva suscripción mensual.");
+  const actual = await rawDb
+    .prepare(
+      `SELECT codigo, COALESCE(NULLIF(fecha_alta, ''), substr(creado_en, 1, 10)) AS fecha_alta,
+              COALESCE(precio_promo_usd_cent, 500) AS precio_promo_usd_cent,
+              COALESCE(meses_promo, 3) AS meses_promo,
+              COALESCE(precio_regular_usd_cent, 1000) AS precio_regular_usd_cent,
+              COALESCE(cobro_auto_dia1, 0) AS cobro_auto_dia1
+       FROM _mt_inquilinos WHERE codigo = ?`
+    )
+    .bind(codigo)
+    .first<Record<string, any>>();
+  if (!actual) return falla(c, 404, "Empresa cliente no encontrada.");
+
+  const b = await leerJson(c);
+  const fechaAlta = "fecha_alta" in b ? texto(b.fecha_alta, 20) : String(actual.fecha_alta || fechaCaracas()).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaAlta)) {
+    return falla(c, 400, "La fecha de alta debe tener formato AAAA-MM-DD.");
+  }
+
+  const parseCent = (val: unknown, fallback: number, label: string) => {
+    if (val === undefined || val === null || String(val).trim() === "") return fallback;
+    const n = Number(String(val).replace(",", "."));
+    if (!Number.isFinite(n) || n <= 0 || n > 9999) throw new Error(`${label} debe ser un monto válido en USD.`);
+    return Math.round(n * 100);
+  };
+  let promoCent = Number(actual.precio_promo_usd_cent ?? PRECIO_PROMO_DEFECTO_CENT);
+  let regularCent = Number(actual.precio_regular_usd_cent ?? PRECIO_REGULAR_DEFECTO_CENT);
+  try {
+    if ("precio_promo_usd_cent" in b) promoCent = Math.trunc(Number(b.precio_promo_usd_cent));
+    else if ("precio_promo_usd" in b) promoCent = parseCent(b.precio_promo_usd, promoCent, "Tarifa promocional");
+    if ("precio_regular_usd_cent" in b) regularCent = Math.trunc(Number(b.precio_regular_usd_cent));
+    else if ("precio_regular_usd" in b) regularCent = parseCent(b.precio_regular_usd, regularCent, "Tarifa regular");
+  } catch (e) {
+    return falla(c, 400, (e as Error).message);
+  }
+  if (!Number.isInteger(promoCent) || promoCent < 0 || promoCent > 999_900) return falla(c, 400, "Tarifa promocional inválida.");
+  if (!Number.isInteger(regularCent) || regularCent <= 0 || regularCent > 999_900) return falla(c, 400, "Tarifa regular inválida.");
+
+  const mesesPromo = "meses_promo" in b ? Math.trunc(Number(b.meses_promo)) : Number(actual.meses_promo ?? MESES_PROMO_DEFECTO);
+  if (!Number.isInteger(mesesPromo) || mesesPromo < 0 || mesesPromo > 36) {
+    return falla(c, 400, "Los meses promocionales deben estar entre 0 y 36.");
+  }
+  const cobroAuto =
+    "cobro_auto_dia1" in b
+      ? b.cobro_auto_dia1 === true || b.cobro_auto_dia1 === 1 || b.cobro_auto_dia1 === "1" || b.cobro_auto_dia1 === "on"
+        ? 1
+        : 0
+      : Number(actual.cobro_auto_dia1 ?? 0);
+
+  await rawDb
+    .prepare(
+      `UPDATE _mt_inquilinos
+       SET fecha_alta = ?, precio_promo_usd_cent = ?, meses_promo = ?, precio_regular_usd_cent = ?, plan_usd = ?, cobro_auto_dia1 = ?
+       WHERE codigo = ?`
+    )
+    .bind(fechaAlta, promoCent, mesesPromo, regularCent, Math.round(regularCent / 100), cobroAuto, codigo)
+    .run();
+  invalidarCacheInquilinos(rawDb);
+  await auditar(
+    c,
+    c.get("usuario").id,
+    "SAAS_SUSCRIPCION_CONFIG",
+    `${codigo} · alta=${fechaAlta} · promo=$${(promoCent / 100).toFixed(2)}x${mesesPromo}m · reg=$${(regularCent / 100).toFixed(2)} · autoDia1=${cobroAuto}`
+  );
+  return c.json({
+    ok: true,
+    fecha_alta: fechaAlta,
+    precio_promo_usd_cent: promoCent,
+    meses_promo: mesesPromo,
+    precio_regular_usd_cent: regularCent,
+    cobro_auto_dia1: !!cobroAuto,
+  });
+});
+
+// Vista previa o emisión real + envío de correo de cobro mensual SaaS (idempotente por período AAAA-MM)
+inquilinos.post("/:codigo/cobrar", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
+  const codigo = texto(c.req.param("codigo"), 20);
+  const b = await leerJson(c).catch(() => ({} as Record<string, unknown>));
+  const periodoYm = texto(b.periodo_ym, 10) || undefined;
+  const soloVistaPrevia = Boolean(b.solo_vista_previa);
+  const forzarReenvioCorreo = Boolean(b.reenviar_correo);
+  try {
+    const res = await emitirYEnviarCobroSaas(rawDb, envObj, {
+      codigo,
+      periodoYm,
+      usuarioId: c.get("usuario").id,
+      soloVistaPrevia,
+      forzarReenvioCorreo,
+    });
+    if (!soloVistaPrevia) {
+      await auditar(
+        c,
+        c.get("usuario").id,
+        forzarReenvioCorreo ? "SAAS_COBRO_REENVIAR" : "SAAS_COBRAR",
+        `${codigo} · ${res.calculo.periodo_ym} · Fac #${res.cobro?.numero_factura ?? "-"} · USD ${(res.calculo.total_usd_cent / 100).toFixed(2)}`
+      );
+    }
+    return c.json(res);
+  } catch (e) {
+    return falla(c, 400, (e as Error).message || "No se pudo procesar el cobro mensual.");
+  }
+});
+
+// Historial de cobros mensuales SaaS de una empresa
+inquilinos.get("/:codigo/cobros", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  await asegurarTablasMultiTenant(rawDb);
+  const codigo = texto(c.req.param("codigo"), 20);
+  const { results } = await rawDb
+    .prepare(`SELECT * FROM _mt_cobros_saas WHERE inquilino_codigo = ? ORDER BY periodo_ym DESC, id DESC LIMIT 36`)
+    .bind(codigo)
+    .all<FilaCobroSaas>();
+  return c.json({ ok: true, cobros: results || [] });
+});
+
+// Registrar pago recibido (emite recibo atómico en tu negocio principal y marca el período PAGADO)
+inquilinos.post("/:codigo/cobros/:cobroId/pagar", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const codigo = texto(c.req.param("codigo"), 20);
+  const cobroId = Number(c.req.param("cobroId"));
+  if (!Number.isInteger(cobroId) || cobroId <= 0) return falla(c, 400, "ID de cobro inválido.");
+  const b = await leerJson(c);
+  const metodo = texto(b.metodo, 30).toUpperCase() || "PAGO_MOVIL";
+  const moneda = texto(b.moneda, 10).toUpperCase() === "USD" ? "USD" : "BS";
+  const referencia = texto(b.referencia, 60);
+  const nota = texto(b.nota, 200);
+  try {
+    const res = await registrarPagoCobroSaas(rawDb, {
+      codigo,
+      cobroId,
+      metodo,
+      moneda,
+      referencia,
+      nota,
+      usuarioId: c.get("usuario").id,
+    });
+    await auditar(
+      c,
+      c.get("usuario").id,
+      "SAAS_PAGO",
+      `${codigo} · ${res.cobro.periodo_ym} · ${metodo} ${moneda} · ref=${referencia || "-"} · Recibo #${res.recibo_numero ?? "-"}`
+    );
+    return c.json(res);
+  } catch (e) {
+    return falla(c, 400, (e as Error).message || "No se pudo registrar el pago.");
+  }
 });
 
 // Descargar la base de datos individual de un cliente (soporta ?anio=YYYY para bases históricas grandes)
@@ -759,7 +1019,7 @@ inquilinos.post("/liberar-correo", async (c) => {
   if (usr) {
     if (usr.rol === "ADMIN" && dir.inquilino_codigo !== "principal") {
       const otroAdmin = await dbNeg.prepare(`SELECT 1 FROM usuarios WHERE id <> ? AND rol IN ('ADMIN', 'SUPER_ADMIN') AND activo = 1`).bind(usr.id).first();
-      if (!otroAdmin) return falla(c, 409, `Ese correo es el único dueño de «${dir.inquilino_codigo}». Usa «Dar de Baja y Liberar Ranura» en su tarjeta si deseas borrar toda esa empresa.`);
+      if (!otroAdmin) return falla(c, 409, `Ese correo es el único administrador de «${dir.inquilino_codigo}». Usa «Dar de Baja y Liberar Ranura» en su tarjeta si deseas borrar toda esa empresa.`);
     }
     await dbNeg.prepare(`DELETE FROM sesiones WHERE usuario_id = ?`).bind(usr.id).run().catch(() => {});
     try {

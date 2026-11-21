@@ -540,10 +540,22 @@ test("Seguridad v4.5: HSTS en API, /api/estado limpio sin sesión y WHATSAPP_CON
   assert.equal(j1.whatsapp_contacto ?? null, null);
   assert.equal(j1.seguridad, undefined);
 
+  const rWaSin = await req(envSinWa, "GET", "/api/contacto/whatsapp");
+  assert.equal(rWaSin.status, 404);
+
   const envConWa = { DB: db, MASTER_KEY: MASTER_KEY_TEST, WHATSAPP_CONTACTO: "+58 414-000-0000" };
   const r2 = await req(envConWa, "GET", "/api/estado");
-  const j2 = (await r2.json()) as any;
-  assert.deepEqual(j2.whatsapp_contacto, { digitos: "584140000000", bonito: "0414-000-0000" });
+  const textoEstado = await r2.text();
+  assert.equal(textoEstado.includes("584140000000"), false, "El número de WhatsApp jamás debe filtrarse en /api/estado");
+  assert.equal(textoEstado.includes("0414-000-0000"), false, "El número formateado jamás debe filtrarse en /api/estado");
+  const j2 = JSON.parse(textoEstado) as any;
+  assert.deepEqual(j2.whatsapp_contacto, { activo: true });
+
+  const rWa = await req(envConWa, "GET", "/api/contacto/whatsapp");
+  assert.equal(rWa.status, 302);
+  assert.equal(rWa.headers.get("x-robots-tag"), "noindex, nofollow");
+  assert.equal(rWa.headers.get("cache-control"), "no-store");
+  assert.match(rWa.headers.get("location") || "", /^https:\/\/wa\.me\/584140000000\?text=/);
 });
 
 // =====================================================================

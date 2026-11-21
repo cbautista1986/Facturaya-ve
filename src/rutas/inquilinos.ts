@@ -482,13 +482,14 @@ inquilinos.post("/", async (c) => {
       <h2 style="margin:0 0 12px;color:#1A73E8">🇻🇪 Bienvenido a FacturaYa Venezuela</h2>
       <p>Hola <b>${escHtml(nombre_dueno)}</b>, tu sistema de facturación digital para <b>${escHtml(nombre_negocio)} (${escHtml(rif)})</b> ya está activo en su base dedicada <b>${escHtml(codigo)}</b>.</p>
       <div style="background:#f8fafd;border:1px dashed #9aa7b6;border-radius:12px;padding:16px;margin:16px 0">
+        <p style="margin:0 0 8px"><b>🌐 Portal de acceso:</b> <a href="https://facturayave.com" style="color:#1A73E8;font-weight:700">https://facturayave.com</a></p>
         <p style="margin:0 0 8px"><b>✉️ Usuario (Correo):</b> ${escHtml(email_dueno)}</p>
         <p style="margin:0 0 8px"><b>🔑 Clave temporal de primer ingreso:</b> <code style="font-size:18px;font-weight:700">${escHtml(tempClave)}</code></p>
         <p style="margin:0"><b>🔐 Código Maestro de Recuperación (guárdalo en secreto):</b> <code style="font-size:15px;font-weight:700">${escHtml(codRecup)}</code></p>
       </div>
       <p style="font-size:13px;color:#5f6b7a">Al iniciar sesión por primera vez con tu clave temporal, el sistema te pedirá elegir tu propia contraseña privada.</p>
     </div>`,
-    texto: `Bienvenido a FacturaYa Venezuela (${nombre_negocio} - ${rif}).\nUsuario: ${email_dueno}\nClave temporal: ${tempClave}\nCódigo Maestro de Recuperación: ${codRecup}`,
+    texto: `Bienvenido a FacturaYa Venezuela (${nombre_negocio} - ${rif}).\nPortal de acceso: https://facturayave.com\nUsuario: ${email_dueno}\nClave temporal: ${tempClave}\nCódigo Maestro de Recuperación: ${codRecup}`,
   });
   if (resCorreo.ok) correo_enviado = true;
 

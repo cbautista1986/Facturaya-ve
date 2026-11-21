@@ -304,10 +304,10 @@ sistema.post("/correo/probar", async (c) => {
     asunto: "✅ Prueba de correo · FacturaYa Venezuela",
     html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:24px;border:1px solid #dde3ec;border-radius:16px">
       <h2 style="margin:0 0 12px;color:#1A73E8">✉️ Servicio de correo activo</h2>
-      <p>Tu configuración de correo en <b>FacturaYa Venezuela</b> funciona correctamente.</p>
+      <p>Tu configuración de correo en <b>FacturaYa Venezuela</b> (<a href="https://facturayave.com" style="color:#1A73E8">facturayave.com</a>) funciona correctamente.</p>
       <p style="font-size:13px;color:#5f6b7a">Ya puedes enviar facturas, presupuestos y notas de crédito con PDF adjunto a tus clientes, así como recibir recuperaciones de contraseña.</p>
     </div>`,
-    texto: "Servicio de correo activo en FacturaYa Venezuela. Ya puedes enviar facturas a tus clientes y recuperar contraseñas por correo.",
+    texto: "Servicio de correo activo en FacturaYa Venezuela (https://facturayave.com). Ya puedes enviar facturas a tus clientes y recuperar contraseñas por correo.",
   });
   if (!r.ok) return falla(c, 400, r.error);
   await auditar(c, yo.id, "CORREO_PRUEBA", destino);

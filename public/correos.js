@@ -27,7 +27,7 @@ export async function renderHistorialCorreoInquilino(contenedor) {
     const envios = data.envios || [];
     const rebotes = Number(r.rebotados || 0) + Number(r.quejas || 0);
     contenedor.innerHTML = `
-      <div style="margin-top:14px;padding-top:12px;border-top:1px solid #dde3ec">
+      <div class="correo-sep">
         <div class="reng-cab" style="margin-bottom:8px">
           <b>📋 Historial de envíos y rebotes de este negocio</b>
           <span class="insignia ${rebotes > 0 ? "rojo" : "gris"}">${Number(r.total || 0)} registro(s)${rebotes > 0 ? ` · ${rebotes} rebote(s)` : ""}</span>
@@ -38,13 +38,14 @@ export async function renderHistorialCorreoInquilino(contenedor) {
           : `<div style="display:flex;flex-direction:column;gap:8px;max-height:320px;overflow:auto">
               ${envios.map((e) => {
                 const st = ETIQ_ESTADO[e.estado] || { txt: e.estado || "Info", cls: "gris" };
-                return `<div style="padding:10px 12px;border:1px solid ${e.estado === "REBOTADO" || e.estado === "QUEJA" ? "#f5c2c7" : "#e3e8ef"};border-radius:12px;background:${e.estado === "REBOTADO" || e.estado === "QUEJA" ? "#fff5f5" : "#fafcff"}">
+                const esAlerta = e.estado === "REBOTADO" || e.estado === "QUEJA";
+                return `<div class="correo-item${esAlerta ? " alerta" : ""}">
                   <div class="reng-cab" style="gap:6px;flex-wrap:wrap">
                     <span style="font-size:13px"><b>${esc(e.destinatario || "—")}</b> <small class="suave">(${esc(e.tipo || "GENERAL")})</small></span>
                     <span class="insignia ${st.cls}">${esc(st.txt)}</span>
                   </div>
                   <div class="suave" style="font-size:12px;margin-top:2px">${esc(e.asunto || "")} · ${esc(e.creado_en || "")}${e.proveedor ? ` · ${esc(e.proveedor)}` : ""}</div>
-                  ${e.motivo ? `<div style="font-size:12px;color:#b42318;margin-top:4px">${esc(e.motivo)}</div>` : ""}
+                  ${e.motivo ? `<div class="correo-err">${esc(e.motivo)}</div>` : ""}
                 </div>`;
               }).join("")}
             </div>`}
@@ -79,11 +80,11 @@ export async function vistaPanelCorreosPlataforma(raiz, barraVolverInq, onVolver
           <span class="insignia ${d.modo_plataforma ? "verde" : "ambar"}">${d.modo_plataforma ? "Modo Plataforma Activo" : "Modo Legado (sin secretos globales)"}</span>
         </div>
         <p class="suave" style="margin:6px 0 10px">Remitente plataforma: <b>${esc(d.nombre_plataforma)} &lt;${esc(d.remitente)}&gt;</b> · Cadena: <b>Brevo → Resend → Zoho ZeptoMail</b>.</p>
-        <div class="rejilla" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px">
-          <div style="padding:10px;border-radius:12px;background:#f4f8fe;border:1px solid #dce8fb"><small class="suave">Enviados hoy (UTC)</small><div style="font-size:20px;font-weight:700">${Number(g.enviados_hoy || 0)}</div></div>
-          <div style="padding:10px;border-radius:12px;background:#f4f8fe;border:1px solid #dce8fb"><small class="suave">Enviados mes (${esc(d.mes_utc)})</small><div style="font-size:20px;font-weight:700">${Number(g.enviados_mes || 0)}</div></div>
-          <div style="padding:10px;border-radius:12px;background:${Number(g.tasa_rebotes_mes || 0) >= 2 ? "#fff5f5" : "#f2fbf5"};border:1px solid ${Number(g.tasa_rebotes_mes || 0) >= 2 ? "#f5c2c7" : "#cdecd8"}"><small class="suave">Tasa rebotes (meta &lt;2%)</small><div style="font-size:20px;font-weight:700">${Number(g.tasa_rebotes_mes || 0)}%</div></div>
-          <div style="padding:10px;border-radius:12px;background:${Number(g.quejas_mes || 0) > 0 ? "#fff5f5" : "#f2fbf5"};border:1px solid ${Number(g.quejas_mes || 0) > 0 ? "#f5c2c7" : "#cdecd8"}"><small class="suave">Quejas spam (meta 0)</small><div style="font-size:20px;font-weight:700">${Number(g.quejas_mes || 0)}</div></div>
+        <div class="correo-kpi-grid">
+          <div class="correo-kpi"><small class="suave">Enviados hoy (UTC)</small><div class="correo-kpi-val">${Number(g.enviados_hoy || 0)}</div></div>
+          <div class="correo-kpi"><small class="suave">Enviados mes (${esc(d.mes_utc)})</small><div class="correo-kpi-val">${Number(g.enviados_mes || 0)}</div></div>
+          <div class="correo-kpi ${Number(g.tasa_rebotes_mes || 0) >= 2 ? "alerta" : "ok"}"><small class="suave">Tasa rebotes (meta &lt;2%)</small><div class="correo-kpi-val">${Number(g.tasa_rebotes_mes || 0)}%</div></div>
+          <div class="correo-kpi ${Number(g.quejas_mes || 0) > 0 ? "alerta" : "ok"}"><small class="suave">Quejas spam (meta 0)</small><div class="correo-kpi-val">${Number(g.quejas_mes || 0)}</div></div>
         </div>
         <div style="margin-top:8px">
           <small class="suave" style="display:block;margin-bottom:4px"><b>Estado de secretos en Cloudflare (nunca se muestran valores):</b></small>
@@ -102,7 +103,7 @@ export async function vistaPanelCorreosPlataforma(raiz, barraVolverInq, onVolver
         <div class="reng-cab"><h2>🚨 Alertas activas (${alertas.length})</h2><span class="insignia rojo">Revisar</span></div>
         <div style="display:flex;flex-direction:column;gap:8px">
           ${alertas.map((a) => `
-            <div style="padding:10px 12px;border-radius:12px;border:1px solid ${a.nivel === "CRITICO" ? "#f5c2c7" : "#ffe0a3"};background:${a.nivel === "CRITICO" ? "#fff5f5" : "#fffaf0"}">
+            <div class="correo-item ${a.nivel === "CRITICO" ? "alerta" : "aviso"}">
               <div class="reng-cab">
                 <b>${a.nivel === "CRITICO" ? "🔴" : "🟠"} ${esc(a.titulo)}</b>
                 <button type="button" class="boton chico contorno" data-descartar-alerta="${esc(a.clave)}">Descartar</button>
@@ -122,7 +123,7 @@ export async function vistaPanelCorreosPlataforma(raiz, barraVolverInq, onVolver
               : c.abierto
                 ? `<span class="insignia rojo">Circuito abierto (${Math.ceil((c.segundos_restantes || 0) / 60)} min)</span>`
                 : `<span class="insignia verde">Sano · Activo</span>`;
-            return `<div style="padding:12px;border:1px solid #dde3ec;border-radius:12px">
+            return `<div class="correo-caja">
               <div class="reng-cab">
                 <b>${esc(p.proveedor)}</b>
                 ${estBadge}
@@ -133,15 +134,15 @@ export async function vistaPanelCorreosPlataforma(raiz, barraVolverInq, onVolver
               <div class="suave" style="font-size:12px;margin-top:2px">
                 Mes (${esc(d.mes_utc)}): <b>${p.mes.enviados}</b> enviados · ${p.mes.entregados} entregados · ${p.mes.rebotes} rebotes · ${p.mes.quejas} quejas
               </div>
-              ${c.ultimo_error ? `<div style="font-size:12px;color:#b42318;margin-top:4px">Último error (HTTP ${c.ultimo_estado_http || 0}): ${esc(c.ultimo_error)}</div>` : ""}
+              ${c.ultimo_error ? `<div class="correo-err">Último error (HTTP ${c.ultimo_estado_http || 0}): ${esc(c.ultimo_error)}</div>` : ""}
               ${c.abierto ? `<button type="button" class="boton chico contorno-azul" style="margin-top:8px" data-reset-circ="${esc(p.proveedor)}">🔄 Reiniciar circuito ${esc(p.proveedor)}</button>` : ""}
             </div>`;
           }).join("")}
         </div>
-        <form id="plat-probar-form" style="margin-top:14px;padding-top:12px;border-top:1px solid #dde3ec">
+        <form id="plat-probar-form" class="correo-sep">
           <h3 style="margin:0 0 8px">📨 Envío de prueba</h3>
           <label for="plat-test-para">Correo destinatario</label>
-          <input id="plat-test-para" type="email" required placeholder="tu-correo@ejemplo.com">
+          <input id="plat-test-para" type="email" required placeholder="tu-correo@empresa.com">
           <label for="plat-test-prov">Proveedor</label>
           <select id="plat-test-prov">
             <option value="">Automático (Cadena Brevo → Resend → ZeptoMail)</option>
@@ -158,7 +159,7 @@ export async function vistaPanelCorreosPlataforma(raiz, barraVolverInq, onVolver
         <p class="suave">El conteo no limita el uso normal. La <b>alerta suave</b> solo avisa; el <b>fusible diario</b> protege contra bucles o abuso (pon <code>0</code> para desactivarlo en un cliente).</p>
         <div style="display:flex;flex-direction:column;gap:10px">
           ${inqs.map((i) => `
-            <div style="padding:12px;border:1px solid #dde3ec;border-radius:12px">
+            <div class="correo-caja">
               <div class="reng-cab" style="flex-wrap:wrap;gap:6px">
                 <b>${esc(i.nombre_negocio)} <small class="suave">(${esc(i.codigo)}${i.rif ? ` · ${esc(i.rif)}` : ""})</small></b>
                 <span class="insignia ${i.tasa_rebotes_mes > 5 ? "rojo" : i.tasa_rebotes_mes >= 2 ? "ambar" : "verde"}">Rebotes mes: ${i.tasa_rebotes_mes}%</span>
@@ -199,7 +200,7 @@ export async function vistaPanelCorreosPlataforma(raiz, barraVolverInq, onVolver
                 const vigencia = Number(b.bloqueado_hasta) === -1
                   ? "Permanente (hasta desbloqueo)"
                   : `Pausado hasta ${new Date(Number(b.bloqueado_hasta) * 1000).toLocaleTimeString("es-VE")}`;
-                return `<div style="padding:10px 12px;border:1px solid #f5c2c7;border-radius:12px;background:#fff8f8">
+                return `<div class="correo-item alerta">
                   <div class="reng-cab">
                     <span><b>${esc(b.mascara || "***")}</b> <small class="suave">(${esc(b.inquilino_origen || "principal")})</small></span>
                     <span class="insignia ${tb.cls}">${esc(tb.txt)} · ×${Number(b.contador || 1)}</span>

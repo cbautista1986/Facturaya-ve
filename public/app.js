@@ -24,22 +24,16 @@ const NEGOCIO = [
 let estado = {};
 
 const esEntornoPreview = location.hostname.endsWith(".run.app") || location.hostname === "localhost" || location.hostname === "127.0.0.1";
+const URL_PORTAL_OFICIAL = "https://facturayave.com";
 const ICONO_WA_SVG = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.52 3.48A11.86 11.86 0 0 0 12.06 0C5.5 0 .16 5.34.16 11.9c0 2.1.55 4.15 1.59 5.95L0 24l6.33-1.66a11.84 11.84 0 0 0 5.73 1.46h.01c6.56 0 11.9-5.34 11.9-11.9 0-3.18-1.24-6.17-3.45-8.42ZM12.07 21.8h-.01a9.87 9.87 0 0 1-5.04-1.38l-.36-.21-3.76.99 1-3.66-.24-.38a9.84 9.84 0 0 1-1.51-5.26c0-5.45 4.44-9.89 9.91-9.89 2.65 0 5.13 1.03 7 2.9a9.83 9.83 0 0 1 2.9 7c0 5.46-4.44 9.89-9.89 9.89Zm5.42-7.41c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.67-1.61-.92-2.21-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.48 0 1.46 1.07 2.88 1.22 3.08.15.2 2.1 3.21 5.08 4.5.71.31 1.26.49 1.69.63.71.23 1.36.2 1.87.12.57-.09 1.76-.72 2.01-1.41.25-.69.25-1.29.17-1.41-.07-.12-.27-.2-.57-.35Z"/></svg>`;
 
 function datosWhatsappContacto() {
   const raw = estado?.whatsapp_contacto;
   if (!raw) return null;
-  const digitos = String(typeof raw === "object" ? (raw.digitos || "") : raw).replace(/\D/g, "");
-  if (digitos.length < 10 || digitos.length > 15) return null;
-  const local = (typeof raw === "object" && raw.bonito)
-    ? String(raw.bonito)
-    : (digitos.startsWith("58") && digitos.length === 12
-      ? `0${digitos.slice(2, 5)}-${digitos.slice(5, 8)}-${digitos.slice(8)}`
-      : `+${digitos}`);
-  return {
-    url: `https://wa.me/${digitos}?text=${encodeURIComponent("Hola, deseo información para activar FacturaYa Venezuela en mi empresa.")}`,
-    etiqueta: local,
-  };
+  const activo = raw === true || (typeof raw === "object" && (raw.activo === true || Boolean(raw.digitos))) || (typeof raw === "string" && raw.trim().length > 0);
+  if (!activo) return null;
+  // Nunca se expone el número en el HTML ni en el cliente: la redirección ocurre en el servidor (/api/contacto/whatsapp).
+  return { url: "/api/contacto/whatsapp" };
 }
 
 const REGIMENES_UI = {
@@ -69,9 +63,9 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.7.0)</span>
-  <p class="suave">Descarga el ZIP completo v4.7.0 con Correo de Plataforma multi-inquilino (Brevo → Resend → Zoho ZeptoMail, failover, cuotas UTC, bloqueos HMAC por rebote/spam, panel Súper Admin e historial por empresa) + regímenes fiscales SENIAT:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.7.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.7.1)</span>
+  <p class="suave">Descarga el ZIP completo v4.7.1 con dominio oficial <b>www.facturayave.com</b>, botón de WhatsApp protegido anti-bots, modo oscuro corregido en Libros y Panel de Correos + Correo de Plataforma (Brevo → Resend → Zoho ZeptoMail):</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.7.1)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="README.md">⬇️ README.md</button>
@@ -200,7 +194,7 @@ function vistaLogin() {
     <div class="portada">
       <header class="portada-topbar" id="inicio-portada">
         <button type="button" class="portada-marca" data-scroll="inicio-portada" aria-label="FacturaYa Venezuela">
-          <img src="/favicon.svg?v=20261119v45" alt="" width="34" height="34">
+          <img src="/favicon.svg?v=20261121v471" alt="" width="34" height="34">
           <span>FacturaYa Venezuela</span>
         </button>
         <nav class="portada-nav" aria-label="Secciones principales">
@@ -216,12 +210,12 @@ function vistaLogin() {
 
       <section class="portada-hero" aria-labelledby="hero-titulo">
         <div class="portada-hero-texto">
-          <p class="portada-kicker">Facturación digital · Normativa SENIAT · Venezuela</p>
+          <p class="portada-kicker">facturayave.com · Facturación digital · Normativa SENIAT</p>
           <h1 id="hero-titulo">Facturación digital y libros contables claros para tu negocio.</h1>
           <p class="portada-lead">Emite facturas, presupuestos, notas de crédito y recibos con tu logo en Bolívares y Dólares a la tasa oficial BCV. Opera desde celular, tablet o computadora y entrega los libros listos a tu contador.</p>
           <div class="portada-hero-ctas">
             ${wa
-              ? `<a class="portada-btn-wa" href="${esc(wa.url)}" target="_blank" rel="noopener noreferrer">${ICONO_WA_SVG}<span>Solicitar activación por WhatsApp</span></a>
+              ? `<a class="portada-btn-wa" href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">${ICONO_WA_SVG}<span>Solicitar activación por WhatsApp</span></a>
                  <button type="button" class="portada-btn-sec" data-scroll="acceso-empresa">Ya soy cliente, ingresar ↓</button>`
               : `<button type="button" class="portada-btn-wa" data-scroll="acceso-empresa">Ingresar al sistema ↓</button>
                  <button type="button" class="portada-btn-sec" data-scroll="marco-legal">Ver respaldo legal</button>`}
@@ -233,7 +227,7 @@ function vistaLogin() {
           <div class="doc-demo">
             <div class="doc-demo-cab">
               <div class="doc-demo-emisor">
-                <img src="/favicon.svg?v=20261119v45" alt="" width="36" height="36">
+                <img src="/favicon.svg?v=20261121v471" alt="" width="36" height="36">
                 <div>
                   <strong>Tu Empresa C.A.</strong>
                   <span>RIF J-00000000-0 · Caracas</span>
@@ -344,14 +338,14 @@ function vistaLogin() {
           <h2 id="tit-contacto">Activa FacturaYa Venezuela en tu empresa</h2>
           <p>Te ayudamos a configurar tu RIF, logotipo, usuarios y modalidad de facturación para empezar a emitir el mismo día.</p>
         </div>
-        <a class="portada-btn-wa grande" href="${esc(wa.url)}" target="_blank" rel="noopener noreferrer">${ICONO_WA_SVG}<span>Escribir al WhatsApp ${esc(wa.etiqueta)}</span></a>
+        <a class="portada-btn-wa grande" href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">${ICONO_WA_SVG}<span>Escribir por WhatsApp</span></a>
       </section>` : ""}
 
       <section class="portada-acceso" id="acceso-empresa" aria-labelledby="tit-acceso">
         <div class="portada-acceso-info">
           <p class="portada-kicker">Acceso para empresas activas</p>
           <h2 id="tit-acceso">Ingresa a tu negocio</h2>
-          <p>Inicia sesión con el correo y la contraseña asignados a tu empresa. Funciona igual en teléfono, tablet y computadora.</p>
+          <p>Inicia sesión en <b>www.facturayave.com</b> con el correo y la contraseña asignados a tu empresa. Funciona igual en teléfono, tablet y computadora.</p>
           <ul class="portada-acceso-puntos">
             <li>Acceso por usuario y rol (Dueño, Supervisor, Cajero, Bodega o Contador).</li>
             <li>Sesiones cifradas con verificación en 2 pasos (2FA) disponible para administradores.</li>
@@ -374,9 +368,9 @@ function vistaLogin() {
       </section>
 
       <footer class="portada-pie">
-        <span>FacturaYa Venezuela · Facturación Digital y Libros Contables</span>
+        <span>FacturaYa Venezuela · www.facturayave.com · Facturación Digital y Libros Contables</span>
         ${wa
-          ? `<a href="${esc(wa.url)}" target="_blank" rel="noopener noreferrer">Atención por WhatsApp: ${esc(wa.etiqueta)}</a>`
+          ? `<a href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">Atención comercial por WhatsApp</a>`
           : `<span>Normativa SENIAT · SNAT/2011/0071 · SNAT/2024/000102</span>`}
       </footer>
     </div>${TARJETA_GITHUB_ZIP}`;
@@ -762,7 +756,7 @@ async function vistaInquilinos(subvista = "") {
       const facIni = String(corr.primer_factura || d.primer_factura || 1).padStart(8, "0");
       const ctrlIni = `00-${String(corr.primer_control || d.primer_control || 1).padStart(8, "0")}`;
       const nombreEmp = c.nombre_negocio || c.nombre_razon_social || d.nombre_negocio || "";
-      const msgWa = `Hola ${d.nombre_dueno}, tu sistema *FacturaYa Venezuela* para *${nombreEmp}* (${c.rif}) ya está activo en su base dedicada *${c.codigo}*.\n\n🔗 *Acceso:* ${location.origin}\n✉️ *Usuario:* ${c.email_dueno}\n🔑 *Contraseña temporal:* ${c.clave_temporal}\n🛡️ *Código maestro de respaldo (1 uso):* ${c.codigo_recuperacion}\n🧾 *Correlativo inicial:* Factura N.º ${facIni} · Control N.º ${ctrlIni}\n\nAl ingresar por primera vez el sistema te solicitará definir tu contraseña personal.`;
+      const msgWa = `Hola ${d.nombre_dueno}, tu sistema *FacturaYa Venezuela* para *${nombreEmp}* (${c.rif}) ya está activo en su base dedicada *${c.codigo}*.\n\n🔗 *Acceso:* ${URL_PORTAL_OFICIAL}\n✉️ *Usuario:* ${c.email_dueno}\n🔑 *Contraseña temporal:* ${c.clave_temporal}\n🛡️ *Código maestro de respaldo (1 uso):* ${c.codigo_recuperacion}\n🧾 *Correlativo inicial:* Factura N.º ${facIni} · Control N.º ${ctrlIni}\n\nAl ingresar por primera vez el sistema te solicitará definir tu contraseña personal.`;
       $("#credenciales-nuevo").innerHTML = `<section class="tarjeta secreto">
         <div class="reng-cab"><span class="etiqueta">🎉 CLIENTE DADO DE ALTA EN ${esc(c.codigo)} (${esc(c.d1_nombre || `facturaya_${c.codigo.toLowerCase()}`)})</span><span class="insignia verde">Activa</span></div>
         <p class="suave"><b>${esc(nombreEmp)}</b> · Credenciales iniciales del dueño (<b>${esc(c.email_dueno)}</b>):</p>
@@ -1920,8 +1914,8 @@ function vistaAjustes() {
     ${tarjetaMedio()}
     <section class="tarjeta" id="correo-config">
       <div class="reng-cab"><h2>✉️ Servicio de Correo y Cierre Mensual</h2><span class="insignia gris" id="correo-estado">Cargando…</span></div>
-      <div id="correo-plat-banner" hidden style="padding:12px;border-radius:12px;background:#f2fbf5;border:1px solid #cdecd8;margin-bottom:12px">
-        <div style="font-weight:700;color:#137333">✅ Correo de plataforma activo (incluido en tu plan)</div>
+      <div id="correo-plat-banner" hidden class="correo-banner">
+        <div class="correo-banner-tit">✅ Correo de plataforma activo (incluido en tu plan)</div>
         <p class="suave" id="correo-plat-detalle" style="margin:4px 0 0;font-size:13px"></p>
       </div>
       <p class="suave" id="correo-legado-desc"><b>¿Qué hace este servicio?</b> Envía facturas, notas y recibos en PDF a tus clientes y despacha automáticamente los <b>Libros Contables SENIAT en Excel (CSV)</b> al inicio de cada mes al correo del Administrador y Contador.</p>

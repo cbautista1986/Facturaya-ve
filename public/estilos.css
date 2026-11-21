@@ -1,11 +1,24 @@
 /* Diseño estilo Pixel / Material You. Los colores tienen significado fijo:
    azul = acción principal · morado = servicios · verde = ganancia y pagos · ámbar = pendientes · rojo = alertas */
 :root {
+  color-scheme: light dark;
   --azul: #1A73E8; --morado: #7627BB; --verde: #1E8E3E; --ambar: #E37400; --rojo: #D93025;
   --fondo: #F8FAFD; --tarjeta: #FFFFFF; --texto: #1F2933; --suave: #5F6B7A; --borde: #DDE3EC; --radio: 24px;
+  --kpi-azul-bg: #F4F8FE; --kpi-azul-bd: #DCE8FB;
+  --kpi-ok-bg: #F2FBF5; --kpi-ok-bd: #CDECD8; --kpi-ok-txt: #137333;
+  --kpi-err-bg: #FFF5F5; --kpi-err-bd: #F5C2C7; --err-txt: #B42318;
+  --kpi-warn-bg: #FFFAF0; --kpi-warn-bd: #FFE0A3;
+  --caja-suave-bg: #FAFCFF;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --fondo: #0F1620; --tarjeta: #18212D; --texto: #E8EDF3; --suave: #9AA7B6; --borde: #2A3645; }
+  :root {
+    --fondo: #0F1620; --tarjeta: #18212D; --texto: #E8EDF3; --suave: #9AA7B6; --borde: #2A3645;
+    --kpi-azul-bg: #132338; --kpi-azul-bd: #25436A;
+    --kpi-ok-bg: #122B1E; --kpi-ok-bd: #215437; --kpi-ok-txt: #6EE7A0;
+    --kpi-err-bg: #32161A; --kpi-err-bd: #6B2A30; --err-txt: #FFA8A8;
+    --kpi-warn-bg: #332512; --kpi-warn-bd: #6A4B1B;
+    --caja-suave-bg: #121B26;
+  }
 }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -86,10 +99,10 @@ a.boton { text-decoration: none; }
 /* Listas (clientes y catálogo) */
 input[type=search] { margin-bottom: 12px; }
 .lista { display: grid; gap: 10px; }
-.fila { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--tarjeta);
-  border: 1px solid var(--borde); border-radius: 20px; cursor: pointer; }
+.fila { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; background: var(--tarjeta);
+  border: 1px solid var(--borde); border-radius: 20px; color: var(--texto); font: inherit; text-align: left; cursor: pointer; }
 .fila .dato { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.fila strong { overflow: hidden; text-overflow: ellipsis; }
+.fila strong { overflow: hidden; text-overflow: ellipsis; color: var(--texto); }
 .fila.apagado { opacity: .55; }
 .ganancia-txt { color: var(--verde); font-weight: 600; font-size: 13px; }
 .icono-tipo { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 14px;
@@ -194,6 +207,21 @@ input[type="file"] { width: 100%; padding: 12px 0; color: var(--texto); }
 .mini-sw-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border: 1px solid var(--borde); border-radius: 14px; background: var(--fondo); font-size: 13px; }
 .mini-sw-item.activo { border-color: var(--azul); }
 
+/* Panel de Correos de Plataforma e Historial (Claro y Oscuro) */
+.correo-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.correo-kpi { padding: 10px 12px; border-radius: 12px; background: var(--kpi-azul-bg); border: 1px solid var(--kpi-azul-bd); color: var(--texto); }
+.correo-kpi.ok { background: var(--kpi-ok-bg); border-color: var(--kpi-ok-bd); }
+.correo-kpi.alerta { background: var(--kpi-err-bg); border-color: var(--kpi-err-bd); }
+.correo-kpi-val { font-size: 20px; font-weight: 700; color: var(--texto); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.correo-caja { padding: 12px; border: 1px solid var(--borde); border-radius: 12px; background: var(--caja-suave-bg); color: var(--texto); }
+.correo-item { padding: 10px 12px; border: 1px solid var(--borde); border-radius: 12px; background: var(--caja-suave-bg); color: var(--texto); }
+.correo-item.alerta { border-color: var(--kpi-err-bd); background: var(--kpi-err-bg); }
+.correo-item.aviso { border-color: var(--kpi-warn-bd); background: var(--kpi-warn-bg); }
+.correo-banner { padding: 12px; border-radius: 12px; background: var(--kpi-ok-bg); border: 1px solid var(--kpi-ok-bd); margin-bottom: 12px; color: var(--texto); }
+.correo-banner-tit { font-weight: 700; color: var(--kpi-ok-txt); }
+.correo-err { font-size: 12px; color: var(--err-txt); margin-top: 4px; overflow-wrap: anywhere; }
+.correo-sep { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--borde); }
+
 /* =========================================================================
    PORTADA CORPORATIVA (HOME PUBLICITARIO + ACCESO AL FINAL)
    ========================================================================= */
@@ -227,11 +255,12 @@ body.modo-portada main { max-width: 1160px; padding: 0 16px 56px; }
 .portada-lead { margin: 0 0 24px; font-size: 16px; line-height: 1.6; color: var(--suave); max-width: 58ch; }
 .portada-hero-ctas { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 18px; }
 .portada-btn-wa { display: inline-flex; align-items: center; justify-content: center; gap: 10px;
-  min-height: 48px; padding: 0 22px; border-radius: 12px; background: #15803D; color: #FFFFFF;
-  text-decoration: none; font-weight: 700; font-size: 15px; white-space: nowrap;
+  max-width: 100%; min-height: 48px; padding: 10px 20px; border-radius: 12px; background: #15803D; color: #FFFFFF;
+  text-decoration: none; font-weight: 700; font-size: 15px; line-height: 1.25; text-align: center; white-space: normal;
   transition: transform .15s ease, background-color .15s ease; }
+.portada-btn-wa svg { flex: none; }
 .portada-btn-wa:hover { background: #166534; transform: translateY(-1px); }
-.portada-btn-wa.grande { min-height: 52px; padding: 0 26px; font-size: 15px; }
+.portada-btn-wa.grande { min-height: 52px; padding: 12px 24px; font-size: 15px; }
 .portada-btn-sec { display: inline-flex; align-items: center; justify-content: center; min-height: 48px; padding: 0 16px;
   border: 1px solid var(--borde); border-radius: 12px; background: var(--tarjeta); color: var(--texto);
   font: 600 14px/1 inherit; white-space: nowrap; cursor: pointer; transition: border-color .15s ease; }
@@ -318,8 +347,10 @@ body.modo-portada main { max-width: 1160px; padding: 0 16px 56px; }
    ========================================================================= */
 .inicio-resumen { display: grid; grid-template-columns: 1fr; gap: 0; }
 
-@media (max-width: 639px) {
-  .portada-acciones > a, .portada-acciones > button { width: 100%; justify-content: center; }
+@media (max-width: 767px) {
+  .portada-acciones > a, .portada-acciones > button,
+  .portada-hero-ctas > a, .portada-hero-ctas > button,
+  .portada-cta-banda .portada-btn-wa { width: 100%; justify-content: center; }
 }
 
 @media (min-width: 768px) {

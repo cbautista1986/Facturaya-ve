@@ -83,7 +83,7 @@ export async function leerConfigCorreo(db: D1Database, env?: Record<string, unkn
   }
 
   const envFrom = typeof env?.EMAIL_FROM === "string" ? env.EMAIL_FROM : "";
-  const remitente = m.remitente || envFrom || "notificaciones@facturaya.com";
+  const remitente = m.remitente || envFrom || "facturas@mail.facturayave.com";
   const nombre_remitente = m.nombre_remitente || "FacturaYa Venezuela";
   return {
     proveedor: proveedorLocal,

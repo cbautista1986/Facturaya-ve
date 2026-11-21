@@ -78,7 +78,7 @@ export function leerConfigPlataforma(env?: Record<string, unknown>): ConfigPlata
     ZEPTOMAIL: numEnv(env, "ZEPTOMAIL_CUOTA_DIARIA", CUOTAS_DIARIAS_DEFECTO.ZEPTOMAIL),
   };
   const proveedores_disponibles = PROVEEDORES_PLATAFORMA.filter((p) => Boolean(claves[p]));
-  const remitente = txtEnv(env, "EMAIL_REMITENTE") || txtEnv(env, "EMAIL_FROM") || "notificaciones@facturaya.com";
+  const remitente = txtEnv(env, "EMAIL_REMITENTE") || txtEnv(env, "EMAIL_FROM") || "facturas@mail.facturayave.com";
   const nombre_plataforma = txtEnv(env, "EMAIL_NOMBRE_PLATAFORMA") || "FacturaYa Venezuela";
   return {
     activo: proveedores_disponibles.length > 0,
@@ -183,8 +183,8 @@ export function construirIdentidadEnvio(
       .join(" · ");
     const pieHtml = `<div style="margin-top:18px;padding-top:10px;border-top:1px solid #e5ebf2;font-size:11px;color:#6b7785;text-align:center">${
       detalles ? `<div>${esc(nombreNeg)} · ${esc(detalles)}</div>` : ""
-    }<div style="margin-top:4px">Enviado mediante ${esc(nombrePlat)}</div></div>`;
-    const pieTexto = `\n---\n${nombreNeg}${detalles ? ` · ${detalles}` : ""}\nEnviado mediante ${nombrePlat}`;
+    }<div style="margin-top:4px">Enviado mediante ${esc(nombrePlat)} · <a href="https://facturayave.com" style="color:#6b7785;text-decoration:none">facturayave.com</a></div></div>`;
+    const pieTexto = `\n---\n${nombreNeg}${detalles ? ` · ${detalles}` : ""}\nEnviado mediante ${nombrePlat} (https://facturayave.com)`;
     return {
       remitente: cfgPlat.remitente,
       nombreRemitente: `${nombreNeg} (vía ${nombrePlat})`,

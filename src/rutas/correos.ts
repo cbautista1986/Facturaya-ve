@@ -362,9 +362,9 @@ correos.post("/probar", async (c) => {
     asunto: `✅ Prueba de Correo de Plataforma${forzarProveedor ? ` (${forzarProveedor})` : ""} · FacturaYa Venezuela`,
     html: `<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;padding:22px;border:1px solid #dde3ec;border-radius:14px">
       <h2 style="margin:0 0 10px;color:#1A73E8">✉️ Correo de Plataforma Operativo</h2>
-      <p>Prueba despachada desde el Panel Global de Súper Admin de <b>FacturaYa Venezuela</b>.</p>
+      <p>Prueba despachada desde el Panel Global de Súper Admin de <b>FacturaYa Venezuela</b> (<a href="https://facturayave.com" style="color:#1A73E8">facturayave.com</a>).</p>
     </div>`,
-    texto: "Prueba despachada desde el Panel Global de Súper Admin de FacturaYa Venezuela.",
+    texto: "Prueba despachada desde el Panel Global de Súper Admin de FacturaYa Venezuela (https://facturayave.com).",
     alcance: "PLATAFORMA",
     tipo: "PRUEBA",
     forzarProveedor,

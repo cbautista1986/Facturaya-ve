@@ -147,17 +147,14 @@ app.use("/api/*", async (c, next) => {
   c.res.headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
 });
 
-function leerWhatsappPublico(raw?: string): { digitos: string; bonito: string } | null {
+function digitosWhatsappContacto(raw?: string): string | null {
   const dig = String(raw ?? "").replace(/\D/g, "");
   if (dig.length < 10 || dig.length > 15) return null;
-  if (dig.startsWith("58") && dig.length === 12) {
-    return { digitos: dig, bonito: `0${dig.slice(2, 5)}-${dig.slice(5, 8)}-${dig.slice(8)}` };
-  }
-  return { digitos: dig, bonito: `+${dig}` };
+  return dig;
 }
 
 // CONTROL CENTRAL DE PERMISOS (Fase 7.1 + Multi-Tenant): toda petición a /api pasa por aquí antes de llegar a su módulo.
-const PUBLICAS = new Set(["/api/estado", "/api/instalar", "/api/login", "/api/logout", "/api/recuperar", "/api/recuperar-correo"]);
+const PUBLICAS = new Set(["/api/estado", "/api/contacto/whatsapp", "/api/instalar", "/api/login", "/api/logout", "/api/recuperar", "/api/recuperar-correo"]);
 app.use("/api/*", async (c, next) => {
   const ruta = c.req.path;
   if (PUBLICAS.has(ruta) || ruta.startsWith("/api/correo/eventos/")) return next();
@@ -185,11 +182,27 @@ app.use("/api/*", async (c, next) => {
   }
 });
 
+// Redirección privada a WhatsApp comercial: el número nunca se expone en HTML, JS ni JSON público (protección anti-bots/scrapers).
+app.get("/api/contacto/whatsapp", (c) => {
+  const digitos = digitosWhatsappContacto(c.env.WHATSAPP_CONTACTO);
+  if (!digitos) return falla(c, 404, "Canal de WhatsApp no disponible.");
+  const mensaje = "Hola, deseo información para activar FacturaYa Venezuela en mi empresa.";
+  const destino = `https://wa.me/${digitos}?text=${encodeURIComponent(mensaje)}`;
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: destino,
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex, nofollow",
+    },
+  });
+});
+
 app.get("/api/estado", async (c) => {
   const rawDb = c.get("rawDb") || c.env.DB;
   const envObj = c.env as unknown as Record<string, unknown>;
   const turnstileKey = String(c.env.TURNSTILE_SITE_KEY ?? "").trim() || null;
-  const whatsappContacto = leerWhatsappPublico(c.env.WHATSAPP_CONTACTO);
+  const whatsappContacto = digitosWhatsappContacto(c.env.WHATSAPP_CONTACTO) ? { activo: true } : null;
   const hayAdmin = await rawDb.prepare(`SELECT 1 AS x FROM usuarios LIMIT 1`).first();
   if (!hayAdmin) return c.json({ instalado: false, turnstile_site_key: turnstileKey, ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}) });
   let tenantRoto = false;
@@ -742,9 +755,10 @@ app.post("/api/recuperar-correo", async (c) => {
       </ul>
       <p style="margin-bottom:6px"><b>Clave temporal de un solo uso (válida por 30 minutos):</b></p>
       <div style="font:700 22px monospace;background:#fff4e0;padding:14px;text-align:center;border-radius:12px;border:1px dashed #e37400;letter-spacing:2px">${temporal}</div>
-      <p style="font-size:13px;color:#5f6b7a;margin-top:14px">Si tú o el usuario no solicitaron este cambio, ignora este mensaje: <b>la contraseña actual y las sesiones activas siguen funcionando sin cambios</b> hasta que alguien inicie sesión con esta clave temporal.</p>
+      <p style="margin:14px 0 0;font-size:14px">Ingresa desde el portal oficial: <a href="https://facturayave.com" style="color:#1A73E8;font-weight:700">https://facturayave.com</a></p>
+      <p style="font-size:13px;color:#5f6b7a;margin-top:12px">Si tú o el usuario no solicitaron este cambio, ignora este mensaje: <b>la contraseña actual y las sesiones activas siguen funcionando sin cambios</b> hasta que alguien inicie sesión con esta clave temporal.</p>
     </div>`,
-    texto: `Recuperación de clave para ${u.nombre} (${u.email} - ${u.rol}). Clave temporal (válida 30 min): ${temporal}`,
+    texto: `Recuperación de clave para ${u.nombre} (${u.email} - ${u.rol}). Clave temporal (válida 30 min): ${temporal}\nPortal oficial: https://facturayave.com`,
   });
 
   if (!envio.ok) return falla(c, 400, envio.error || "No se pudo enviar el correo de recuperación.");

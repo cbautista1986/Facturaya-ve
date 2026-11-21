@@ -260,6 +260,6 @@ export async function construirRecibo(L, { pago: P, documento: D }) {
   y += alto + 14;
   if (P.nota) { for (const l of envolver(`Nota: ${P.nota}`, ANCHO - 2 * M, 9)) { T(l, M, y, { s: 9 }); y += 12; } y += 4; }
   for (const l of envolver("Comprobante de cobro vinculado a documento emitido conforme a normativa SENIAT.", ANCHO - 2 * M, 8)) { T(l, M, y, { s: 8, c: [0.45, 0.45, 0.45] }); y += 11; }
-  T(`FacturaYa Venezuela · Providencia SENIAT SNAT/2011/0071`, ANCHO / 2 + 90, ALTO - 28, { s: 7.5, c: [0.55, 0.55, 0.55], der: true });
+  T(`FacturaYa Venezuela (facturayave.com) · Providencia SENIAT SNAT/2011/0071`, ANCHO / 2 + 90, ALTO - 28, { s: 7.5, c: [0.55, 0.55, 0.55], der: true });
   return pdf.save();
 }

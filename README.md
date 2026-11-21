@@ -28,7 +28,7 @@ El núcleo contable aplica reglas estrictas a nivel de servidor y base de datos 
 2. **Inmutabilidad fiscal en Modo Real:** Una vez emitido un documento, pago, compra o movimiento de existencias en Modo Real, los *triggers* de SQLite impiden su edición o eliminación física. Cualquier corrección se canaliza únicamente mediante anulación justificada o emisión de Notas de Crédito / Notas de Débito.
 3. **Correlativos atómicos sin saltos:** Los números de factura, notas de crédito, notas de débito, presupuestos, control interno y recibos de pago se incrementan dentro de la misma transacción atómica de emisión, sin saltos ni reutilización de numeraciones anuladas.
 4. **Separación de inventario y gastos operativos:** Las facturas de proveedores admiten renglones de mercancía (con trazabilidad en Kardex / existencias) y renglones de gastos operativos o servicios que impactan el Libro de Compras y el crédito fiscal de IVA sin alterar existencias físicas.
-5. **Control de acceso basado en roles (RBAC):** Validación estricta en servidor para cada petición según rol (**Administrador/Dueño**, **Supervisor**, **Cajero**, **Bodega** y **Contador** en solo lectura), aplicando aislamiento de costos y márgenes de ganancia.
+5. **Control de acceso basado en roles (RBAC):** Validación estricta en servidor para cada petición según rol (**Administrador**, **Supervisor**, **Cajero**, **Bodega** y **Contador** en solo lectura), aplicando aislamiento de costos y márgenes de ganancia.
 6. **Bitácora de auditoría:** Registro cronológico de emisiones, anulaciones, cambios de configuración fiscal, acceso de usuarios, migraciones y respaldos.
 
 ---

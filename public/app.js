@@ -63,17 +63,18 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.8.0)</span>
-  <p class="suave">Descarga el ZIP completo v4.8.0 con motor SaaS de suscripciones ($5×3 meses → $10 a tasa BCV, prorrateo mes 1, cobro manual + switch día 1), suspensión 100% manual con contraseña, WhatsApp diferenciado para soporte, rol Administrador y SEO completo (<code>sitemap.xml</code> + JSON-LD):</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.8.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.8.1)</span>
+  <p class="suave">Descarga el ZIP completo v4.8.1 con corrección de indexación Google (<code>robots.txt</code> + respaldo de portada si se cancela <code>/api/estado</code>), tarjeta social PNG (1200×630), CSP para Cloudflare Analytics y motor SaaS v4.8:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.8.1)</button>
   <div class="dos-botones">
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="suscripciones.ts">⬇️ src/suscripciones.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="rutas-inquilinos.ts">⬇️ src/rutas/inquilinos.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="robots.txt">⬇️ public/robots.txt</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="_headers">⬇️ public/_headers</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="index.html">⬇️ public/index.html</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="sitemap.xml">⬇️ public/sitemap.xml</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="og-facturaya.png">⬇️ public/og-facturaya.png</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="package.json">⬇️ package.json</button>
-  </div></section>` : "";
+  </div>
+</section>` : "";
 
 function correoCorporativo(usuario) {
   // Ensamblado dinámico para evitar que bots raspadores lean correos en texto plano en el HTML estático.
@@ -2671,7 +2672,19 @@ async function ruta() {
   document.body.classList.remove("modo-portada");
   window.scrollTo(0, 0);
   try {
-    estado = await api("estado");
+    try {
+      estado = await api("estado");
+    } catch (eEstado) {
+      const hashActual = (location.hash || "").trim();
+      const esRutaPublica = !hashActual || hashActual === "#" || hashActual === "#/" || hashActual === "#/login";
+      if (esRutaPublica) {
+        // Si un rastreador (ej. Googlebot) cancela /api/estado o hay un corte momentáneo en portada,
+        // siempre mostramos la portada pública completa en lugar de una pantalla de error (evita Soft 404).
+        estado = { instalado: true, sesion: false, turnstile_site_key: null, whatsapp_contacto: { activo: true } };
+        return vistaLogin();
+      }
+      throw eEstado;
+    }
     if (!estado.instalado) return vistaInstalar();
     if (!estado.sesion) return vistaLogin();
     fijarPermisos(estado.permisos);

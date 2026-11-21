@@ -34,6 +34,7 @@ export type ConfigPlataformaCorreo = {
   activo: boolean;
   remitente: string;
   nombre_plataforma: string;
+  soporte_email?: string;
   claves: Record<ProveedorPlataforma, string>;
   cuotas: Record<ProveedorPlataforma, number>;
   proveedores_disponibles: ProveedorPlataforma[];
@@ -80,10 +81,12 @@ export function leerConfigPlataforma(env?: Record<string, unknown>): ConfigPlata
   const proveedores_disponibles = PROVEEDORES_PLATAFORMA.filter((p) => Boolean(claves[p]));
   const remitente = txtEnv(env, "EMAIL_REMITENTE") || txtEnv(env, "EMAIL_FROM") || "facturas@mail.facturayave.com";
   const nombre_plataforma = txtEnv(env, "EMAIL_NOMBRE_PLATAFORMA") || "FacturaYa Venezuela";
+  const soporte_email = txtEnv(env, "EMAIL_SOPORTE") || "soporte@facturayave.com";
   return {
     activo: proveedores_disponibles.length > 0,
     remitente,
     nombre_plataforma,
+    soporte_email,
     claves,
     cuotas,
     proveedores_disponibles,
@@ -196,7 +199,7 @@ export function construirIdentidadEnvio(
   return {
     remitente: cfgPlat.remitente,
     nombreRemitente: nombrePlat,
-    responderA: responderAManual?.trim() || undefined,
+    responderA: responderAManual?.trim() || cfgPlat.soporte_email?.trim() || "soporte@facturayave.com",
     pieHtml: "",
     pieTexto: "",
   };

@@ -167,7 +167,7 @@ app.use("/api/*", async (c, next) => {
     const rawDb = c.get("rawDb") || c.env.DB;
     const activo = await verificarInquilinoActivoCacheado(rawDb, inqCod);
     if (!activo) {
-      return falla(c, 403, "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Comunícate con soporte de FacturaYa Venezuela.");
+      return falla(c, 403, "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
     }
   }
   if (!permitido(u.rol, c.req.method, ruta, u.email, envObj)) return falla(c, 403, "Tu usuario no tiene permiso para esto.");
@@ -455,7 +455,7 @@ app.post("/api/login", async (c) => {
   const esSuperLogin = await esCorreoSuperAdmin(rawDb, email, envObjLogin);
   let infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjLogin);
   if (!infoInq.activo) {
-    return falla(c, 403, "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Comunícate con soporte de FacturaYa Venezuela.");
+    return falla(c, 403, "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
   }
   let db = obtenerDbInquilino({ ...envObjLogin, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
@@ -638,7 +638,7 @@ app.post("/api/recuperar", async (c) => {
 
   const envObjRec = c.env as unknown as Record<string, unknown>;
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRec);
-  if (!infoInq.activo) return falla(c, 403, "⚠️ El servicio de este negocio está temporalmente suspendido.");
+  if (!infoInq.activo) return falla(c, 403, "⚠️ El servicio de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
   const db = obtenerDbInquilino({ ...envObjRec, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
   c.env = { ...c.env, DB: db };
@@ -710,7 +710,7 @@ app.post("/api/recuperar-correo", async (c) => {
 
   const envObjRecCor = c.env as unknown as Record<string, unknown>;
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRecCor);
-  if (!infoInq.activo) return falla(c, 403, "⚠️ El servicio de este negocio está temporalmente suspendido.");
+  if (!infoInq.activo) return falla(c, 403, "⚠️ El servicio de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.");
   const db = obtenerDbInquilino({ ...envObjRecCor, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
   c.env = { ...c.env, DB: db };

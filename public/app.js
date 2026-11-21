@@ -63,19 +63,69 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.7.1)</span>
-  <p class="suave">Descarga el ZIP completo v4.7.1 con dominio oficial <b>www.facturayave.com</b>, botón de WhatsApp protegido anti-bots, modo oscuro corregido en Libros y Panel de Correos + Correo de Plataforma (Brevo → Resend → Zoho ZeptoMail):</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.7.1)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.7.2)</span>
+  <p class="suave">Descarga el ZIP completo v4.7.2 con <b>workers_dev = false</b> y <b>TURNSTILE_HOSTNAMES</b> fijados en <code>wrangler.toml</code>, correos corporativos integrados (<b>contacto@</b> anti-bots afuera, <b>soporte@</b> y <b>pagos@</b> adentro) y <code>Reply-To</code> automático hacia soporte:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.7.2)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="README.md">⬇️ README.md</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="_headers">⬇️ public/_headers</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="package.json">⬇️ package.json</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="respaldos-r2.ts">⬇️ src/respaldos-r2.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="correo-plataforma.ts">⬇️ src/correo-plataforma.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
   </div></section>` : "";
 
+function correoCorporativo(usuario) {
+  // Ensamblado dinámico para evitar que bots raspadores lean correos en texto plano en el HTML estático.
+  return [usuario, ["facturayave", "com"].join(".")].join("@");
+}
+
+async function copiarTextoSeguro(texto) {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(texto);
+      return true;
+    }
+  } catch { /* fallback silencioso */ }
+  return false;
+}
+
 document.addEventListener("click", async (e) => {
+  const btnCorreoCom = e.target.closest("[data-correo-comercial]");
+  if (btnCorreoCom) {
+    const dir = correoCorporativo("contacto");
+    const copiado = await copiarTextoSeguro(dir);
+    aviso(copiado ? `✉️ ${dir} copiado al portapapeles` : `✉️ Correo comercial: ${dir}`);
+    const a = document.createElement("a");
+    a.href = `mailto:${dir}?subject=${encodeURIComponent("Solicitud de información — FacturaYa Venezuela")}`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
+  const btnCopiar = e.target.closest("[data-copiar-correo]");
+  if (btnCopiar) {
+    const dir = correoCorporativo(btnCopiar.dataset.copiarCorreo || "soporte");
+    const copiado = await copiarTextoSeguro(dir);
+    aviso(copiado ? `📋 ${dir} copiado ✅` : `✉️ ${dir}`);
+    return;
+  }
+  const btnEscribir = e.target.closest("[data-escribir-correo]");
+  if (btnEscribir) {
+    const u = btnEscribir.dataset.escribirCorreo || "soporte";
+    const dir = correoCorporativo(u);
+    const asunto = u === "pagos"
+      ? `Pagos / Suscripción — ${estado?.negocio?.nombre_razon_social || "FacturaYa Venezuela"}`
+      : `Soporte Técnico — ${estado?.negocio?.nombre_razon_social || "FacturaYa Venezuela"}`;
+    const a = document.createElement("a");
+    a.href = `mailto:${dir}?subject=${encodeURIComponent(asunto)}`;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
   const btnDl = e.target.closest("[data-dl-cf]");
   if (btnDl) {
     const nombre = btnDl.dataset.dlCf;
@@ -194,14 +244,14 @@ function vistaLogin() {
     <div class="portada">
       <header class="portada-topbar" id="inicio-portada">
         <button type="button" class="portada-marca" data-scroll="inicio-portada" aria-label="FacturaYa Venezuela">
-          <img src="/favicon.svg?v=20261121v471" alt="" width="34" height="34">
+          <img src="/favicon.svg?v=20261121v472" alt="" width="34" height="34">
           <span>FacturaYa Venezuela</span>
         </button>
         <nav class="portada-nav" aria-label="Secciones principales">
           <button type="button" class="portada-nav-link" data-scroll="capacidades">Capacidades</button>
           <button type="button" class="portada-nav-link" data-scroll="marco-legal">Marco legal</button>
           <button type="button" class="portada-nav-link" data-scroll="equipos">Roles</button>
-          ${wa ? `<button type="button" class="portada-nav-link" data-scroll="contacto">Contacto</button>` : ""}
+          <button type="button" class="portada-nav-link" data-scroll="contacto">Contacto</button>
         </nav>
         <div class="portada-nav-accion">
           <button type="button" class="portada-btn-nav" data-scroll="acceso-empresa">Iniciar sesión</button>
@@ -227,7 +277,7 @@ function vistaLogin() {
           <div class="doc-demo">
             <div class="doc-demo-cab">
               <div class="doc-demo-emisor">
-                <img src="/favicon.svg?v=20261121v471" alt="" width="36" height="36">
+                <img src="/favicon.svg?v=20261121v472" alt="" width="36" height="36">
                 <div>
                   <strong>Tu Empresa C.A.</strong>
                   <span>RIF J-00000000-0 · Caracas</span>
@@ -333,13 +383,16 @@ function vistaLogin() {
         </div>
       </section>
 
-      ${wa ? `<section class="portada-cta-banda" id="contacto" aria-labelledby="tit-contacto">
+      <section class="portada-cta-banda" id="contacto" aria-labelledby="tit-contacto">
         <div>
           <h2 id="tit-contacto">Activa FacturaYa Venezuela en tu empresa</h2>
           <p>Te ayudamos a configurar tu RIF, logotipo, usuarios y modalidad de facturación para empezar a emitir el mismo día.</p>
         </div>
-        <a class="portada-btn-wa grande" href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">${ICONO_WA_SVG}<span>Escribir por WhatsApp</span></a>
-      </section>` : ""}
+        <div class="portada-cta-botones">
+          ${wa ? `<a class="portada-btn-wa grande" href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">${ICONO_WA_SVG}<span>Escribir por WhatsApp</span></a>` : ""}
+          <button type="button" class="portada-btn-correo" data-correo-comercial>✉️ Solicitar por correo</button>
+        </div>
+      </section>
 
       <section class="portada-acceso" id="acceso-empresa" aria-labelledby="tit-acceso">
         <div class="portada-acceso-info">
@@ -369,9 +422,10 @@ function vistaLogin() {
 
       <footer class="portada-pie">
         <span>FacturaYa Venezuela · www.facturayave.com · Facturación Digital y Libros Contables</span>
-        ${wa
-          ? `<a href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">Atención comercial por WhatsApp</a>`
-          : `<span>Normativa SENIAT · SNAT/2011/0071 · SNAT/2024/000102</span>`}
+        <div class="portada-pie-enlaces">
+          ${wa ? `<a href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">WhatsApp comercial</a>` : ""}
+          <button type="button" class="portada-pie-btn" data-correo-comercial>Correo de solicitudes</button>
+        </div>
       </footer>
     </div>${TARJETA_GITHUB_ZIP}`;
 
@@ -1978,6 +2032,43 @@ function vistaAjustes() {
         ${ERROR}<button class="boton rojo" type="submit">🗑️ ${codActivo === "principal" ? "BORRAR Y REINSTALAR" : "ELIMINAR EMPRESA"}</button>
       </form></section>
       ${TARJETA_GITHUB_ZIP}` : ""}` : ""}
+    <section class="tarjeta" id="card-soporte">
+      <h2>🛠️ Soporte y Atención al Cliente</h2>
+      <p class="suave">¿Necesitas ayuda técnica con tu cuenta, facturas, libros SENIAT o gestión de tu suscripción? Escríbenos a nuestros canales oficiales:</p>
+      <div class="soporte-lista">
+        <div class="soporte-item">
+          <div class="soporte-item-info">
+            <div class="soporte-item-tit">🛟 Soporte técnico e incidencias</div>
+            <div class="soporte-item-dir">${esc(correoCorporativo("soporte"))}</div>
+            <div class="soporte-item-sub">Fallos, dudas operativas, configuración de usuarios o reportes.</div>
+          </div>
+          <div class="soporte-item-acciones">
+            <button type="button" class="boton chico contorno-azul" data-escribir-correo="soporte">✉️ Escribir</button>
+            <button type="button" class="boton chico soporte-btn-copiar" data-copiar-correo="soporte">📋 Copiar</button>
+          </div>
+        </div>
+        <div class="soporte-item">
+          <div class="soporte-item-info">
+            <div class="soporte-item-tit">💳 Pagos y suscripción</div>
+            <div class="soporte-item-dir">${esc(correoCorporativo("pagos"))}</div>
+            <div class="soporte-item-sub">Comprobantes de pago, renovaciones, planes y activaciones.</div>
+          </div>
+          <div class="soporte-item-acciones">
+            <button type="button" class="boton chico contorno-azul" data-escribir-correo="pagos">✉️ Escribir</button>
+            <button type="button" class="boton chico soporte-btn-copiar" data-copiar-correo="pagos">📋 Copiar</button>
+          </div>
+        </div>
+        ${datosWhatsappContacto() ? `<div class="soporte-item">
+          <div class="soporte-item-info">
+            <div class="soporte-item-tit">💬 Atención directa por WhatsApp</div>
+            <div class="soporte-item-sub">Canal directo oficial de FacturaYa Venezuela.</div>
+          </div>
+          <div class="soporte-item-acciones">
+            <a class="boton chico verde" href="${esc(datosWhatsappContacto().url)}" target="_blank" rel="nofollow noopener noreferrer">Abrir WhatsApp</a>
+          </div>
+        </div>` : ""}
+      </div>
+    </section>
     <button class="boton contorno" id="salir">Cerrar sesión</button>`;
 
   $("#atras").addEventListener("click", () => (location.hash = "#/inicio"));

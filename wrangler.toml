@@ -1,8 +1,8 @@
 name = "facturaya"  # debe ser igual al nombre del Worker en Cloudflare
 main = "src/index.ts"
 compatibility_date = "2025-10-20"
-# Cuando compres tu dominio propio y lo conectes en Cloudflare, descomenta la línea de abajo para ocultar *.workers.dev:
-# workers_dev = false
+# Dominio propio conectado en Cloudflare (facturayave.com): mantiene *.workers.dev desactivado en cada despliegue
+workers_dev = false
 
 # El front end (carpeta public/) se sirve gratis y sin límite; el Worker solo corre para /api/*
 [assets]
@@ -21,10 +21,9 @@ enabled = true
 # Turnstile anti-bots (clave pública segura para el repositorio; las claves secretas y datos de contacto van SOLO en Cloudflare -> Variables and Secrets)
 [vars]
 TURNSTILE_SITE_KEY = "0x4AAAAAAGBXwZFePzf-zu4f"
+TURNSTILE_HOSTNAMES = "facturayave.com,www.facturayave.com"
 EMAIL_REMITENTE = "facturas@mail.facturayave.com"
 EMAIL_NOMBRE_PLATAFORMA = "FacturaYa Venezuela"
-# Opcional (configurar preferiblemente en Cloudflare -> Variables and Secrets):
-# TURNSTILE_HOSTNAMES = "facturayave.com,www.facturayave.com"
 # WHATSAPP_CONTACTO -> configurar SOLO como Secreto en Cloudflare (nunca en este archivo)
 # SUPER_ADMIN_EMAIL -> configurar SOLO como Secreto en Cloudflare (nunca en este archivo)
 

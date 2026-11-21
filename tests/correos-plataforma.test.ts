@@ -107,7 +107,11 @@ test("1. Reglas puras del correo de plataforma: cadena 90%/100%, circuitos, iden
 
   const idPlat = construirIdentidadEnvio("PLATAFORMA", cfgPlat, null);
   assert.equal(idPlat.nombreRemitente, "FacturaYa Venezuela");
+  assert.equal(idPlat.responderA, "soporte@facturayave.com");
   assert.equal(idPlat.pieHtml, "");
+
+  const idPlatCustom = construirIdentidadEnvio("PLATAFORMA", cfgPlat, null, "pagos@facturayave.com");
+  assert.equal(idPlatCustom.responderA, "pagos@facturayave.com");
 
   // Normalización de eventos webhook Brevo y Resend
   const evBrevo = normalizarEventoWebhook("BREVO", {

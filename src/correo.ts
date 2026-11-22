@@ -242,9 +242,12 @@ export async function enviarCorreo(
   db: D1Database,
   env: Record<string, unknown> | undefined,
   opc: OpcionesCorreo
-): Promise<{ ok: true; proveedor?: string; messageId?: string } | { ok: false; error: string }> {
-  const destinatarios = (Array.isArray(opc.para) ? opc.para : [opc.para]).map((x) => String(x ?? "").trim().toLowerCase()).filter(Boolean);
-  const copias = (opc.cc ? (Array.isArray(opc.cc) ? opc.cc : [opc.cc]) : [])
+): Promise<
+  | { ok: true; proveedor?: string; messageId?: string; demo_redirigido_a?: string; demo_restantes?: number }
+  | { ok: false; error: string }
+> {
+  let destinatarios = (Array.isArray(opc.para) ? opc.para : [opc.para]).map((x) => String(x ?? "").trim().toLowerCase()).filter(Boolean);
+  let copias = (opc.cc ? (Array.isArray(opc.cc) ? opc.cc : [opc.cc]) : [])
     .map((x) => String(x ?? "").trim().toLowerCase())
     .filter((x) => x && !destinatarios.includes(x));
   if (!destinatarios.length) return { ok: false, error: "No hay correo destinatario válido." };
@@ -253,6 +256,58 @@ export async function enviarCorreo(
   const alcance: AlcanceCorreo = opc.alcance || (tipo === "DOCUMENTO" || tipo === "RECIBO" || tipo === "CIERRE" ? "INQUILINO" : "PLATAFORMA");
   const plat = leerConfigPlataforma(env);
   const { rawDb, inquilinoCodigo } = extraerContextoPlataforma(db, env, opc.inquilinoCodigo);
+
+  // CANDADO DEMO (v4.9.0): en DB_DEMO jamás se envían correos a direcciones ficticias ni arbitrarias.
+  // Se redirige 100% al correo real del prospecto configurado por el Súper Admin y se limita a 5 correos por sesión.
+  let asuntoEfectivo = opc.asunto;
+  let htmlEfectivo = opc.html;
+  let textoEfectivo = opc.texto;
+  let demoMeta: { emailProspecto: string; restantesDespues: number } | null = null;
+  if (inquilinoCodigo === "DB_DEMO") {
+    const filaDemo = await rawDb
+      .prepare(`SELECT activo, email_prospecto, correos_enviados, max_correos, expira_en FROM _mt_demo_estado WHERE id = 1`)
+      .first<{ activo: number; email_prospecto: string; correos_enviados: number; max_correos: number; expira_en: number }>()
+      .catch(() => null);
+    const ahoraSegDemo = Math.floor(Date.now() / 1000);
+    if (!filaDemo || filaDemo.activo !== 1 || Number(filaDemo.expira_en || 0) <= ahoraSegDemo) {
+      return { ok: false, error: "La sesión Demo ha finalizado. No es posible enviar correos desde un entorno expirado." };
+    }
+    const emailProspecto = String(filaDemo.email_prospecto || "").trim().toLowerCase();
+    if (!emailProspecto || !emailProspecto.includes("@")) {
+      return {
+        ok: false,
+        error: "Esta sesión Demo no tiene correo de prueba habilitado. Puedes descargar y ver el PDF directamente.",
+      };
+    }
+    const enviados = Math.max(0, Number(filaDemo.correos_enviados || 0));
+    const maxC = Math.max(1, Number(filaDemo.max_correos || 5));
+    if (enviados >= maxC) {
+      return {
+        ok: false,
+        error: `Alcanzaste el límite de ${maxC} correos de prueba permitidos en esta sesión Demo.`,
+      };
+    }
+    const destOriginal = destinatarios.join(", ");
+    destinatarios = [emailProspecto];
+    copias = [];
+    if (!/^\[DEMO\]/i.test(asuntoEfectivo)) {
+      asuntoEfectivo = `[DEMO] ${asuntoEfectivo}`;
+    }
+    const avisoHtml = `<div style="background:#fff4e0;border:1px solid #f0b429;color:#7a4b00;padding:10px 14px;border-radius:10px;font-family:system-ui,sans-serif;font-size:12px;margin-bottom:14px"><b>🧪 CORREO DE PRUEBA (ENTORNO DEMO — SIN VALIDEZ FISCAL)</b><br/>Redirigido de forma segura únicamente a tu correo de evaluación (${emailProspecto}). Destinatario ficticio original: ${destOriginal}.</div>`;
+    htmlEfectivo = `${avisoHtml}${htmlEfectivo}`;
+    if (textoEfectivo) {
+      textoEfectivo = `[MODO DEMO - SIN VALIDEZ FISCAL · Redirigido a ${emailProspecto}]\n\n${textoEfectivo}`;
+    }
+    demoMeta = { emailProspecto, restantesDespues: Math.max(0, maxC - (enviados + 1)) };
+  }
+
+  const registrarConsumoDemo = async () => {
+    if (!demoMeta) return;
+    await rawDb
+      .prepare(`UPDATE _mt_demo_estado SET correos_enviados = correos_enviados + 1, actualizado_en = datetime('now') WHERE id = 1`)
+      .run()
+      .catch(() => {});
+  };
 
   // MODO LEGADO (sin secretos de plataforma configurados): mantiene compatibilidad exacta con integraciones del inquilino
   if (!plat.activo) {
@@ -270,9 +325,9 @@ export async function enviarCorreo(
       para: destinatarios,
       cc: copias,
       responderA: opc.responderA,
-      asunto: opc.asunto,
-      html: opc.html,
-      texto: opc.texto,
+      asunto: asuntoEfectivo,
+      html: htmlEfectivo,
+      texto: textoEfectivo,
       adjuntos: opc.adjuntos,
       inquilinoCodigo,
       tipo,
@@ -282,22 +337,28 @@ export async function enviarCorreo(
       await registrarEnvioInquilino(db, {
         tipo,
         destinatario: destinatarios.join(", "),
-        asunto: opc.asunto,
+        asunto: asuntoEfectivo,
         proveedor: cfg.proveedor,
         estado: "FALLIDO",
         motivo: res.error,
       });
       return { ok: false, error: res.error };
     }
+    await registrarConsumoDemo();
     await registrarEnvioInquilino(db, {
       tipo,
       destinatario: destinatarios.join(", "),
-      asunto: opc.asunto,
+      asunto: asuntoEfectivo,
       proveedor: cfg.proveedor,
       estado: "ENVIADO",
       message_id: res.messageId,
     });
-    return { ok: true, proveedor: cfg.proveedor, messageId: res.messageId };
+    return {
+      ok: true,
+      proveedor: cfg.proveedor,
+      messageId: res.messageId,
+      ...(demoMeta ? { demo_redirigido_a: demoMeta.emailProspecto, demo_restantes: demoMeta.restantesDespues } : {}),
+    };
   }
 
   // MODO PLATAFORMA (v4.7.0)
@@ -362,11 +423,11 @@ export async function enviarCorreo(
       .catch(() => null);
   }
   const identidad = construirIdentidadEnvio(alcance, plat, perfil, opc.responderA);
-  const htmlFinal = identidad.pieHtml && !opc.html.includes("Enviado mediante") ? `${opc.html}${identidad.pieHtml}` : opc.html;
-  const textoFinal = opc.texto
-    ? identidad.pieTexto && !opc.texto.includes("Enviado mediante")
-      ? `${opc.texto}${identidad.pieTexto}`
-      : opc.texto
+  const htmlFinal = identidad.pieHtml && !htmlEfectivo.includes("Enviado mediante") ? `${htmlEfectivo}${identidad.pieHtml}` : htmlEfectivo;
+  const textoFinal = textoEfectivo
+    ? identidad.pieTexto && !textoEfectivo.includes("Enviado mediante")
+      ? `${textoEfectivo}${identidad.pieTexto}`
+      : textoEfectivo
     : undefined;
 
   // 4) Planificar cadena de proveedores (BREVO -> RESEND -> ZEPTOMAIL)
@@ -420,7 +481,7 @@ export async function enviarCorreo(
       para: destinatarios,
       cc: copias,
       responderA: identidad.responderA,
-      asunto: opc.asunto,
+      asunto: asuntoEfectivo,
       html: htmlFinal,
       texto: textoFinal,
       adjuntos: opc.adjuntos,
@@ -430,6 +491,7 @@ export async function enviarCorreo(
     });
 
     if (res.ok) {
+      await registrarConsumoDemo();
       await limpiarCircuito(rawDb, prov);
       await incrementarUsoCorreo(rawDb, prov, inquilinoCodigo, tipo, "enviados", cantidadDest, fechaUtc);
       if (res.messageId) {
@@ -445,7 +507,7 @@ export async function enviarCorreo(
       await registrarEnvioInquilino(db, {
         tipo,
         destinatario: destinatarios.join(", "),
-        asunto: opc.asunto,
+        asunto: asuntoEfectivo,
         proveedor: prov,
         estado: "ENVIADO",
         message_id: res.messageId,
@@ -460,7 +522,12 @@ export async function enviarCorreo(
         limites.alerta_diaria,
         fechaUtc
       );
-      return { ok: true, proveedor: prov, messageId: res.messageId };
+      return {
+        ok: true,
+        proveedor: prov,
+        messageId: res.messageId,
+        ...(demoMeta ? { demo_redirigido_a: demoMeta.emailProspecto, demo_restantes: demoMeta.restantesDespues } : {}),
+      };
     }
 
     const clas = clasificarFalloHttpProveedor(res.status);

@@ -163,6 +163,15 @@ export async function verificarInquilinoActivoCacheado(rawDb: D1Database, codigo
 
 export async function obtenerEstadoInquilino(rawDb: D1Database, codigo: string): Promise<{ activo: boolean; motivo_suspension: string }> {
   if (!codigo || codigo === "principal") return { activo: true, motivo_suspension: "" };
+  if (codigo === "DB_DEMO") {
+    const demo = await rawDb
+      .prepare(`SELECT activo, expira_en FROM _mt_demo_estado WHERE id = 1`)
+      .first<{ activo: number; expira_en: number }>()
+      .catch(() => null);
+    const ahoraSeg = Math.floor(Date.now() / 1000);
+    const vigente = Boolean(demo && demo.activo === 1 && Number(demo.expira_en || 0) > ahoraSeg);
+    return { activo: vigente, motivo_suspension: vigente ? "" : "DEMO_EXPIRADO" };
+  }
   const ahora = Date.now();
   const c = cachePorRawDb.get(rawDb);
   if (c && ahora - c.ts < CACHE_TTL_MS && c.activos.has(codigo) && c.activos.get(codigo) === true) {
@@ -391,6 +400,21 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
         enviado_en TEXT NOT NULL DEFAULT (datetime('now')),
         pagado_en TEXT DEFAULT NULL,
         UNIQUE(inquilino_codigo, periodo_ym)
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_demo_estado (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        activo INTEGER NOT NULL DEFAULT 0,
+        regimen TEXT NOT NULL DEFAULT 'ORDINARIO',
+        nombre_negocio TEXT NOT NULL DEFAULT '',
+        email_prospecto TEXT NOT NULL DEFAULT '',
+        clave_demo TEXT NOT NULL DEFAULT '',
+        correos_enviados INTEGER NOT NULL DEFAULT 0,
+        max_correos INTEGER NOT NULL DEFAULT 5,
+        duracion_min INTEGER NOT NULL DEFAULT 120,
+        creado_en INTEGER NOT NULL DEFAULT 0,
+        expira_en INTEGER NOT NULL DEFAULT 0,
+        limpiado INTEGER NOT NULL DEFAULT 1,
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
       )`),
     ]);
 
@@ -624,6 +648,20 @@ export async function buscarInquilinoPorCorreo(rawDb: D1Database, email: string,
   if (codigo === "principal") {
     return { codigo: "principal", activo: true, nombre_negocio: "Negocio Principal", motivo_suspension: "" };
   }
+  if (codigo === "DB_DEMO") {
+    const demo = await rawDb
+      .prepare(`SELECT activo, nombre_negocio, expira_en FROM _mt_demo_estado WHERE id = 1`)
+      .first<{ activo: number; nombre_negocio: string; expira_en: number }>()
+      .catch(() => null);
+    const ahoraSeg = Math.floor(Date.now() / 1000);
+    const vigente = Boolean(demo && demo.activo === 1 && Number(demo.expira_en || 0) > ahoraSeg);
+    return {
+      codigo: "DB_DEMO",
+      activo: vigente,
+      nombre_negocio: demo?.nombre_negocio || "Entorno Demo",
+      motivo_suspension: vigente ? "" : "DEMO_EXPIRADO",
+    };
+  }
   const inq = await rawDb
     .prepare(`SELECT activo, nombre_negocio, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
     .bind(codigo)
@@ -701,6 +739,12 @@ export async function generarWranglerTomlBindings(rawDb: D1Database, envObj?: Re
     `binding = "DB"`,
     `database_name = "facturacion_ve_db"`,
     `database_id = "${uuidPrincipal}"`,
+    ``,
+    `# Base de datos aislada y efímera para Demos de prospectos (sin clientes reales)`,
+    `[[d1_databases]]`,
+    `binding = "DB_DEMO"`,
+    `database_name = "facturaya_demo_db"`,
+    `database_id = "e9d338be-05e8-4922-8b7c-33d14e8da116"`,
     ``,
     `# Respaldo automático diario y archivo fiscal mensual en Cloudflare R2 (bucket privado)`,
     `[[r2_buckets]]`,

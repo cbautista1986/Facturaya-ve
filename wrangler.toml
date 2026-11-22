@@ -15,6 +15,12 @@ binding = "DB"
 database_name = "facturacion_ve_db"
 database_id = "1c555fec-951d-48f9-bbb4-fc54bf6c2e84"
 
+# Base de datos aislada y efímera exclusiva para Demos de prospectos (sin clientes reales, se limpia al vencer)
+[[d1_databases]]
+binding = "DB_DEMO"
+database_name = "facturaya_demo_db"
+database_id = "e9d338be-05e8-4922-8b7c-33d14e8da116"
+
 [observability]
 enabled = true
 

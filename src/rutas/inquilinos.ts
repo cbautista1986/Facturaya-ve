@@ -99,7 +99,7 @@ inquilinos.get("/", async (c) => {
     .bind(yo.email.trim().toLowerCase())
     .first<{ inquilino_codigo: string }>();
 
-  await rawDb.prepare(`DELETE FROM _mt_directorio WHERE inquilino_codigo NOT IN (SELECT codigo FROM _mt_inquilinos)`).run().catch(() => {});
+  await rawDb.prepare(`DELETE FROM _mt_directorio WHERE inquilino_codigo NOT IN (SELECT codigo FROM _mt_inquilinos) AND inquilino_codigo <> 'DB_DEMO'`).run().catch(() => {});
   // Sincronizar en caliente todos los correos de usuarios de cada empresa (cuando <= 25 empresas para cuidar cuota de subrequests)
   if (results.length <= 25) {
     for (const inq of results) {
@@ -612,7 +612,15 @@ inquilinos.post("/cambiar", async (c) => {
   await asegurarTablasMultiTenant(rawDb);
   const b = await leerJson(c);
   const codigo = texto(b.codigo, 20) || "principal";
-  if (codigo !== "principal") {
+  if (codigo === "DB_DEMO") {
+    const filaDemo = await rawDb
+      .prepare(`SELECT activo, expira_en FROM _mt_demo_estado WHERE id = 1`)
+      .first<{ activo: number; expira_en: number }>()
+      .catch(() => null);
+    if (!filaDemo || filaDemo.activo !== 1 || Number(filaDemo.expira_en || 0) <= ahora()) {
+      return falla(c, 404, "No hay un Entorno Demo activo en este momento.");
+    }
+  } else if (codigo !== "principal") {
     const existe = await rawDb.prepare(`SELECT codigo FROM _mt_inquilinos WHERE codigo = ?`).bind(codigo).first();
     if (!existe) return falla(c, 404, "Ese inquilino o negocio no existe.");
   }

@@ -369,10 +369,10 @@ export function aCsv(m, negocio) {
   }
   return "\uFEFF" + out.join("\r\n") + "\r\n";
 }
-export const nombreArchivoInforme = (m, modo, ext, r) => `${modo === "PRACTICA" ? "PRACTICA-" : ""}${m.titulo.replace(/ /g, "-").normalize("NFD").replace(/[\u0300-\u036f]/g, "")}${r?.desde ? `_${r.desde}_${r.hasta}` : `_${r?.hoy || ""}`}.${ext}`;
+export const nombreArchivoInforme = (m, modo, ext, r, esDemo = false) => `${esDemo ? "DEMO-" : modo === "PRACTICA" ? "PRACTICA-" : ""}${m.titulo.replace(/ /g, "-").normalize("NFD").replace(/[\u0300-\u036f]/g, "")}${r?.desde ? `_${r.desde}_${r.hasta}` : `_${r?.hoy || ""}`}.${ext}`;
 
 // ---------------------------------------------------------------- PDF (horizontal, tabla con encabezado repetido en cada página)
-export async function construirPdfInforme(L, m, { negocio, modo }) {
+export async function construirPdfInforme(L, m, { negocio, modo, esDemo = false }) {
   const { PDFDocument, StandardFonts, rgb } = L;
   const pdf = await PDFDocument.create(), f = await pdf.embedFont(StandardFonts.Helvetica), fb = await pdf.embedFont(StandardFonts.HelveticaBold);
   let logoImg = null;
@@ -385,7 +385,8 @@ export async function construirPdfInforme(L, m, { negocio, modo }) {
   let pag, y;
   const nueva = () => {
     pag = pdf.addPage([ANCHO, ALTO]); paginas.push(pag); y = ALTO - M;
-    if (modo === "PRACTICA") pag.drawText("PRACTICA - SIN VALOR", { x: ANCHO - M - 110, y: ALTO - 20, size: 8, font: fb, color: rgb(0.85, 0.15, 0.15) });
+    if (esDemo) pag.drawText("DOCUMENTO DEMOSTRATIVO — SIN VALIDEZ FISCAL", { x: ANCHO - M - 235, y: ALTO - 20, size: 8.5, font: fb, color: rgb(0.75, 0.34, 0.05) });
+    else if (modo === "PRACTICA") pag.drawText("PRACTICA - SIN VALOR", { x: ANCHO - M - 110, y: ALTO - 20, size: 8, font: fb, color: rgb(0.85, 0.15, 0.15) });
   };
   const recortar = (t, w, size, fuente) => { t = limpio(t); if (fuente.widthOfTextAtSize(t, size) <= w) return t; while (t.length > 1 && fuente.widthOfTextAtSize(t + "…", size) > w) t = t.slice(0, -1); return t + "…"; };
   const texto = (t, x, size, fuente, opc = {}) => pag.drawText(limpio(t), { x, y, size, font: fuente, color: opc.color || rgb(0.1, 0.1, 0.1) });
@@ -396,7 +397,7 @@ export async function construirPdfInforme(L, m, { negocio, modo }) {
     pag.drawImage(logoImg, { x: ANCHO - M - lw, y: ALTO - M - lh + 6, width: lw, height: lh });
   }
   texto(negocio?.nombre_razon_social || "", M, 13, fb); y -= 14; texto(`RIF ${negocio?.rif || ""}`, M, 9, f); y -= 20;
-  texto(m.titulo, M, 16, fb, { color: rgb(0.1, 0.45, 0.91) }); y -= 14; texto(m.periodo + (modo === "PRACTICA" ? " · DATOS DE PRACTICA" : ""), M, 9, f); y -= 14;
+  texto(m.titulo, M, 16, fb, { color: rgb(0.1, 0.45, 0.91) }); y -= 14; texto(m.periodo + (esDemo ? " · ENTORNO DEMO (SIN VALIDEZ FISCAL)" : modo === "PRACTICA" ? " · DATOS DE PRACTICA" : ""), M, 9, f); y -= 14;
   texto(m.resumen.map(([k, v]) => `${k}: ${v}`).join("   ·   "), M, 9, fb); y -= 16;
   for (const n of m.notas) { const t = limpio(n), partes = []; let r = t; // notas en varias líneas
     while (r.length) { let k = r.length; while (k > 1 && f.widthOfTextAtSize(r.slice(0, k), 7.5) > UTIL) k = r.lastIndexOf(" ", k - 1) > 0 ? r.lastIndexOf(" ", k - 1) : 1; partes.push(r.slice(0, k)); r = r.slice(k).trim(); }

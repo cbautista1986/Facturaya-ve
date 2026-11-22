@@ -48,7 +48,17 @@ export async function api(ruta, metodo = "GET", cuerpo) {
     body: cuerpo ? JSON.stringify(cuerpo) : undefined,
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || `Error ${r.status}`);
+  if (!r.ok) {
+    const err = new Error(j.error || `Error ${r.status}`);
+    if (j.demo_expirado) {
+      err.demo_expirado = true;
+      if (ruta !== "login") {
+        fijarInquilinoTab("");
+        try { window.dispatchEvent(new CustomEvent("facturaya:demo-expirado", { detail: j })); } catch {}
+      }
+    }
+    throw err;
+  }
   if (j && typeof j.inquilino_actual === "string" && j.inquilino_actual) {
     fijarInquilinoTab(j.inquilino_actual);
   }

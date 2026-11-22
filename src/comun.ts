@@ -10,6 +10,7 @@ export type Usuario = { id: number; nombre: string; email: string; rol: string; 
 export type Env = {
   Bindings: {
     DB: D1Database;
+    DB_DEMO?: D1Database;
     RESPALDOS_R2?: AlmacenR2;
     TURNSTILE_SITE_KEY?: string;
     TURNSTILE_SECRET_KEY?: string;

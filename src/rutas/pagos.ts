@@ -366,8 +366,12 @@ pagos.post("/:id/enviar-correo", async (c) => {
     adjuntos: pdfBase64 ? [{ filename: nombrePdf, content: pdfBase64 }] : undefined,
   });
   if (!res.ok) return falla(c, 400, res.error);
-  await auditar(c, u.id, "PAGO_CORREO", `Recibo ${nroRecibo} -> ${destino}`);
-  return c.json({ ok: true, email: destino });
+  await auditar(c, u.id, "PAGO_CORREO", `Recibo ${nroRecibo} -> ${res.demo_redirigido_a || destino}`);
+  return c.json({
+    ok: true,
+    email: res.demo_redirigido_a || destino,
+    ...(res.demo_redirigido_a ? { demo_redirigido_a: res.demo_redirigido_a, demo_restantes: res.demo_restantes } : {}),
+  });
 });
 
 pagos.post("/:id/anular", async (c) => {

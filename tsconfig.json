@@ -1,9 +1,24 @@
 {
   "compilerOptions": {
-    "target": "ES2022", "module": "ES2022", "moduleResolution": "Bundler",
-    "lib": ["ES2022"], "strict": true, "allowJs": true, "checkJs": false, "noEmit": true, "skipLibCheck": true,
-    "types": ["@cloudflare/workers-types"]
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": [
+      "ES2022"
+    ],
+    "strict": true,
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [
+      "@cloudflare/workers-types"
+    ]
   },
-  "include": ["src"],
-  "exclude": ["src/d1.ts"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/d1.ts"
+  ]
 }

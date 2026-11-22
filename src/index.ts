@@ -35,7 +35,17 @@ import compras from "./rutas/compras";
 import existencias from "./rutas/existencias";
 import informes from "./rutas/informes";
 import inquilinos from "./rutas/inquilinos";
+import demo from "./rutas/demo";
 import correos, { webhookCorreo } from "./rutas/correos";
+import {
+  CODIGO_DEMO,
+  MENSAJE_DEMO_EXPIRADO,
+  calcularEstadoDemo,
+  leerFilaDemoEstado,
+  limpiarDemoExpiradaSiCorresponde,
+  motivoBloqueoDemo,
+  obtenerDbDemoAislada,
+} from "./demo";
 
 const app = new Hono<Env>();
 const SESION_SEGUNDOS = 60 * 60 * 24 * 7;
@@ -94,8 +104,8 @@ app.use("/api/*", async (c, next) => {
     migrados.add(rawDb);
   }
   const inqHeader = String(c.req.header("X-Inquilino") || "").trim();
-  const inqDeTab = /^(principal|DB_\d+|t\d+)$/i.test(inqHeader)
-    ? (inqHeader.toLowerCase() === "principal" ? "principal" : inqHeader.toUpperCase().startsWith("DB_") ? inqHeader.toUpperCase() : inqHeader.toLowerCase())
+  const inqDeTab = /^(principal|DB_DEMO|DB_\d+|t\d+)$/i.test(inqHeader)
+    ? (inqHeader.toLowerCase() === "principal" ? "principal" : inqHeader.toUpperCase() === CODIGO_DEMO ? CODIGO_DEMO : inqHeader.toUpperCase().startsWith("DB_") ? inqHeader.toUpperCase() : inqHeader.toLowerCase())
     : "";
   let inqCookie = inqDeTab || getCookie(c, "inq") || "principal";
   const envObj = c.env as unknown as Record<string, unknown>;
@@ -106,11 +116,20 @@ app.use("/api/*", async (c, next) => {
     rutaApi === "/api/recuperar-correo" ||
     rutaApi.startsWith("/api/inquilinos") ||
     rutaApi === "/api/sistema/reiniciar-fabrica" ||
-    (inqCookie !== "principal" && !tieneBindingDedicado(envObj, inqCookie));
+    (inqCookie !== "principal" && inqCookie !== CODIGO_DEMO && !tieneBindingDedicado(envObj, inqCookie));
   if (requiereHidratacionCf) {
     await hidratarBindingsCloudflare(rawDb, envObj);
   }
-  if (inqCookie !== "principal") {
+  if (inqCookie === CODIGO_DEMO) {
+    const dbDemo = obtenerDbDemoAislada(envObj, rawDb);
+    if (!dbDemo) {
+      fijarCookieInquilino(c, "principal");
+      inqCookie = "principal";
+      c.env = { ...c.env, __rawDb: rawDb, __inquilinoCodigo: inqCookie } as Env["Bindings"];
+    } else {
+      c.env = { ...c.env, DB: dbDemo, __rawDb: rawDb, __inquilinoCodigo: CODIGO_DEMO } as Env["Bindings"];
+    }
+  } else if (inqCookie !== "principal") {
     const existeInq = tieneBindingDedicado(envObj, inqCookie)
       || Boolean(await rawDb.prepare(`SELECT 1 FROM _mt_inquilinos WHERE codigo = ?`).bind(inqCookie).first().catch(() => null));
     if (!existeInq) {
@@ -172,7 +191,17 @@ app.use("/api/*", async (c, next) => {
   c.set("usuario", u);
   const envObj = c.env as unknown as Record<string, unknown>;
   const inqCod = c.get("inquilinoCodigo") || "principal";
-  if (inqCod !== "principal" && !esSuperAdmin(u.rol, u.email, envObj)) {
+  if (inqCod === CODIGO_DEMO && !esSuperAdmin(u.rol, u.email, envObj)) {
+    const rawDb = c.get("rawDb") || c.env.DB;
+    const estDemo = calcularEstadoDemo(await leerFilaDemoEstado(rawDb));
+    if (!estDemo.activo) {
+      await limpiarDemoExpiradaSiCorresponde(rawDb, envObj).catch(() => {});
+      fijarCookieInquilino(c, "principal");
+      return c.json({ ok: false, demo_expirado: true, error: MENSAJE_DEMO_EXPIRADO }, 403);
+    }
+    const bloqueo = motivoBloqueoDemo(c.req.method, ruta);
+    if (bloqueo) return falla(c, 403, bloqueo);
+  } else if (inqCod !== "principal" && !esSuperAdmin(u.rol, u.email, envObj)) {
     const rawDb = c.get("rawDb") || c.env.DB;
     const estadoInq = await obtenerEstadoInquilino(rawDb, inqCod);
     if (!estadoInq.activo) {
@@ -244,7 +273,22 @@ app.get("/api/estado", async (c) => {
     }
   }
   if (!usuario) {
-    if (inqCod !== "principal") {
+    if (inqCod === CODIGO_DEMO) {
+      await limpiarDemoExpiradaSiCorresponde(rawDb, envObj).catch(() => {});
+      const filaDemo = await leerFilaDemoEstado(rawDb);
+      const estDemo = calcularEstadoDemo(filaDemo);
+      fijarCookieInquilino(c, "principal");
+      if (!estDemo.activo) {
+        return c.json({
+          instalado: true,
+          sesion: false,
+          demo_expirado: true,
+          mensaje_demo_expirado: MENSAJE_DEMO_EXPIRADO,
+          turnstile_site_key: turnstileKey,
+          ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
+        });
+      }
+    } else if (inqCod !== "principal") {
       const estadoInq = await rawDb
         .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
         .bind(inqCod)
@@ -269,7 +313,21 @@ app.get("/api/estado", async (c) => {
       ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
     });
   }
-  if (inqCod !== "principal" && !esSuperAdmin(usuario.rol, usuario.email, envObj)) {
+  if (inqCod === CODIGO_DEMO && !esSuperAdmin(usuario.rol, usuario.email, envObj)) {
+    const estDemo = calcularEstadoDemo(await leerFilaDemoEstado(rawDb));
+    if (!estDemo.activo) {
+      await limpiarDemoExpiradaSiCorresponde(rawDb, envObj).catch(() => {});
+      fijarCookieInquilino(c, "principal");
+      return c.json({
+        instalado: true,
+        sesion: false,
+        demo_expirado: true,
+        mensaje_demo_expirado: MENSAJE_DEMO_EXPIRADO,
+        turnstile_site_key: turnstileKey,
+        ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
+      });
+    }
+  } else if (inqCod !== "principal" && !esSuperAdmin(usuario.rol, usuario.email, envObj)) {
     const estadoInq = await rawDb
       .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
       .bind(inqCod)
@@ -330,11 +388,11 @@ app.get("/api/estado", async (c) => {
     negocio.tasa_bcv_modo = negocio.tasa_bcv_modo === "MANUAL" ? "MANUAL" : "AUTOMATICO";
     negocio.tasa_bcv_fuente = syncBcv?.fuente || (negocio.tasa_bcv_modo === "MANUAL" ? "Manual" : "BCV Oficial");
 
-    // Envío automático de cierre mensual en los primeros 5 días del mes si aún no se ha despachado el mes anterior
+    // Envío automático de cierre mensual en los primeros 5 días del mes si aún no se ha despachado el mes anterior (nunca en Demo)
     const hoyIso = fechaCaracas();
     const diaMes = Number(hoyIso.slice(8, 10));
     const mesAnt = mesAnteriorCaracas(hoyIso);
-    if (esNavegador && Number(negocio.cierre_mensual_correo ?? 1) === 1 && diaMes >= 1 && diaMes <= 5 && negocio.ultimo_cierre_correo !== mesAnt) {
+    if (inqCod !== CODIGO_DEMO && esNavegador && Number(negocio.cierre_mensual_correo ?? 1) === 1 && diaMes >= 1 && diaMes <= 5 && negocio.ultimo_cierre_correo !== mesAnt) {
       const envStr = c.env as unknown as Record<string, string>;
       const promCierre = intentarCierreMensualAutomatico(c.env.DB, envStr, mesAnt).catch(() => false);
       try {
@@ -391,6 +449,24 @@ app.get("/api/estado", async (c) => {
       .catch(() => null);
     totpActivoUsuario = Boolean(filaTotp && Number(filaTotp.totp_activo ?? 0) === 1 && filaTotp.totp_secreto);
   }
+  const estDemoGlobal = inqCod === CODIGO_DEMO || esSuper ? calcularEstadoDemo(await leerFilaDemoEstado(rawDb)) : null;
+  const demoInfoRespuesta =
+    inqCod === CODIGO_DEMO && estDemoGlobal
+      ? {
+          activo: estDemoGlobal.activo,
+          regimen: estDemoGlobal.regimen,
+          nombre_negocio: estDemoGlobal.nombre_negocio,
+          expira_en: estDemoGlobal.expira_en,
+          segundos_restantes: estDemoGlobal.segundos_restantes,
+          expira_hora_caracas: estDemoGlobal.expira_hora_caracas,
+          correos_enviados: estDemoGlobal.correos_enviados,
+          max_correos: estDemoGlobal.max_correos,
+          correos_restantes: estDemoGlobal.correos_restantes,
+          email_prospecto_mascara: estDemoGlobal.email_prospecto_mascara,
+          correo_habilitado: Boolean(estDemoGlobal.email_prospecto),
+        }
+      : null;
+
   return c.json({
     instalado: true, sesion: true,
     turnstile_site_key: turnstileKey,
@@ -400,8 +476,17 @@ app.get("/api/estado", async (c) => {
     restaurando: !!(await c.env.DB.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first()),
     negocio, regimen: reglasRegimen(tipoContrib), tiene_documentos_igtf: tieneDocumentosIgtf, modo: await modoActual(c.env.DB),
     inquilino_actual: inqCod,
+    ...(demoInfoRespuesta ? { demo: demoInfoRespuesta } : {}),
     ...(esSuper ? {
       inquilinos: listaInquilinos, facturas_reales_n: facturasRealesN,
+      demo_resumen: estDemoGlobal
+        ? {
+            activo: estDemoGlobal.activo,
+            regimen: estDemoGlobal.regimen,
+            segundos_restantes: estDemoGlobal.segundos_restantes,
+            expira_hora_caracas: estDemoGlobal.expira_hora_caracas,
+          }
+        : null,
       seguridad: {
         master_key: llaveMaestraConfigurada(envObj),
         turnstile_secreto: Boolean(String(c.env.TURNSTILE_SECRET_KEY ?? "").trim()) || !String(c.env.TURNSTILE_SITE_KEY ?? "").trim(),
@@ -504,6 +589,10 @@ app.post("/api/login", async (c) => {
   const envObjLogin = c.env as unknown as Record<string, unknown>;
   const esSuperLogin = await esCorreoSuperAdmin(rawDb, email, envObjLogin);
   let infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjLogin);
+  if ((infoInq.codigo === CODIGO_DEMO && !infoInq.activo) || (email.endsWith("@demo.facturayave.com") && infoInq.codigo !== CODIGO_DEMO)) {
+    await limpiarDemoExpiradaSiCorresponde(rawDb, envObjLogin).catch(() => {});
+    return c.json({ ok: false, demo_expirado: true, error: MENSAJE_DEMO_EXPIRADO }, 403);
+  }
   if (!infoInq.activo) {
     return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
   }
@@ -688,6 +777,7 @@ app.post("/api/recuperar", async (c) => {
 
   const envObjRec = c.env as unknown as Record<string, unknown>;
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRec);
+  if (infoInq.codigo === CODIGO_DEMO) return falla(c, 403, "La recuperación de contraseña no está disponible en el Entorno Demo.");
   if (!infoInq.activo) return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
   const db = obtenerDbInquilino({ ...envObjRec, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
@@ -760,6 +850,7 @@ app.post("/api/recuperar-correo", async (c) => {
 
   const envObjRecCor = c.env as unknown as Record<string, unknown>;
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRecCor);
+  if (infoInq.codigo === CODIGO_DEMO) return falla(c, 403, "La recuperación de contraseña no está disponible en el Entorno Demo.");
   if (!infoInq.activo) return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
   const db = obtenerDbInquilino({ ...envObjRecCor, DB: rawDb }, infoInq.codigo);
   await migrar(db).catch(() => {});
@@ -1008,6 +1099,7 @@ app.post("/api/sistema/tasa-bcv/sincronizar", async (c) => {
 });
 
 app.route("/api/inquilinos", inquilinos);
+app.route("/api/demo", demo);
 app.route("/api/clientes", clientes);
 app.route("/api/catalogo", catalogo);
 app.route("/api/documentos", documentos);
@@ -1119,6 +1211,8 @@ const MAX_LOTE_CRON = 15;
   if (diaMes === 1) {
     await ejecutarCobroAutomaticoDia1(rawDb, envObj, hoyIso).catch((e) => console.error("[cobro-saas-cron]:", e));
   }
+  // Limpieza automática del Entorno Demo efímero si ya venció su tiempo
+  await limpiarDemoExpiradaSiCorresponde(rawDb, envObj).catch((e) => console.error("[demo-cron]:", e));
   // Respaldo automático diario firmado + archivo fiscal mensual de conservación (10+ años) en Cloudflare R2
   await intentarRespaldoDiarioR2(rawDb, envObj, hoyIso).catch((e) => console.error("[respaldo-r2] cron diario:", e));
   await intentarArchivoMensualR2(rawDb, envObj, hoyIso, mesAnt).catch((e) => console.error("[respaldo-r2] cron mensual:", e));

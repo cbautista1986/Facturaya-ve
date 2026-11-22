@@ -489,7 +489,8 @@ async function ver(estado, id) {
 
   $("#atras").addEventListener("click", () => (location.hash = "#/factura"));
   const pedir = async (fn) => { try { await fn(); } catch (e) { const er = $("#error"); er.textContent = e.message; er.hidden = false; } };
-  const bytesPdf = async () => await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, negocio: estado.negocio });
+  const esDemo = Boolean(estado?.demo?.activo);
+  const bytesPdf = async () => await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, negocio: estado.negocio, esDemo });
   const blobPdf = async () => new Blob([await bytesPdf()], { type: "application/pdf" });
   const tasaNc = tasaInfo(estado).e8 || D.tasa_e8;
   const recalcularNc = () => {
@@ -546,8 +547,8 @@ async function ver(estado, id) {
       await api(`documentos/${id}/emitir`, "POST"); aviso("Emitida ✅"); await ver(estado, id);
     }),
     borrar: () => pedir(async () => { if (!confirm("¿Eliminar este borrador?")) return; await api(`documentos/${id}`, "DELETE"); aviso("Borrador eliminado"); location.hash = "#/factura"; }),
-    pdf: () => pedir(async () => descargar(await blobPdf(), nombreArchivo(D))),
-    compartir: () => pedir(async () => compartir(await blobPdf(), nombreArchivo(D))),
+    pdf: () => pedir(async () => descargar(await blobPdf(), nombreArchivo(D, esDemo))),
+    compartir: () => pedir(async () => compartir(await blobPdf(), nombreArchivo(D, esDemo))),
     correo: () => {
       $("#correo-form").hidden = !$("#correo-form").hidden;
       if (!$("#correo-form").hidden) $("#email_destino")?.focus();
@@ -603,12 +604,16 @@ async function ver(estado, id) {
     let bin = "";
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     const pdf_base64 = btoa(bin);
-    await api(`documentos/${id}/enviar-correo`, "POST", {
+    const r = await api(`documentos/${id}/enviar-correo`, "POST", {
       email: v.email_destino,
       pdf_base64,
-      nombre_archivo: nombreArchivo(D),
+      nombre_archivo: nombreArchivo(D, esDemo),
     });
-    aviso(`Correo enviado a ${v.email_destino} ✅`);
+    aviso(
+      r?.demo_redirigido_a
+        ? `🧪 Correo de prueba enviado a ${r.demo_redirigido_a} (quedan ${r.demo_restantes ?? 0} de ${estado?.demo?.max_correos ?? 5}) ✅`
+        : `Correo enviado a ${v.email_destino} ✅`
+    );
     $("#correo-form").hidden = true;
     await ver(estado, id);
   });

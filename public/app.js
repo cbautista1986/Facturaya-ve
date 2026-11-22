@@ -63,16 +63,16 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.8.1)</span>
-  <p class="suave">Descarga el ZIP completo v4.8.1 con corrección de indexación Google (<code>robots.txt</code> + respaldo de portada si se cancela <code>/api/estado</code>), tarjeta social PNG (1200×630), CSP para Cloudflare Analytics y motor SaaS v4.8:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.8.1)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.9.0)</span>
+  <p class="suave">Descarga el ZIP completo v4.9.0 con el <b>Entorno Demo Aislado (30m/1h/2h en DB_DEMO)</b>, panel de Demo para prospectos con invitación WhatsApp, marca de agua en PDF, resguardo de correos (máx. 5 al prospecto) y retiro limpio del antiguo Modo Prueba:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.9.0)</button>
   <div class="dos-botones">
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="robots.txt">⬇️ public/robots.txt</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="_headers">⬇️ public/_headers</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="index.html">⬇️ public/index.html</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="og-facturaya.png">⬇️ public/og-facturaya.png</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="demo.ts">⬇️ src/demo.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="rutas-demo.ts">⬇️ src/rutas/demo.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="index.ts">⬇️ src/index.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="package.json">⬇️ package.json</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="pdf.js">⬇️ public/pdf.js</button>
   </div>
 </section>` : "";
 
@@ -138,7 +138,7 @@ document.addEventListener("click", async (e) => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = nombre === "rutas-inquilinos.ts" ? "inquilinos.ts" : nombre;
+      a.download = nombre === "rutas-inquilinos.ts" ? "inquilinos.ts" : nombre === "rutas-demo.ts" ? "demo.ts" : nombre;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -190,6 +190,78 @@ function logoHeader(n) {
   return `<span class="logo">🖼️</span>`;
 }
 
+let timerDemo = null;
+function formatoRelojDemo(segTotal) {
+  const s = Math.max(0, Math.floor(Number(segTotal) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(r)}` : `${pad(m)}:${pad(r)}`;
+}
+
+function detenerRelojDemo() {
+  if (timerDemo) {
+    clearInterval(timerDemo);
+    timerDemo = null;
+  }
+}
+
+function montarBarraDemo() {
+  detenerRelojDemo();
+  const d = estado?.demo;
+  if (!d || !d.activo) return;
+  const reg = infoRegimen(d.regimen);
+  const superAdmin = puede("super");
+  const cont = document.createElement("aside");
+  cont.className = "barra-demo";
+  cont.id = "barra-demo";
+  cont.setAttribute("aria-label", "Entorno Demo Activo");
+  const cuotaCorreoTxt = d.correo_habilitado
+    ? ` · ✉️ Correos de prueba: <b>${d.correos_enviados}/${d.max_correos}</b> (redirigidos a ${esc(d.email_prospecto_mascara)})`
+    : " · ✉️ Envío de correos desactivado en esta demo";
+  cont.innerHTML = `
+    <div class="barra-demo-top">
+      <div class="barra-demo-tit">
+        <span>🧪 MODO DEMO · ${esc(reg.corto)}</span>
+        <span class="barra-demo-reloj" id="demo-reloj">${formatoRelojDemo(d.segundos_restantes)}</span>
+      </div>
+      ${superAdmin ? `<button type="button" class="boton chico" id="demo-salir-super">↩️ Volver a Principal</button>` : ""}
+    </div>
+    <div class="barra-demo-sub">Datos ficticios sin validez fiscal · Vence: <b>${esc(d.expira_hora_caracas || "")}</b>${cuotaCorreoTxt}</div>
+    <details class="demo-guia">
+      <summary>🧭 ¿Qué probar en esta demo? (4 pasos rápidos)</summary>
+      <ol>
+        <li><b>Facturar o Presupuestar:</b> entra a <b>🧾 Factura</b>, emite una factura nueva o convierte un presupuesto y descarga su PDF (con marca de agua demo).</li>
+        <li><b>Cobros y Recibos:</b> entra a <b>💳 Pagos</b>, registra un abono en Bolívares o Divisas y genera el recibo PDF.</li>
+        <li><b>Libros SENIAT:</b> entra a <b>📊 Libros</b> y revisa los 3 meses precargados (Libro de Ventas, Compras, IVA${d.regimen === "ESPECIAL" ? ", IGTF 3%" : ""} e ISLR) en Excel CSV y PDF.</li>
+        <li><b>Roles:</b> cierra sesión y prueba entrar como <b>Cajero</b> (sin ver costos ni ganancias) o <b>Contador</b> (solo lectura contable).</li>
+      </ol>
+    </details>`;
+  raiz.prepend(cont);
+  $("#demo-salir-super")?.addEventListener("click", async () => {
+    try {
+      await api("inquilinos/cambiar", "POST", { codigo: "principal" });
+      aviso("De vuelta en tu empresa principal ✅");
+      location.hash = "#/inquilinos/demo";
+      await ruta();
+    } catch (e) { aviso(e.message); }
+  });
+  const expiraMs = Number(d.expira_en || 0) * 1000;
+  if (expiraMs > 0) {
+    timerDemo = setInterval(() => {
+      const el = document.getElementById("demo-reloj");
+      if (!el) { detenerRelojDemo(); return; }
+      const rest = Math.max(0, Math.floor((expiraMs - Date.now()) / 1000));
+      el.textContent = formatoRelojDemo(rest);
+      if (rest <= 0) {
+        detenerRelojDemo();
+        ruta();
+      }
+    }, 1000);
+  }
+}
+
 function barraSuper() {
   if (!puede("super")) return "";
   const cod = estado.inquilino_actual || estado.inquilino_activo || "principal";
@@ -239,8 +311,15 @@ function vistaInstalar() {
 }
 
 function vistaLogin() {
+  detenerRelojDemo();
   document.body.classList.add("modo-portada");
   const wa = datosWhatsappContacto("comercial");
+  const avisoDemoExpHtml = estado?.demo_expirado
+    ? `<div class="aviso-demo-expirado" role="alert">
+        <div><b>⏳ Tu prueba guiada de FacturaYa Venezuela ha finalizado.</b><br>${esc(estado.mensaje_demo_expirado || "El entorno temporal fue cerrado y limpiado automáticamente. ¿Listo para activar tu empresa real con tus propios datos fiscales?")}</div>
+        ${wa ? `<a class="portada-btn-wa" href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">${ICONO_WA_SVG}<span>Activar mi empresa por WhatsApp</span></a>` : ""}
+      </div>`
+    : "";
   const avisoSuspHtml = estado?.suspendido
     ? `<div class="aviso-susp-login" role="alert">${esc(estado.mensaje_suspension || "⚠️ Servicio suspendido por falta de pago. Envía la captura o comprobante de tu pago a pagos@facturayave.com para reactivar el acceso.")}</div>`
     : "";
@@ -248,7 +327,7 @@ function vistaLogin() {
     <div class="portada">
       <header class="portada-topbar" id="inicio-portada">
         <button type="button" class="portada-marca" data-scroll="inicio-portada" aria-label="FacturaYa Venezuela">
-          <img src="/favicon.svg?v=20261121v480" alt="" width="34" height="34">
+          <img src="/favicon.svg?v=20261121v490" alt="" width="34" height="34">
           <span>FacturaYa Venezuela</span>
         </button>
         <nav class="portada-nav" aria-label="Secciones principales">
@@ -261,6 +340,7 @@ function vistaLogin() {
           <button type="button" class="portada-btn-nav" data-scroll="acceso-empresa">Iniciar sesión</button>
         </div>
       </header>
+      ${avisoDemoExpHtml}
       ${avisoSuspHtml}
 
       <section class="portada-hero" aria-labelledby="hero-titulo">
@@ -466,6 +546,12 @@ function vistaLogin() {
       await ruta();
     } catch (e) {
       tsLogin.reset();
+      if (e?.demo_expirado) {
+        estado = { ...estado, sesion: false, demo_expirado: true, mensaje_demo_expirado: e.message };
+        vistaLogin();
+        window.scrollTo(0, 0);
+        return;
+      }
       throw e;
     }
   });
@@ -483,8 +569,7 @@ function vistaInicio() {
     ${estado.seguridad && !estado.seguridad.master_key ? `<section class="aviso-control">🔐 <b>Falta MASTER_KEY.</b> Sin ella no se pueden guardar claves de API ni firmar respaldos. Configúrala en Cloudflare: <code>wrangler secret put MASTER_KEY</code>.</section>` : ""}
     ${estado.seguridad && !estado.seguridad.turnstile_secreto ? `<section class="aviso-control">🛡️ <b>Falta TURNSTILE_SECRET_KEY.</b> Con la clave pública activa, el acceso y la recuperación exigen el secreto: <code>wrangler secret put TURNSTILE_SECRET_KEY</code>.</section>` : ""}
     ${estado.seguridad?.ultimo_error_r2 ? `<section class="aviso-anulado" data-destino="#/inquilinos/salud">☁️ <b>Alerta de respaldo R2 (${esc(estado.seguridad.ultimo_error_r2.tipo || "cron")}):</b> ${esc(estado.seguridad.ultimo_error_r2.mensaje || "Error en la última ejecución.")} <small>(${esc(estado.seguridad.ultimo_error_r2.fecha || "")})</small></section>` : ""}
-    ${estado.modo === "PRACTICA" ? `<section class="aviso-practica"><b>🧪 MODO PRÁCTICA</b> · Documentos de prueba; se limpian al activar la numeración oficial en Ajustes.</section>` : ""}
-    ${estado.modo === "REAL" && n.medio_facturacion === "SIN_DEFINIR" && puede("super") ? `<section class="aviso-control" data-destino="#/ajustes">⚠️ Define la <b>modalidad de facturación digital (SNAT/2024/000102)</b> en Ajustes.</section>` : ""}
+    ${n.medio_facturacion === "SIN_DEFINIR" && puede("super") ? `<section class="aviso-control" data-destino="#/ajustes">⚠️ Define la <b>modalidad de facturación digital (SNAT/2024/000102)</b> en Ajustes.</section>` : ""}
     <div class="inicio-resumen">
       <section class="tarjeta tasa">
         <div id="tasa-vista">
@@ -568,6 +653,9 @@ async function vistaInquilinos(subvista = "") {
       <div class="rejilla">
         <button class="accion verde" data-destino="#/inquilinos/alta" data-nombre="Dar de Alta Cliente">
           <span>➕</span><b>Dar de Alta Cliente</b><small>Próxima: ${esc(proximaRanura)} · RIF y Contacto</small>
+        </button>
+        <button class="accion ambar" data-destino="#/inquilinos/demo" data-nombre="Demo para Prospectos">
+          <span>🧪</span><b>Demo para Prospectos</b><small>${estado.demo_resumen?.activo ? `🟢 Activa (${esc(infoRegimen(estado.demo_resumen.regimen).corto)} · ${Math.max(1, Math.ceil((estado.demo_resumen.segundos_restantes || 0) / 60))}m)` : "Crear prueba aislada 30m/1h/2h"}</small>
         </button>
         <button class="accion azul" data-destino="#/inquilinos/empresas" data-nombre="Empresas Afiliadas">
           <span>🏢</span><b>Empresas (${lista.length})</b><small>${activasN} activa(s) · Buscar y gestionar</small>
@@ -658,6 +746,132 @@ async function vistaInquilinos(subvista = "") {
 
   if (subvista === "correos-plataforma") {
     await vistaPanelCorreosPlataforma(raiz, barraVolverInq, () => (location.hash = "#/inquilinos"));
+    return;
+  }
+
+  // 1b) Subvista: DEMO PARA PROSPECTOS (#/inquilinos/demo) — Base D1 aislada DB_DEMO, 3 meses de historial realista, vencimiento automático
+  if (subvista === "demo") {
+    const respDemo = await api("demo");
+    const d = respDemo.demo || {};
+    const regAct = infoRegimen(d.regimen || "ORDINARIO");
+    const minRest = Math.max(0, Math.ceil((Number(d.segundos_restantes) || 0) / 60));
+    raiz.innerHTML = `
+      ${barraVolverInq("🧪 Demo para Prospectos")}
+      ${!d.db_demo_configurada ? `<section class="aviso-anulado">⚠️ <b>Falta vincular <code>DB_DEMO</code> en Cloudflare:</b> asegúrate de desplegar el último <code>wrangler.toml</code> con el binding <code>DB_DEMO</code> apuntando a <code>facturaya_demo_db</code>.</section>` : ""}
+      ${d.activo ? `<section class="tarjeta secreto" id="card-demo-activa">
+        <div class="reng-cab">
+          <span class="etiqueta">🟢 ENTORNO DEMO ACTIVO (DB_DEMO AISLADA)</span>
+          <span class="insignia ${regAct.insignia}">${esc(regAct.etiqueta)}</span>
+        </div>
+        <p class="suave" style="margin-bottom:6px">
+          <b>${esc(d.nombre_negocio)}</b> · Quedan aprox. <b>${minRest} min</b> (vence: <b>${esc(d.expira_hora_caracas)}</b>).<br>
+          ✉️ Correos de prueba: ${d.email_prospecto
+            ? `<b>${d.correos_enviados}/${d.max_correos}</b> enviados · Redirigidos exclusivamente a <b>${esc(d.email_prospecto)}</b>.`
+            : "<b>Desactivados</b> (sin correo del prospecto configurado)."}
+        </p>
+        <div class="demo-cred-box">
+          <div class="demo-cred-fila"><span>👑 Administrador:</span><code>${esc(d.credenciales?.admin || "")}</code></div>
+          <div class="demo-cred-fila"><span>🧾 Cajero (sin costos):</span><code>${esc(d.credenciales?.cajero || "")}</code></div>
+          <div class="demo-cred-fila"><span>📊 Contador (solo libros):</span><code>${esc(d.credenciales?.contador || "")}</code></div>
+          <div class="demo-cred-fila"><span>🔑 Contraseña (3 roles):</span><code>${esc(d.credenciales?.clave || "")}</code></div>
+        </div>
+        <details style="margin:8px 0">
+          <summary style="cursor:pointer;font-weight:600;color:#1A73E8">💬 Ver texto completo de invitación para WhatsApp</summary>
+          <pre class="demo-wa-pre" style="margin-top:8px">${esc(d.invitacion_whatsapp || "")}</pre>
+        </details>
+        <div class="dos-botones" style="margin-top:10px">
+          <button type="button" class="boton verde" id="demo-copiar-wa">📋 Copiar invitación WhatsApp</button>
+          <button type="button" class="boton" id="demo-entrar-ver">👁️ Entrar a ver la Demo</button>
+        </div>
+        <div class="dos-botones" style="margin-top:8px">
+          <button type="button" class="boton chico contorno-azul" id="demo-extender">⏱️ Extender +1 hora</button>
+          <button type="button" class="boton chico rojo" id="demo-cerrar-ahora">🗑️ Cerrar y borrar demo ahora</button>
+        </div>
+      </section>` : `<section class="tarjeta">
+        <div class="reng-cab"><span class="etiqueta">🧪 ESTADO DE DB_DEMO</span><span class="insignia gris">Libre y limpia</span></div>
+        <p class="suave">No hay ninguna sesión demo abierta en este momento. Tu base <code>facturaya_demo_db</code> está vacía y lista para generar una prueba aislada en segundos sin tocar jamás tus clientes reales.</p>
+      </section>`}
+
+      <section class="tarjeta">
+        <h2>${d.activo ? "🔄 Reemplazar y generar una nueva Demo" : "🚀 Generar nuevo Entorno Demo Aislado"}</h2>
+        <p class="suave">Crea en <code>DB_DEMO</code> una empresa ficticia con <b>3 meses completos de facturación realista</b> (24 facturas, clientes, inventario, compras, cobros en Bs./Divisas, retenciones IVA/ISLR, Nota de Crédito, Nota de Débito y Presupuestos) y los 3 roles listos sin cambio de clave. Al vencer el tiempo, se cierra y borra sola.</p>
+        <form id="form-crear-demo">
+          <label for="demo_regimen">⚖️ Régimen fiscal del prospecto (SENIAT)</label>
+          <select id="demo_regimen" name="regimen">
+            ${opcionesRegimenHtml(d.regimen || "ORDINARIO")}
+          </select>
+          <p class="pista" id="demo-regimen-pista">${esc(infoRegimen(d.regimen || "ORDINARIO").ayuda)}</p>
+          <label for="demo_duracion">⏱️ Duración de la prueba</label>
+          <select id="demo_duracion" name="duracion_min">
+            <option value="30">30 minutos (Demo rápida en llamada)</option>
+            <option value="60">1 hora (Evaluación estándar)</option>
+            <option value="120" selected>2 horas (Evaluación completa con contador)</option>
+          </select>
+          ${campo("nombre_negocio", "🏢 Nombre del negocio ejemplo (opcional)", "", "text", 'maxlength="120" placeholder="Ej: Comercial Demo Los Andes C.A. (si lo dejas vacío se sugiere según régimen)"')}
+          ${campo("email_prospecto", "✉️ Correo del prospecto (opcional · habilita prueba real de PDF)", "", "email", 'maxlength="120" placeholder="prospecto@correo.com — máx. 5 correos, todos redirigidos SOLO aquí"')}
+          <p class="pista">🛡️ <b>Seguridad blindada:</b> la demo jamás toca tus empresas reales ni respaldos R2, bloquea Imprenta Digital, 2FA y configuración de APIs, y todos los PDF salen marcados como <b>«DOCUMENTO DEMOSTRATIVO — SIN VALIDEZ FISCAL»</b>.</p>
+          ${ERROR}<button type="submit" class="boton verde" ${!d.db_demo_configurada ? "disabled" : ""}>🧪 ${d.activo ? "REEMPLAZAR Y GENERAR NUEVA DEMO" : "GENERAR ENTORNO DEMO AISLADO"}</button>
+        </form>
+      </section>`;
+
+    $("#volver-inq").addEventListener("click", () => (location.hash = "#/inquilinos"));
+    $("#demo_regimen")?.addEventListener("change", (e) => {
+      const p = $("#demo-regimen-pista");
+      if (p) p.textContent = infoRegimen(e.target.value).ayuda;
+    });
+    $("#demo-copiar-wa")?.addEventListener("click", async () => {
+      const ok = await copiarTextoSeguro(d.invitacion_whatsapp || "");
+      aviso(ok ? "Invitación copiada para pegar en WhatsApp 📋✅" : "Abre el desplegable para copiar el texto manualmente.");
+    });
+    $("#demo-entrar-ver")?.addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      try {
+        await api("inquilinos/cambiar", "POST", { codigo: "DB_DEMO" });
+        aviso("Entrando a la Demo aislada 🧪");
+        location.hash = "#/inicio";
+        await ruta();
+      } catch (e) {
+        aviso(e.message);
+        btn.disabled = false;
+      }
+    });
+    $("#demo-extender")?.addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      try {
+        await api("demo/extender", "POST", { minutos: 60 });
+        aviso("Tiempo de demo extendido +1 hora ⏱️✅");
+        await vistaInquilinos("demo");
+      } catch (e) {
+        aviso(e.message);
+        btn.disabled = false;
+      }
+    });
+    $("#demo-cerrar-ahora")?.addEventListener("click", async (ev) => {
+      if (!confirm("¿Cerrar y borrar ahora mismo toda la base de datos Demo (DB_DEMO)?\n\nTus empresas reales no se tocan en absoluto.")) return;
+      const btn = ev.currentTarget;
+      btn.disabled = true;
+      try {
+        await api("demo/cerrar", "POST", {});
+        aviso("Entorno Demo cerrado y DB_DEMO limpiada ✅");
+        await vistaInquilinos("demo");
+      } catch (e) {
+        aviso(e.message);
+        btn.disabled = false;
+      }
+    });
+    enviar($("#form-crear-demo"), async (v) => {
+      const r = await api("demo/crear", "POST", {
+        regimen: v.regimen,
+        duracion_min: Number(v.duracion_min || 120),
+        nombre_negocio: v.nombre_negocio || "",
+        email_prospecto: v.email_prospecto || "",
+      });
+      aviso(`Entorno Demo ${r.estado?.regimen || ""} generado con 3 meses de datos ✅`);
+      await vistaInquilinos("demo");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
     return;
   }
 
@@ -771,16 +985,7 @@ async function vistaInquilinos(subvista = "") {
           <hr>
           <span class="etiqueta">7️⃣ SUSCRIPCIÓN MENSUAL SAAS (CORTE DÍA 1 · PRORRATEO MES 1 · TASA BCV)</span>
           <p class="suave">Si se da de alta después del día 1, el primer mes se calcula automáticamente con prorrateo exacto. La Imprenta Digital la paga cada cliente directamente a su proveedor.</p>
-          <div class="dos-botones">
-            <div>${campo("fecha_alta", "📅 Fecha de alta", new Date().toISOString().slice(0, 10), "date", "required")}</div>
-            <div>
-              <label for="modo_inicial">🚀 Modo inicial</label>
-              <select id="modo_inicial" name="modo_inicial">
-                <option value="REAL" selected>✅ En Vivo (SNAT/2011/0071)</option>
-                <option value="PRACTICA">🧪 Modo Práctica (Entrenamiento)</option>
-              </select>
-            </div>
-          </div>
+          <div>${campo("fecha_alta", "📅 Fecha de alta", new Date().toISOString().slice(0, 10), "date", "required")}</div>
           <div class="dos-botones">
             <div>${campo("precio_promo_usd", "🏷️ Tarifa promo (USD/mes)", "5", "number", 'min="0" max="999" step="0.01"')}</div>
             <div>${campo("meses_promo", "🗓️ Meses promocionales", "3", "number", 'min="0" max="36" step="1"')}</div>
@@ -828,6 +1033,7 @@ async function vistaInquilinos(subvista = "") {
 
     enviar($("#form-nuevo-inq"), async (d) => {
       d.logo_base64 = logoAlta || "";
+      d.modo_inicial = "REAL";
       d.cobro_auto_dia1 = $("#cobro_auto_dia1")?.checked ? 1 : 0;
       d.plan_usd = d.precio_regular_usd || 10;
       const r = await api("inquilinos", "POST", d);
@@ -2183,6 +2389,7 @@ async function vistaInquilinos(subvista = "") {
 
 function vistaAjustes() {
   const n = estado.negocio || {}, admin = puede("admin"), superAdmin = puede("super"), puedeTasa = puede("tasa");
+  const esDemoCliente = Boolean(estado?.demo?.activo) && !superAdmin;
   const codActivo = estado.inquilino_actual || estado.inquilino_activo || "principal";
   const tasaActual = Number(n.tasa_bcv) || 0;
   const modoTasaActual = n.tasa_bcv_modo === "MANUAL" ? "MANUAL" : "AUTOMATICO";
@@ -2193,8 +2400,10 @@ function vistaAjustes() {
     ${barraSuper()}
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver al inicio" aria-label="Volver">←</button><h1>Ajustes</h1></header>
     <section class="tarjeta"><h2>🔑 Mi cuenta</h2><p class="suave">${esc(estado.usuario.nombre)} · ${esc(estado.usuario.rol_nombre)} (${esc(estado.usuario.email)})</p>
-      <button class="boton chico contorno" id="cambiar-clave" type="button">Cambiar mi contraseña</button></section>
-    ${admin ? `<section class="tarjeta" id="card-2fa">
+      ${esDemoCliente
+        ? `<p class="pista">🧪 En la Demo guiada el cambio de clave y 2FA están deshabilitados por seguridad.</p>`
+        : `<button class="boton chico contorno" id="cambiar-clave" type="button">Cambiar mi contraseña</button>`}</section>
+    ${admin && !esDemoCliente ? `<section class="tarjeta" id="card-2fa">
       <div class="reng-cab"><h2>🛡️ Autenticación en 2 Pasos (2FA · ${superAdmin ? "Súper Admin" : "Administrador"})</h2><span class="insignia gris" id="totp-badge">Consultando…</span></div>
       <p class="suave">Protege tu acceso de ${superAdmin ? "Súper Administrador" : "Administrador"} con códigos temporales de 6 dígitos en <b>Google Authenticator</b> o <b>Authy</b> (estándar RFC 6238). Incluye 8 códigos de respaldo de un solo uso y protección contra fuerza bruta.</p>
       <div id="totp-zona"><p class="suave">Cargando estado 2FA…</p></div>
@@ -2224,7 +2433,7 @@ function vistaAjustes() {
     </section>` : ""}
     ${superAdmin ? `<section class="tarjeta">
       <div class="reng-cab"><h2>🏢 Mis Inquilinos / Empresas</h2><span class="insignia azul">Exclusivo Súper Admin</span></div>
-      <p class="suave">Empresa activa: <b>${esc(n.nombre_razon_social)} (${esc(codActivo)})</b>. Accede al panel de botones cuadrados para dar de alta clientes, controlar Cloudflare D1, respaldar o dar de baja empresas.</p>
+      <p class="suave">Empresa activa: <b>${esc(n.nombre_razon_social)} (${esc(codActivo)})</b>. Accede al panel de botones cuadrados para dar de alta clientes, controlar Cloudflare D1, crear Demos, respaldar o dar de baja empresas.</p>
       <button class="boton" id="ir-inquilinos" type="button">🏢 Abrir Menú de Mis Inquilinos</button>
     </section>` : ""}
     ${admin ? `<form id="f" class="tarjeta">
@@ -2239,11 +2448,11 @@ function vistaAjustes() {
         </div>
       </div>
       ${NEGOCIO.map(([id, et]) => campo(id, et, n[id] ?? "")).join("")}
-      <p class="pista">💳 Configura tus cuentas receptoras (Pago Móvil, Transferencia, Zelle, Binance, PayPal) en <b>Pagos → Mis datos</b>. Para cambiar entre Contribuyente Formal, Ordinario o Especial (IGTF 3%), usa la tarjeta <b>Condición Fiscal</b> justo debajo.</p>
+      <p class="pista">💳 Configura tus cuentas receptoras (Pago Móvil, Transferencia, Zelle, Binance, PayPal) en <b>Pagos → Mis datos</b>.${esDemoCliente ? "" : " Para cambiar entre Contribuyente Formal, Ordinario o Especial (IGTF 3%), usa la tarjeta <b>Condición Fiscal</b> justo debajo."}</p>
       <label class="opcion"><input type="checkbox" id="fiscal-confirmo" required> ☑️ Estoy seguro de guardar o modificar los datos fiscales y de contacto de este negocio (solo Administrador y Súper Admin).</label>
       ${ERROR}<button class="boton verde" type="submit" id="fiscal-guardar-btn" disabled>GUARDAR DATOS FISCALES Y LOGO</button>
     </form>
-    <section class="tarjeta" id="card-regimen-fiscal">
+    ${!esDemoCliente ? `<section class="tarjeta" id="card-regimen-fiscal">
       <div class="reng-cab">
         <h2>⚖️ Condición Fiscal / Tipo de Contribuyente</h2>
         <span class="insignia ${infoRegimen(n.tipo_contribuyente).insignia}" id="regimen-actual-badge">${esc(infoRegimen(n.tipo_contribuyente).etiqueta)}</span>
@@ -2259,11 +2468,11 @@ function vistaAjustes() {
         <label class="opcion"><input type="checkbox" id="regimen-confirmo" required> ☑️ Estoy seguro de cambiar la condición fiscal (Tipo de Contribuyente) de este negocio según su estatus vigente ante el SENIAT.</label>
         ${ERROR}<button class="boton verde" type="submit" id="regimen-guardar-btn" disabled>GUARDAR CONDICIÓN FISCAL</button>
       </form>
-    </section>
+    </section>` : ""}
     <section class="tarjeta"><h2>👥 Usuarios y Empleados</h2><p class="suave">Exclusivo del Administrador: crea usuarios para tus empleados (cajero, supervisor, bodega, contador), cámbiales la contraseña o desactívalos.</p>
       <button class="boton chico" id="usuarios" type="button">Administrar usuarios y claves</button></section>
-    ${tarjetaMedio()}
-    <section class="tarjeta" id="correo-config">
+    ${!esDemoCliente ? tarjetaMedio() : ""}
+    ${!esDemoCliente ? `<section class="tarjeta" id="correo-config">
       <div class="reng-cab"><h2>✉️ Servicio de Correo y Cierre Mensual</h2><span class="insignia gris" id="correo-estado">Cargando…</span></div>
       <div id="correo-plat-banner" hidden class="correo-banner">
         <div class="correo-banner-tit">✅ Correo de plataforma activo (incluido en tu plan)</div>
@@ -2299,20 +2508,14 @@ function vistaAjustes() {
     ${formularioCodigo()}
     <section class="tarjeta"><h2>💾 Respaldo Online de mi Base de Datos</h2><p class="suave">Exclusivo del Administrador: descarga en cualquier momento una copia completa y verificada de tu base de datos (clientes, inventario, facturas, notas de crédito/débito y cobros) para tu resguardo. <b>Nota:</b> Ningún usuario puede borrar facturas ni eliminar la base de datos.</p>
       <button class="boton" id="respaldo" type="button">⬇️ Descargar respaldo completo (.json)</button></section>
-    ${tarjetaRestaurar()}
-    ${estado.modo === "PRACTICA" ? `<section class="tarjeta"><h2>🧪 Pasar a En Vivo (SNAT/2011/0071)</h2>
-      <p class="suave">Limpia los documentos de prueba e inicia la numeración correlativa oficial desde 00000001. Los números iniciales de Factura y Control solo se definen esta única vez.</p>
-      <form id="vivo">
-        ${campo("primer_factura", "🧾 Primer N.º de factura (1 = 00000001)", "1", "text", 'inputmode="numeric" required')}
-        ${campo("primer_nota_credito", "↩️ Primer N.º de nota de crédito (1 = NC-00000001)", "1", "text", 'inputmode="numeric" required')}
-        ${campo("primer_nota_debito", "📈 Primer N.º de nota de débito (1 = ND-00000001)", "1", "text", 'inputmode="numeric" required')}
-        ${campo("primer_control", "🔢 Primer N.º de control (1 = 00-00000001)", "1", "text", 'inputmode="numeric" required')}
-        ${campo("primer_presupuesto", "📋 Primer N.º de presupuesto (1 = P-000001)", "1", "text", 'inputmode="numeric" required')}
-        ${campo("primer_recibo", "💵 Primer N.º de recibo (1 = 00000001)", "1", "text", 'inputmode="numeric" required')}
-        <label class="opcion"><input type="checkbox" name="confirmo"> Confirmo limpiar las pruebas e iniciar la numeración oficial.</label>
-        ${ERROR}<button class="boton rojo" type="submit">ACTIVAR NUMERACIÓN EN VIVO</button></form></section>`
-      : `<section class="tarjeta"><h2>✅ En Vivo (Providencia SNAT/2011/0071)</h2><p class="suave">Numeración correlativa fiscal activa e inmutable integrada al Libro de Ventas (Art. 72 RLIVA).</p></section>`}
-    ${superAdmin ? `<section class="tarjeta">
+    ${tarjetaRestaurar()}` : `<section class="tarjeta">
+      <div class="reng-cab"><h2>✉️ Correos de Prueba en Entorno Demo</h2><span class="insignia ${estado.demo?.correo_habilitado ? "verde" : "gris"}">${estado.demo?.correo_habilitado ? `${estado.demo.correos_enviados}/${estado.demo.max_correos} usados` : "Desactivado"}</span></div>
+      <p class="suave">${estado.demo?.correo_habilitado
+        ? `Puedes probar el envío real de facturas y recibos PDF (hasta <b>${estado.demo.max_correos} correos</b> en total). Por seguridad, todos los envíos se redirigen exclusivamente a tu correo registrado (<b>${esc(estado.demo.email_prospecto_mascara)}</b>).`
+        : "El envío de correos no fue habilitado en esta sesión demo. Puedes descargar y revisar cualquier factura, nota o recibo PDF directamente desde la pantalla."}</p>
+      <p class="pista">🛡️ Las funciones administrativas críticas (Imprenta Digital, API de correo, 2FA, respaldos y restauración) están reservadas para cuentas de empresas activas.</p>
+    </section>`}
+    ${superAdmin && codActivo !== "DB_DEMO" ? `<section class="tarjeta">
       <div class="reng-cab"><h2>🗑️ ${codActivo === "principal" ? "Reiniciar base de datos de fábrica" : "Eliminar empresa y sus datos"}</h2><span class="insignia rojo">Exclusivo Súper Admin</span></div>
       <p class="suave">${codActivo === "principal"
         ? "Reinicia desde cero toda la base de datos de tu empresa principal (deja el sistema sin instalar)."
@@ -2371,10 +2574,10 @@ function vistaAjustes() {
   $("#atras").addEventListener("click", () => (location.hash = "#/inicio"));
   $("#ir-inquilinos")?.addEventListener("click", () => (location.hash = "#/inquilinos"));
   raiz.querySelectorAll(".barra-super [data-destino]").forEach((b) => b.addEventListener("click", () => (location.hash = b.dataset.destino)));
-  $("#cambiar-clave").addEventListener("click", () => vistaCambiarClave(estado, { forzado: false, alTerminar: () => { if (location.hash !== "#/ajustes") location.hash = "#/ajustes"; return ruta(); } }));
+  $("#cambiar-clave")?.addEventListener("click", () => vistaCambiarClave(estado, { forzado: false, alTerminar: () => { if (location.hash !== "#/ajustes") location.hash = "#/ajustes"; return ruta(); } }));
   $("#salir").addEventListener("click", async () => { await api("logout", "POST"); history.replaceState(null, "", "/"); await ruta(); });
 
-  if (admin) {
+  if (admin && !esDemoCliente) {
     const pintar2fa = (info, pasoSetup = null, codigosNuevos = null) => {
       const badge = $("#totp-badge"), zona = $("#totp-zona");
       if (!badge || !zona) return;
@@ -2557,87 +2760,84 @@ function vistaAjustes() {
     if ($("#logo-archivo")) $("#logo-archivo").value = "";
   });
 
-  $("#usuarios").addEventListener("click", () => (location.hash = "#/usuarios"));
-  enlazarCodigo(ruta);
-  enlazarMedio(ruta).catch((e) => aviso(e.message));
-  api("sistema/correo").then((cfg) => {
-    const est = $("#correo-estado");
-    if (!est) return;
-    if (cfg.modo_plataforma) {
-      est.textContent = "Plataforma activa";
-      est.className = "insignia verde";
-      const ban = $("#correo-plat-banner");
-      const det = $("#correo-plat-detalle");
-      if (ban) ban.hidden = false;
-      if (det) {
-        const nomNeg = cfg.negocio_nombre || n.nombre_razon_social || "Tu negocio";
-        const reply = cfg.reply_to || n.email || "tu correo en Datos Fiscales";
-        det.innerHTML = `Remitente visible: <b>${esc(nomNeg)} (vía ${esc(cfg.nombre_plataforma || "FacturaYa Venezuela")})</b> &lt;${esc(cfg.remitente_plataforma || cfg.remitente)}&gt; · Respuestas directas (Reply-To) a: <b>${esc(reply)}</b>.`;
+  $("#usuarios")?.addEventListener("click", () => (location.hash = "#/usuarios"));
+  if (!esDemoCliente) {
+    enlazarCodigo(ruta);
+    enlazarMedio(ruta).catch((e) => aviso(e.message));
+    api("sistema/correo").then((cfg) => {
+      const est = $("#correo-estado");
+      if (!est) return;
+      if (cfg.modo_plataforma) {
+        est.textContent = "Plataforma activa";
+        est.className = "insignia verde";
+        const ban = $("#correo-plat-banner");
+        const det = $("#correo-plat-detalle");
+        if (ban) ban.hidden = false;
+        if (det) {
+          const nomNeg = cfg.negocio_nombre || n.nombre_razon_social || "Tu negocio";
+          const reply = cfg.reply_to || n.email || "tu correo en Datos Fiscales";
+          det.innerHTML = `Remitente visible: <b>${esc(nomNeg)} (vía ${esc(cfg.nombre_plataforma || "FacturaYa Venezuela")})</b> &lt;${esc(cfg.remitente_plataforma || cfg.remitente)}&gt; · Respuestas directas (Reply-To) a: <b>${esc(reply)}</b>.`;
+        }
+        // Ocultar formulario legado de API Key para inquilinos cuando la plataforma envía por ellos (sin borrar claves previas)
+        const wrap = $("#correo-legado-wrap");
+        if (wrap) wrap.hidden = true;
+      } else {
+        if ($("#correo_prov")) $("#correo_prov").value = cfg.proveedor || "BREVO";
+        if (cfg.remitente && $("#correo_rem")) $("#correo_rem").value = cfg.remitente;
+        if (cfg.nombre_remitente && $("#correo_nom")) $("#correo_nom").value = cfg.nombre_remitente;
+        est.textContent = cfg.clave_configurada ? `Activo · ${cfg.proveedor}` : "Sin configurar";
+        est.className = `insignia ${cfg.clave_configurada ? "verde" : "gris"}`;
+        if ($("#correo-key-pista")) {
+          $("#correo-key-pista").textContent = cfg.clave_configurada ? `API Key guardada (termina en …${cfg.clave_final}). Déjala en blanco para conservarla.` : "Aún no has guardado una API Key para este negocio.";
+        }
       }
-      // Ocultar formulario legado de API Key para inquilinos cuando la plataforma envía por ellos (sin borrar claves previas)
-      const wrap = $("#correo-legado-wrap");
-      if (wrap) wrap.hidden = true;
-    } else {
-      if ($("#correo_prov")) $("#correo_prov").value = cfg.proveedor || "BREVO";
-      if (cfg.remitente && $("#correo_rem")) $("#correo_rem").value = cfg.remitente;
-      if (cfg.nombre_remitente && $("#correo_nom")) $("#correo_nom").value = cfg.nombre_remitente;
+    }).catch(() => {});
+    renderHistorialCorreoInquilino($("#correo-historial-box"));
+    $("#ir-panel-correos-plat")?.addEventListener("click", () => (location.hash = "#/inquilinos/correos-plataforma"));
+    if ($("#correo-cfg-form")) enviar($("#correo-cfg-form"), async (d) => {
+      const cfg = await api("sistema/correo", "POST", {
+        proveedor: d.proveedor,
+        remitente: d.correo_rem,
+        nombre_remitente: d.correo_nom,
+        clave: d.correo_key,
+        password: d.correo_pass,
+        confirmo: $("#correo-confirmo")?.checked,
+      });
+      const est = $("#correo-estado");
       est.textContent = cfg.clave_configurada ? `Activo · ${cfg.proveedor}` : "Sin configurar";
       est.className = `insignia ${cfg.clave_configurada ? "verde" : "gris"}`;
-      if ($("#correo-key-pista")) {
-        $("#correo-key-pista").textContent = cfg.clave_configurada ? `API Key guardada (termina en …${cfg.clave_final}). Déjala en blanco para conservarla.` : "Aún no has guardado una API Key para este negocio.";
-      }
-    }
-  }).catch(() => {});
-  renderHistorialCorreoInquilino($("#correo-historial-box"));
-  $("#ir-panel-correos-plat")?.addEventListener("click", () => (location.hash = "#/inquilinos/correos-plataforma"));
-  enviar($("#correo-cfg-form"), async (d) => {
-    const cfg = await api("sistema/correo", "POST", {
-      proveedor: d.proveedor,
-      remitente: d.correo_rem,
-      nombre_remitente: d.correo_nom,
-      clave: d.correo_key,
-      password: d.correo_pass,
-      confirmo: $("#correo-confirmo")?.checked,
+      $("#correo_key").value = "";
+      $("#correo_pass").value = "";
+      $("#correo-confirmo").checked = false;
+      $("#correo-guardar-btn").disabled = true;
+      $("#correo-key-pista").textContent = cfg.clave_configurada ? `API Key guardada (termina en …${cfg.clave_final}). Déjala en blanco para conservarla.` : "";
+      aviso("Configuración de correo guardada ✅");
     });
-    const est = $("#correo-estado");
-    est.textContent = cfg.clave_configurada ? `Activo · ${cfg.proveedor}` : "Sin configurar";
-    est.className = `insignia ${cfg.clave_configurada ? "verde" : "gris"}`;
-    $("#correo_key").value = "";
-    $("#correo_pass").value = "";
-    $("#correo-confirmo").checked = false;
-    $("#correo-guardar-btn").disabled = true;
-    $("#correo-key-pista").textContent = cfg.clave_configurada ? `API Key guardada (termina en …${cfg.clave_final}). Déjala en blanco para conservarla.` : "";
-    aviso("Configuración de correo guardada ✅");
-  });
-  $("#correo-probar")?.addEventListener("click", async () => {
-    try {
-      const r = await api("sistema/correo/probar", "POST", { para: estado.usuario.email });
-      aviso(`Correo de prueba enviado a ${r.destino} ✅`);
-      renderHistorialCorreoInquilino($("#correo-historial-box"));
-    } catch (e) {
-      aviso(e.message);
-      renderHistorialCorreoInquilino($("#correo-historial-box"));
-    }
-  });
-  $("#restaurar-ir").addEventListener("click", () => (location.hash = "#/restaurar"));
+    $("#correo-probar")?.addEventListener("click", async () => {
+      try {
+        const r = await api("sistema/correo/probar", "POST", { para: estado.usuario.email });
+        aviso(`Correo de prueba enviado a ${r.destino} ✅`);
+        renderHistorialCorreoInquilino($("#correo-historial-box"));
+      } catch (e) {
+        aviso(e.message);
+        renderHistorialCorreoInquilino($("#correo-historial-box"));
+      }
+    });
+    $("#restaurar-ir")?.addEventListener("click", () => (location.hash = "#/restaurar"));
+    $("#respaldo")?.addEventListener("click", async () => {
+      try {
+        const r = await fetch("/api/sistema/respaldo"); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "No se pudo descargar el respaldo.");
+        const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = `respaldo-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000); aviso("Respaldo descargado ✅");
+      } catch (e) { aviso(e.message); }
+    });
+  }
   enviar($("#f"), async (d) => {
     d.logo_base64 = logoActual ?? "";
     d.confirmo_fiscal = $("#fiscal-confirmo")?.checked;
     await api("config", "PUT", d);
     aviso("Datos fiscales y logo guardados ✅");
     location.hash = "#/inicio";
-  });
-  if ($("#vivo")) enviar($("#vivo"), async (d) => {
-    await api("sistema/salir-en-vivo", "POST", {
-      primer_factura: Number(d.primer_factura),
-      primer_nota_credito: Number(d.primer_nota_credito || 1),
-      primer_nota_debito: Number(d.primer_nota_debito || 1),
-      primer_control: Number(d.primer_control),
-      primer_presupuesto: Number(d.primer_presupuesto),
-      primer_recibo: Number(d.primer_recibo),
-      confirmo: d.confirmo === "on",
-    });
-    aviso("El sistema está en vivo ✅"); await ruta();
   });
   if ($("#reiniciar-form")) enviar($("#reiniciar-form"), async (d) => {
     if (!confirm("⚠️ ¿Seguro que deseas BORRAR TODA LA BASE DE DATOS de este negocio y reinstalar desde cero?")) return;
@@ -2659,16 +2859,10 @@ function vistaAjustes() {
     history.replaceState(null, "", "/");
     await ruta();
   });
-  $("#respaldo").addEventListener("click", async () => {
-    try {
-      const r = await fetch("/api/sistema/respaldo"); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "No se pudo descargar el respaldo.");
-      const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = `respaldo-${new Date().toISOString().slice(0, 10)}.json`; a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000); aviso("Respaldo descargado ✅");
-    } catch (e) { aviso(e.message); }
-  });
 }
 
 async function ruta() {
+  detenerRelojDemo();
   document.body.classList.remove("modo-portada");
   window.scrollTo(0, 0);
   try {
@@ -2692,24 +2886,38 @@ async function ruta() {
     if (estado.usuario.debe_cambiar_clave) return vistaCambiarClave(estado, { forzado: true, alTerminar: ruta });
     const [seccion, id, extra] = location.hash.replace(/^#\/?/, "").split("/");
     if (estado.restaurando && seccion !== "restaurar") return vistaRestaurar(estado, ruta);
-    if (seccion === "restaurar") return puede("admin") ? vistaRestaurar(estado, ruta) : vistaInicio();
-    if (seccion === "inquilinos") return puede("super") ? await vistaInquilinos(id) : vistaInicio();
-    if (seccion === "ajustes") return vistaAjustes();
-    if (seccion === "usuarios") return puede("admin") ? await vistaUsuarios(estado) : vistaInicio();
-    if (seccion === "clientes") return await vistaClientes(estado, id);
-    if (seccion === "factura") return await vistaFactura(estado, id, extra);
-    if (seccion === "pagos") return await vistaPagos(estado, id, extra);
-    if (seccion === "compras") return await vistaCompras(estado, id);
-    if (seccion === "proveedores") return await vistaProveedores(estado, id);
-    if (seccion === "existencias") return await vistaExistencias(estado, id);
-    if (seccion === "informes") return await vistaInformes(estado, id);
-    if (seccion === "inventario" || seccion === "catalogo") return await vistaCatalogo(estado, id);
-    vistaInicio();
+    if (seccion === "restaurar") { if (puede("admin") && !estado?.demo?.activo) vistaRestaurar(estado, ruta); else vistaInicio(); }
+    else if (seccion === "inquilinos") { if (puede("super")) await vistaInquilinos(id); else vistaInicio(); }
+    else if (seccion === "ajustes") vistaAjustes();
+    else if (seccion === "usuarios") { if (puede("admin")) await vistaUsuarios(estado); else vistaInicio(); }
+    else if (seccion === "clientes") await vistaClientes(estado, id);
+    else if (seccion === "factura") await vistaFactura(estado, id, extra);
+    else if (seccion === "pagos") await vistaPagos(estado, id, extra);
+    else if (seccion === "compras") await vistaCompras(estado, id);
+    else if (seccion === "proveedores") await vistaProveedores(estado, id);
+    else if (seccion === "existencias") await vistaExistencias(estado, id);
+    else if (seccion === "informes") await vistaInformes(estado, id);
+    else if (seccion === "inventario" || seccion === "catalogo") await vistaCatalogo(estado, id);
+    else vistaInicio();
+    montarBarraDemo();
   } catch (e) {
     raiz.innerHTML = `<section class="tarjeta"><h1>⚠️ No se pudo cargar</h1><p class="error">${esc(e.message)}</p><button class="boton" id="reintentar">Reintentar</button></section>`;
     $("#reintentar").addEventListener("click", ruta);
   }
 }
+window.addEventListener("facturaya:demo-expirado", (ev) => {
+  detenerRelojDemo();
+  estado = {
+    ...estado,
+    sesion: false,
+    demo: null,
+    demo_expirado: true,
+    mensaje_demo_expirado: ev?.detail?.error || "",
+  };
+  history.replaceState(null, "", "/");
+  vistaLogin();
+  window.scrollTo(0, 0);
+});
 window.addEventListener("hashchange", ruta);
 ruta();
 

@@ -197,7 +197,7 @@ export async function ejecutarRespaldoR2(
     .prepare(`SELECT codigo FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en ASC`)
     .all<{ codigo: string }>()
     .catch(() => ({ results: [] as { codigo: string }[] }));
-  const codigos = filasInq.length ? filasInq.map((r) => String(r.codigo)) : ["principal"];
+  const codigos = (filasInq.length ? filasInq.map((r) => String(r.codigo)) : ["principal"]).filter((c) => c !== "DB_DEMO");
 
   const claves: string[] = [];
   let bytesTotales = 0;

@@ -410,11 +410,12 @@ async function verRecibo(estado, id) {
       ${ERROR}<button class="boton rojo" type="submit">CONFIRMAR ANULACIÓN</button></form>`;
   $("#atras").addEventListener("click", () => { volverA = "COBROS"; location.hash = "#/pagos"; });
   const pedir = async (fn) => { try { await fn(); } catch (e) { const er = $("#error"); er.textContent = e.message; er.hidden = false; } };
-  const bytesRecibo = async () => await construirRecibo(await cargarPdfLib(), datos);
+  const esDemo = Boolean(estado?.demo?.activo);
+  const bytesRecibo = async () => await construirRecibo(await cargarPdfLib(), { ...datos, esDemo });
   const blob = async () => new Blob([await bytesRecibo()], { type: "application/pdf" });
   const accion = {
-    pdf: () => pedir(async () => descargar(await blob(), nombreRecibo(P))),
-    compartir: () => pedir(async () => compartir(await blob(), nombreRecibo(P))),
+    pdf: () => pedir(async () => descargar(await blob(), nombreRecibo(P, esDemo))),
+    compartir: () => pedir(async () => compartir(await blob(), nombreRecibo(P, esDemo))),
     correo: () => {
       $("#recibo-correo-form").hidden = !$("#recibo-correo-form").hidden;
       if (!$("#recibo-correo-form").hidden) $("#email_destino")?.focus();
@@ -437,12 +438,16 @@ async function verRecibo(estado, id) {
     let bin = "";
     for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     const pdf_base64 = btoa(bin);
-    await api(`pagos/${P.id}/enviar-correo`, "POST", {
+    const r = await api(`pagos/${P.id}/enviar-correo`, "POST", {
       email: v.email_destino,
       pdf_base64,
-      nombre_archivo: nombreRecibo(P),
+      nombre_archivo: nombreRecibo(P, esDemo),
     });
-    aviso(`Recibo enviado a ${v.email_destino} ✅`);
+    aviso(
+      r?.demo_redirigido_a
+        ? `🧪 Recibo de prueba enviado a ${r.demo_redirigido_a} (quedan ${r.demo_restantes ?? 0} de ${estado?.demo?.max_correos ?? 5}) ✅`
+        : `Recibo enviado a ${v.email_destino} ✅`
+    );
     $("#recibo-correo-form").hidden = true;
   });
   enviar($("#anular-form"), async (v) => { await api(`pagos/${P.id}/anular`, "POST", { motivo: v.motivo }); aviso("Pago anulado"); await verRecibo(estado, id); });

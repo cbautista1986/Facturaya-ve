@@ -10,9 +10,10 @@ export const numeroDoc = (d) => (d.numero == null ? "" : d.tipo === "PRESUPUESTO
 const bonito = (t) => { const d = String(t ?? "").replace(/\D/g, ""); return /^584\d{9}$/.test(d) ? `+58 ${d.slice(2, 5)} ${d.slice(5, 8)} ${d.slice(8)}` : String(t ?? ""); };
 const masDias = (iso, dias) => { const f = new Date(`${iso}T12:00:00Z`); f.setUTCDate(f.getUTCDate() + dias); return f.toISOString().slice(0, 10); };
 
-export function nombreArchivo(d) {
+export function nombreArchivo(d, esDemo = false) {
   const base = d.tipo === "PRESUPUESTO" ? "Presupuesto" : d.es_nota_credito ? "Nota-de-Credito" : d.es_nota_debito ? "Nota-de-Debito" : "Factura";
-  return `${d.modo === "PRACTICA" ? "PRACTICA-" : ""}${base}-${numeroDoc(d)}.pdf`;
+  const pref = esDemo || d?.es_demo ? "DEMO-" : d.modo === "PRACTICA" ? "PRACTICA-" : "";
+  return `${pref}${base}-${numeroDoc(d)}.pdf`;
 }
 
 async function incrustarLogo(pdf, dataUrl) {
@@ -24,7 +25,7 @@ async function incrustarLogo(pdf, dataUrl) {
   }
 }
 
-export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA, negocio }) {
+export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA, negocio, esDemo = false }) {
   if (!D.emisor_json || D.numero == null) throw new Error("Solo se puede crear el PDF de un documento emitido.");
   const { PDFDocument, StandardFonts, rgb, degrees } = L;
   const pdf = await PDFDocument.create();
@@ -32,6 +33,7 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   const permitido = new Set(f.getCharacterSet());
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
   const emisorGuardado = JSON.parse(D.emisor_json), reglas = JSON.parse(D.parametros_json || "{}");
+  const esDemoPdf = Boolean(esDemo || emisorGuardado.es_demo || reglas.es_demo || D?.es_demo);
   const emisor = {
     nombre_razon_social: negocio?.nombre_razon_social || emisorGuardado.nombre_razon_social,
     rif: aRifSeniat(negocio?.rif || emisorGuardado.rif),
@@ -53,7 +55,8 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
       size, font: fb, color: rgb(...color), rotate: degrees(grados), opacity });
   };
   const marcas = (p) => {
-    if (D.modo === "PRACTICA") diagonal(p, "PRÁCTICA - SIN VALOR", 40, 35, [0.6, 0.6, 0.6], 0.4, 150);
+    if (esDemoPdf) diagonal(p, "DEMO - SIN VALIDEZ FISCAL", 34, 35, [0.82, 0.42, 0.08], 0.28, 120);
+    else if (D.modo === "PRACTICA") diagonal(p, "PRÁCTICA - SIN VALOR", 40, 35, [0.6, 0.6, 0.6], 0.4, 150);
     if (D.estado === "ANULADO") diagonal(p, "ANULADA", 100, 35, [0.85, 0.15, 0.15], 0.22, -40);
   };
   const nueva = () => { pag = pdf.addPage([ANCHO, ALTO]); paginas.push(pag); marcas(pag); y = M; };
@@ -97,6 +100,14 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
   y = Math.max(ey, dy) + 8;
+
+  if (esDemoPdf) {
+    const lsDemo = envolver("DOCUMENTO DEMOSTRATIVO — SIN VALIDEZ FISCAL · Entorno Demo FacturaYa Venezuela (datos ficticios).", ANCHO - 2 * M - 16, 9, true);
+    const hDemo = lsDemo.length * 12 + 10;
+    caja(y, hDemo, [1, 0.96, 0.88], [0.86, 0.46, 0.08]);
+    lsDemo.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.68, 0.3, 0.04] }));
+    y += hDemo + 8;
+  }
 
   if (esFormal && esFactura) {
     const lsFormal = envolver("CONTRIBUYENTE FORMAL · SIN DERECHO A CRÉDITO FISCAL (Providencia SENIAT SNAT/2011/0071)", ANCHO - 2 * M - 16, 9, true);
@@ -184,17 +195,18 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
 const METODO = { PAGO_MOVIL: "Pago móvil", TRANSFERENCIA: "Transferencia", EFECTIVO: "Efectivo", ZELLE: "Zelle", BINANCE: "Binance Pay", PAYPAL: "PayPal", RETENCION_IVA: "Retención IVA SENIAT", RETENCION_ISLR: "Retención ISLR (Decreto 1.808)", OTRO: "Otro" };
 export const metodoNombre = (m) => METODO[m] ?? m;
 export const numeroRecibo = (n) => String(n).padStart(8, "0");
-export const nombreRecibo = (p) => `${p.modo === "PRACTICA" ? "PRACTICA-" : ""}Recibo-${numeroRecibo(p.numero)}.pdf`;
+export const nombreRecibo = (p, esDemo = false) => `${esDemo || p?.es_demo ? "DEMO-" : p.modo === "PRACTICA" ? "PRACTICA-" : ""}Recibo-${numeroRecibo(p.numero)}.pdf`;
 const dolar = (c) => `$ ${num(c)}`;
 
-// construirRecibo(PDFLib, { pago, documento }) -> Uint8Array. Datos tal como los devuelve GET /api/pagos/:id.
-export async function construirRecibo(L, { pago: P, documento: D }) {
+// construirRecibo(PDFLib, { pago, documento, esDemo }) -> Uint8Array. Datos tal como los devuelve GET /api/pagos/:id.
+export async function construirRecibo(L, { pago: P, documento: D, esDemo = false }) {
   const { PDFDocument, StandardFonts, rgb, degrees } = L;
   const pdf = await PDFDocument.create();
   const f = await pdf.embedFont(StandardFonts.Helvetica), fb = await pdf.embedFont(StandardFonts.HelveticaBold);
   const permitido = new Set(f.getCharacterSet());
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
   const emisor = JSON.parse(D.emisor_json || "{}"), reglas = JSON.parse(P.reglas_json || "{}");
+  const esDemoPdf = Boolean(esDemo || emisor.es_demo || reglas.es_demo || P?.es_demo || D?.es_demo);
   const logoImg = await incrustarLogo(pdf, emisor.logo_base64);
   const pag = pdf.addPage([ANCHO, ALTO]), R = ANCHO - M;
   const T = (t, x, top, { s = 10, b = false, c = [0.12, 0.12, 0.12], der = false } = {}) => {
@@ -214,7 +226,8 @@ export async function construirRecibo(L, { pago: P, documento: D }) {
     const w = fb.widthOfTextAtSize(txt, size), a = (35 * Math.PI) / 180, h = size * 0.7;
     pag.drawText(txt, { x: ANCHO / 2 - (w / 2) * Math.cos(a) + (h / 2) * Math.sin(a), y: ALTO / 2 - dy - (w / 2) * Math.sin(a) - (h / 2) * Math.cos(a), size, font: fb, color: rgb(...color), rotate: degrees(35), opacity });
   };
-  if (P.modo === "PRACTICA") diagonal("PRÁCTICA - SIN VALOR", 40, [0.6, 0.6, 0.6], 0.4, 150);
+  if (esDemoPdf) diagonal("DEMO - SIN VALIDEZ FISCAL", 34, [0.82, 0.42, 0.08], 0.28, 120);
+  else if (P.modo === "PRACTICA") diagonal("PRÁCTICA - SIN VALOR", 40, [0.6, 0.6, 0.6], 0.4, 150);
   if (P.estado === "ANULADO") diagonal("ANULADO", 100, [0.85, 0.15, 0.15], 0.22, -40);
 
   let y = M, ey = y;
@@ -234,6 +247,14 @@ export async function construirRecibo(L, { pago: P, documento: D }) {
   T(`N.º: ${numeroRecibo(P.numero)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
   T(`Fecha del pago: ${fecha(P.fecha_pago)}`, R, dy, { s: 9, der: true }); dy += 13;
   y = Math.max(ey, dy) + 10;
+
+  if (esDemoPdf) {
+    const lsDemo = envolver("DOCUMENTO DEMOSTRATIVO — SIN VALIDEZ FISCAL · Entorno Demo FacturaYa Venezuela (datos ficticios).", ANCHO - 2 * M - 16, 9, true);
+    const hDemo = lsDemo.length * 12 + 10;
+    caja(y, hDemo, [1, 0.96, 0.88], [0.86, 0.46, 0.08]);
+    lsDemo.forEach((l, i) => T(l, M + 8, y + 6 + i * 12, { s: 9, b: true, c: [0.68, 0.3, 0.04] }));
+    y += hDemo + 10;
+  }
 
   if (P.estado === "ANULADO") {
     const ls = envolver(`RECIBO ANULADO el ${fecha(P.anulado_en)}. Motivo: ${P.motivo_anulacion || ""}`, ANCHO - 2 * M - 16, 9, true), h = ls.length * 12 + 10;

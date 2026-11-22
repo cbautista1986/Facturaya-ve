@@ -148,14 +148,15 @@ export async function vistaInformes(estado, clave) {
       periodo = { preset: "otro", desde, hasta }; cargar();
     });
   }
+  const esDemo = Boolean(estado?.demo?.activo);
   const exportar = (tipo) => async () => {
     if (!ultimo) return;
     try {
       const { m, datos } = ultimo;
-      if (tipo === "csv") descargar(new Blob([aCsv(m, estado.negocio)], { type: "text/csv;charset=utf-8" }), nombreArchivoInforme(m, datos.modo, "csv", datos));
+      if (tipo === "csv") descargar(new Blob([aCsv(m, estado.negocio)], { type: "text/csv;charset=utf-8" }), nombreArchivoInforme(m, datos.modo, "csv", datos, esDemo));
       else {
-        const bytes = await construirPdfInforme(await cargarPdfLib(), m, { negocio: estado.negocio, modo: datos.modo });
-        descargar(new Blob([bytes], { type: "application/pdf" }), nombreArchivoInforme(m, datos.modo, "pdf", datos));
+        const bytes = await construirPdfInforme(await cargarPdfLib(), m, { negocio: estado.negocio, modo: datos.modo, esDemo });
+        descargar(new Blob([bytes], { type: "application/pdf" }), nombreArchivoInforme(m, datos.modo, "pdf", datos, esDemo));
       }
       aviso("Descargado ✅");
     } catch (e) { aviso(e.message); }

@@ -16,8 +16,12 @@ sistema.use("*", requiereSesion, requiereAdmin);
 
 const entero = (v: unknown) => { const n = Number(v); return Number.isInteger(n) && n >= 1 && n <= 999999999 ? n : 0; };
 
-// Sale del modo práctica UNA vez: borra los documentos de prueba y fija con qué número empieza lo real.
+// Ruta legada (reemplazada por el Entorno Demo aislado): bloqueada para inquilinos/clientes; solo Súper Admin en contingencia.
 sistema.post("/salir-en-vivo", async (c) => {
+  const yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (!esSuperAdmin(yo.rol, yo.email, envObj)) {
+    return falla(c, 403, "El modo práctica fue reemplazado por el Entorno Demo aislado. Todas las empresas operan directamente en modo fiscal real.");
+  }
   const db = c.env.DB, b = await leerJson(c);
   const medio = await db.prepare(`SELECT medio_facturacion AS m FROM perfil_emisor WHERE id = 1`).first<{ m: string }>();
   if (medio?.m === "SIN_DEFINIR") return falla(c, 400, "Antes de salir en vivo elige tu modalidad de facturación digital (App SENIAT o Imprenta Digital) en Ajustes.");
@@ -264,6 +268,9 @@ sistema.get("/correo", async (c) => {
 
 sistema.post("/correo", async (c) => {
   const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (!esSuperAdmin(yo.rol, yo.email, envObj)) {
+    return falla(c, 403, "El envío de correos es gestionado por FacturaYa Venezuela (Correo de Plataforma). No necesitas configurar API Keys propias.");
+  }
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla «Estoy seguro» para guardar la configuración de la API de Correo.");
   }

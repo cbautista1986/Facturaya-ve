@@ -411,19 +411,8 @@ test("4. Ficha RIF SENIAT + Cédula + APIs en Alta, Candado Obligatorio de Respa
   assert.equal(estDueno.data.negocio.representante_cedula, "V-15.443.221");
   assert.equal(estDueno.data.negocio.logo_base64, logoTest);
 
-  // Sin el checkmark (confirmo: false), guardar API de correo debe fallar con 400
-  const correoSinCheck = await reqJson(env, jarDueno, "/api/sistema/correo", "POST", {
-    proveedor: "BREVO",
-    remitente: "facturacion@empresademo.test",
-    nombre_remitente: "Demo Centro",
-    clave: "xkeysib-nueva-clave-1111",
-    password: "ClaveFuerteDueno2026!",
-    confirmo: false,
-  });
-  assert.equal(correoSinCheck.status, 400);
-
-  // Con el checkmark (confirmo: true), el Dueño (ADMIN) puede actualizar su API de Brevo
-  const correoConCheck = await reqJson(env, jarDueno, "/api/sistema/correo", "POST", {
+  // v4.9.1: Los clientes (ADMIN de inquilino) usan el Correo de Plataforma; NO pueden escribir API Keys propias ni invocar salir-en-vivo (403)
+  const correoClienteBloqueado = await reqJson(env, jarDueno, "/api/sistema/correo", "POST", {
     proveedor: "BREVO",
     remitente: "facturacion@empresademo.test",
     nombre_remitente: "Demo Centro",
@@ -431,8 +420,20 @@ test("4. Ficha RIF SENIAT + Cédula + APIs en Alta, Candado Obligatorio de Respa
     password: "ClaveFuerteDueno2026!",
     confirmo: true,
   });
-  assert.equal(correoConCheck.status, 200);
-  assert.equal(correoConCheck.data.clave_final, "1111");
+  assert.equal(correoClienteBloqueado.status, 403);
+
+  const salirVivoClienteBloqueado = await reqJson(env, jarDueno, "/api/sistema/salir-en-vivo", "POST", {
+    primer_factura: 1,
+    primer_control: 1,
+    primer_presupuesto: 1,
+    confirmo: true,
+  });
+  assert.equal(salirVivoClienteBloqueado.status, 403);
+
+  // El Dueño (ADMIN) SÍ puede consultar el estado de Correo de Plataforma (GET)
+  const estadoCorreoDueno = await reqJson(env, jarDueno, "/api/sistema/correo");
+  assert.equal(estadoCorreoDueno.status, 200);
+  assert.equal(estadoCorreoDueno.data.ok, true);
 
   // El Dueño crea un empleado Cajero y le asigna una contraseña directa
   const crearCajero = await reqJson(env, jarDueno, "/api/usuarios", "POST", {

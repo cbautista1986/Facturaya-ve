@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import app from "../src/index";
 import { crearBaseDatosD1 } from "./d1";
 import {
@@ -405,4 +407,64 @@ test("2. E2E completo: aislamiento físico (DB principal + DB_1 real + DB_DEMO),
     .prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
     .first<{ n: number }>();
   assert.equal(tablasTrasCerrar?.n, 0, "DB_DEMO debe quedar completamente vacía tras cierre manual");
+
+  // 2.13 v4.9.1: Un cliente real (ADMIN en DB_1) NO puede configurar API Key propia de correo ni usar salir-en-vivo (403),
+  // pero SÍ conserva sus configuraciones fiscales propias (Condición Fiscal, Modalidad/Imprenta, estado de Correo de Plataforma).
+  const jarClienteReal: Record<string, string> = {};
+  const loginReal = await reqJson(env, jarClienteReal, "/api/login", "POST", {
+    email: "dueno@clientereal.test",
+    clave: altaReal.data.clave_temporal,
+  });
+  assert.equal(loginReal.status, 200);
+  const cambioClaveReal = await reqJson(env, jarClienteReal, "/api/cuenta/clave", "POST", {
+    actual: altaReal.data.clave_temporal,
+    nueva: "ClaveClienteReal2026!",
+  });
+  assert.equal(cambioClaveReal.status, 200);
+
+  const bloqCorreo = await reqJson(env, jarClienteReal, "/api/sistema/correo", "POST", {
+    proveedor: "BREVO",
+    remitente: "cliente@clientereal.test",
+    clave: "xkeysib-no-permitida",
+    password: "ClaveClienteReal2026!",
+    confirmo: true,
+  });
+  assert.equal(bloqCorreo.status, 403, "Tenant ADMIN no debe poder guardar API Key propia de correo");
+
+  const bloqVivo = await reqJson(env, jarClienteReal, "/api/sistema/salir-en-vivo", "POST", {
+    primer_factura: 1,
+    primer_control: 1,
+    primer_presupuesto: 1,
+    confirmo: true,
+  });
+  assert.equal(bloqVivo.status, 403, "Tenant ADMIN no debe poder invocar salir-en-vivo");
+
+  const bloqInq = await reqJson(env, jarClienteReal, "/api/inquilinos");
+  assert.equal(bloqInq.status, 403, "Tenant ADMIN jamás puede acceder a /api/inquilinos");
+
+  const bloqDemoPanel = await reqJson(env, jarClienteReal, "/api/demo");
+  assert.equal(bloqDemoPanel.status, 403, "Tenant ADMIN jamás puede acceder a /api/demo");
+
+  const okCorreoGet = await reqJson(env, jarClienteReal, "/api/sistema/correo");
+  assert.equal(okCorreoGet.status, 200, "Tenant ADMIN sí puede ver estado de Correo de Plataforma");
+
+  const okMedioGet = await reqJson(env, jarClienteReal, "/api/sistema/medio");
+  assert.equal(okMedioGet.status, 200, "Tenant ADMIN conserva acceso a Modalidad / Imprenta Digital");
+
+  const okRegimen = await reqJson(env, jarClienteReal, "/api/config/regimen", "PUT", {
+    tipo_contribuyente: "ESPECIAL",
+    clave_actual: "ClaveClienteReal2026!",
+    confirmo_regimen: true,
+  });
+  assert.equal(okRegimen.status, 200, "Tenant ADMIN conserva control de su propia Condición Fiscal");
 });
+
+test("v4.9.1 UI: sin formularios de API Key propia de correo y vista previa DB_DEMO limpia", () => {
+  const appJs = readFileSync(resolve(process.cwd(), "public/app.js"), "utf8");
+  assert.equal(appJs.includes("correo-legado-wrap"), false, "No debe existir formulario legado de API Key de correo en Ajustes");
+  assert.equal(appJs.includes("correo-cfg-form"), false, "No debe existir #correo-cfg-form en Ajustes");
+  assert.equal(appJs.includes('campo("correo_clave"'), false, "No debe existir campo correo_clave en Alta Cliente");
+  assert.ok(appJs.includes('activo === "DB_DEMO"'), "Mis Inquilinos debe resolver el nombre real de DB_DEMO");
+  assert.ok(appJs.includes('if (cod === "DB_DEMO") return ""'), "barraSuper no debe duplicarse sobre barraDemo");
+});
+

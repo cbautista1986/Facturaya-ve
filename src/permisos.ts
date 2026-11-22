@@ -51,7 +51,11 @@ const REGLAS: Regla[] = [
   [G, /^\/api\/correos\/historial$/, ["admin"]],                         // historial propio de envíos y rebotes del inquilino
   [TODOS, /^\/api\/correos(\/|$)/, ["super"]],                           // panel global de correos, cuotas, circuitos y bloqueos: EXCLUSIVO Súper Admin
   [TODOS, /^\/api\/sistema\/reiniciar-fabrica(\/|$)/, ["super"]],        // Reinicio / borrado de base de datos: EXCLUSIVO del Súper Administrador
-  [TODOS, /^\/api\/sistema\/(medio|imprenta|correo)(\/|$)/, ["admin"]],  // API Brevo, Imprenta Digital y Modalidad: Dueño del negocio (ADMIN) y Súper Admin
+  [TODOS, /^\/api\/sistema\/salir-en-vivo(\/|$)/, ["super"]],            // Ruta legada retirada por Entorno Demo: bloqueada para clientes (solo Súper Admin)
+  [P, /^\/api\/sistema\/correo$/, ["super"]],                            // API Key de correo propia retirada para clientes (solo Correo de Plataforma)
+  [G, /^\/api\/sistema\/correo$/, ["admin"]],                            // Estado del Correo de Plataforma y Reply-To del negocio
+  [P, /^\/api\/sistema\/correo\/probar$/, ["admin"]],                    // Enviar correo de prueba usando el Correo de Plataforma
+  [TODOS, /^\/api\/sistema\/(medio|imprenta)(\/|$)/, ["admin"]],         // Imprenta Digital y Modalidad: Dueño del negocio (ADMIN) y Súper Admin
   [P, /^\/api\/sistema\/tasa-bcv\/sincronizar$/, ["admin", "tasa"]],     // sincronizar tasa BCV oficial (Dueño, Súper Admin o Supervisor)
   [TODOS, /^\/api\/usuarios(\/|$)/, ["admin"]],
   [TODOS, /^\/api\/sistema(\/|$)/, ["admin"]],

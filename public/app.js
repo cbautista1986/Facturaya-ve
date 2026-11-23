@@ -11,6 +11,7 @@ import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
 import { renderHistorialCorreoInquilino, vistaPanelCorreosPlataforma } from "./correos.js";
+import { iniciarPwaYConectividad, botonInstalarPwaHtml, enlazarBotonesPwa } from "./pwa.js";
 
 const NEGOCIO = [
   ["nombre_razon_social", "🏷️ Nombre o razón social (según RIF SENIAT)"],
@@ -63,16 +64,16 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v4.9.0)</span>
-  <p class="suave">Descarga el ZIP completo v4.9.0 con el <b>Entorno Demo Aislado (30m/1h/2h en DB_DEMO)</b>, panel de Demo para prospectos con invitación WhatsApp, marca de agua en PDF, resguardo de correos (máx. 5 al prospecto) y retiro limpio del antiguo Modo Prueba:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v4.9.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.0.0)</span>
+  <p class="suave">Descarga el ZIP completo v5.0.0 con <b>App Instalable (PWA)</b>, <b>Alertas globales de conexión (Web y App)</b>, <b>Bindings Nativos D1 automáticos</b>, <b>Mantenimiento Nocturno 2:00 AM VET</b> (silencio total 6 AM–9 PM) e <b>Interruptor de Modo Mantenimiento para Despliegues</b>:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.0.0)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="demo.ts">⬇️ src/demo.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="rutas-demo.ts">⬇️ src/rutas/demo.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="index.ts">⬇️ src/index.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="mantenimiento.ts">⬇️ src/mantenimiento.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="cloudflare-api.ts">⬇️ src/cloudflare-api.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="pwa.js">⬇️ public/pwa.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="sw.js">⬇️ public/sw.js</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="pdf.js">⬇️ public/pdf.js</button>
   </div>
 </section>` : "";
 
@@ -266,7 +267,14 @@ function barraSuper() {
   if (!puede("super")) return "";
   const cod = estado.inquilino_actual || estado.inquilino_activo || "principal";
   if (cod === "DB_DEMO") return "";
-  return `<div class="barra-super">
+  const mant = estado.mantenimiento_despliegue;
+  const alertaMant = mant?.activo
+    ? `<div class="barra-mant-super" role="alert">
+        <div>🔒 <b>MODO MANTENIMIENTO ACTIVO</b> · Solo tú (Súper Admin) puedes acceder · Etapa: <b>${esc(mant.etapa || "SESIONES_CERRADAS")}</b></div>
+        <button type="button" class="boton chico" data-destino="#/inquilinos/builds">🚀 Controlar / Reabrir</button>
+      </div>`
+    : "";
+  return `${alertaMant}<div class="barra-super">
     <div><small>👑 MODO SÚPER ADMIN · VIENDO NEGOCIO:</small><b>🏢 ${esc(estado.negocio?.nombre_razon_social || "Principal")} (${esc(cod)})</b></div>
     <button type="button" class="boton chico" data-destino="#/inquilinos">Mis Inquilinos</button>
   </div>`;
@@ -321,6 +329,12 @@ function vistaLogin() {
         ${wa ? `<a class="portada-btn-wa" href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">${ICONO_WA_SVG}<span>Activar mi empresa por WhatsApp</span></a>` : ""}
       </div>`
     : "";
+  const avisoMantHtml = estado?.mantenimiento
+    ? `<div class="aviso-mantenimiento-login" role="alert">
+        <div><b>🛠️ Actualización y mantenimiento programado en curso.</b><br>${esc(estado.mensaje_mantenimiento || "Estamos actualizando FacturaYa Venezuela para mejorar el servicio. Por seguridad, las sesiones fueron cerradas temporalmente; podrás ingresar en unos minutos.")}</div>
+        <button type="button" class="boton chico contorno-azul" id="mant-reintentar-btn">🔄 Verificar si ya terminó</button>
+      </div>`
+    : "";
   const avisoSuspHtml = estado?.suspendido
     ? `<div class="aviso-susp-login" role="alert">${esc(estado.mensaje_suspension || "⚠️ Servicio suspendido por falta de pago. Envía la captura o comprobante de tu pago a pagos@facturayave.com para reactivar el acceso.")}</div>`
     : "";
@@ -328,7 +342,7 @@ function vistaLogin() {
     <div class="portada">
       <header class="portada-topbar" id="inicio-portada">
         <button type="button" class="portada-marca" data-scroll="inicio-portada" aria-label="FacturaYa Venezuela">
-          <img src="/favicon.svg?v=20261121v490" alt="" width="34" height="34">
+          <img src="/favicon.svg?v=20261123v500" alt="" width="34" height="34">
           <span>FacturaYa Venezuela</span>
         </button>
         <nav class="portada-nav" aria-label="Secciones principales">
@@ -338,9 +352,11 @@ function vistaLogin() {
           <button type="button" class="portada-nav-link" data-scroll="contacto">Contacto</button>
         </nav>
         <div class="portada-nav-accion">
+          ${botonInstalarPwaHtml("topbar")}
           <button type="button" class="portada-btn-nav" data-scroll="acceso-empresa">Iniciar sesión</button>
         </div>
       </header>
+      ${avisoMantHtml}
       ${avisoDemoExpHtml}
       ${avisoSuspHtml}
 
@@ -516,6 +532,9 @@ function vistaLogin() {
       </footer>
     </div>${TARJETA_GITHUB_ZIP}`;
 
+  enlazarBotonesPwa(raiz, aviso);
+  $("#mant-reintentar-btn")?.addEventListener("click", () => ruta());
+
   raiz.querySelectorAll("[data-scroll]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const target = document.getElementById(btn.dataset.scroll);
@@ -547,6 +566,12 @@ function vistaLogin() {
       await ruta();
     } catch (e) {
       tsLogin.reset();
+      if (e?.mantenimiento) {
+        estado = { ...estado, sesion: false, mantenimiento: true, mensaje_mantenimiento: e.mensaje_mantenimiento || e.message };
+        vistaLogin();
+        window.scrollTo(0, 0);
+        return;
+      }
       if (e?.demo_expirado) {
         estado = { ...estado, sesion: false, demo_expirado: true, mensaje_demo_expirado: e.message };
         vistaLogin();
@@ -567,6 +592,7 @@ function vistaInicio() {
     ${barraSuper()}
     <header class="encabezado">${logoHeader(n)}<h1>Hola, ${esc(n.nombre_razon_social || "Mi Negocio")}</h1>
       <button class="icono" id="ajustes" data-ayuda="Ajustes del negocio, tasa BCV, datos de cobro y cerrar sesión" aria-label="Ajustes">⚙️</button></header>
+    ${botonInstalarPwaHtml("inicio")}
     ${estado.seguridad && !estado.seguridad.master_key ? `<section class="aviso-control">🔐 <b>Falta MASTER_KEY.</b> Sin ella no se pueden guardar claves de API ni firmar respaldos. Configúrala en Cloudflare: <code>wrangler secret put MASTER_KEY</code>.</section>` : ""}
     ${estado.seguridad && !estado.seguridad.turnstile_secreto ? `<section class="aviso-control">🛡️ <b>Falta TURNSTILE_SECRET_KEY.</b> Con la clave pública activa, el acceso y la recuperación exigen el secreto: <code>wrangler secret put TURNSTILE_SECRET_KEY</code>.</section>` : ""}
     ${estado.seguridad?.ultimo_error_r2 ? `<section class="aviso-anulado" data-destino="#/inquilinos/salud">☁️ <b>Alerta de respaldo R2 (${esc(estado.seguridad.ultimo_error_r2.tipo || "cron")}):</b> ${esc(estado.seguridad.ultimo_error_r2.mensaje || "Error en la última ejecución.")} <small>(${esc(estado.seguridad.ultimo_error_r2.fecha || "")})</small></section>` : ""}
@@ -598,6 +624,7 @@ function vistaInicio() {
     <section class="tarjeta"><span class="etiqueta">🔔 ALERTAS RÁPIDAS</span><p class="suave" id="alertas-txt">Todo en orden ✅</p></section>
     ${navegacion("inicio")}`;
   $("#ajustes").addEventListener("click", () => (location.hash = "#/ajustes"));
+  enlazarBotonesPwa(raiz, aviso);
   activar();
   if (puede("admin")) api("documentos/resumen").then((r) => {
     $("#gan-total").textContent = usd(r.total); $("#gan-det").textContent = `🟣 Servicios: ${usd(r.servicios)} · 🔵 Productos: ${usd(r.productos)} · Toca para ver Libros SENIAT`;
@@ -668,7 +695,10 @@ async function vistaInquilinos(subvista = "") {
           <span>☁️</span><b id="btn-cf-titulo">Cloudflare D1 (${usadasD1}/${txtLimiteD1})</b><small id="btn-cf-sub">${txtLibresD1} de ${txtLimiteD1} libres · Worker y API</small>
         </button>
         <button class="accion azul" data-destino="#/inquilinos/builds" data-nombre="Despliegues y Builds">
-          <span>🚀</span><b id="btn-builds-titulo">Despliegues y Builds</b><small id="btn-builds-sub">Compilaciones, Logs y Rollback</small>
+          <span>🚀</span><b id="btn-builds-titulo">Despliegues y Builds</b><small id="btn-builds-sub">${estado.mantenimiento_despliegue?.activo ? "🔒 Mantenimiento ACTIVO · Reabrir" : "Mantenimiento, Logs y Rollback"}</small>
+        </button>
+        <button class="accion morado" data-destino="#/inquilinos/mantenimiento" data-nombre="Mantenimiento Nocturno">
+          <span>🌙</span><b>Mantenimiento Nocturno</b><small>2:00 AM VET · Silencio 6 AM–9 PM</small>
         </button>
         <button class="accion ambar" data-destino="#/inquilinos/salud" data-nombre="Salud BD y Respaldo">
           <span>🩺</span><b>Salud y Respaldos (${lista.length} BD)</b><small>16 candados SENIAT y Backup</small>
@@ -1042,6 +1072,7 @@ async function vistaInquilinos(subvista = "") {
         <p class="suave">Código maestro (1 uso): <b>${esc(c.codigo_recuperacion)}</b><br>
         🧾 Correlativo inicial SENIAT: <b>Factura N.º ${esc(facIni)}</b> · <b>Control N.º ${esc(ctrlIni)}</b><br>
         📅 Fecha de alta: <b>${esc(c.fecha_alta || d.fecha_alta || "")}</b></p>
+        ${r.binding_nativo_aviso ? `<p class="pista" style="margin-bottom:10px">${esc(r.binding_nativo_aviso)}</p>` : ""}
         <div class="dos-botones">
           <button type="button" class="boton verde" id="copiar-acc">📋 Copiar bienvenida WhatsApp</button>
           <button type="button" class="boton" id="entrar-nuevo">⚙️ Entrar a Ajustes del Cliente</button>
@@ -1520,15 +1551,18 @@ async function vistaInquilinos(subvista = "") {
           <h2>☁️ Centro de Control Cloudflare (Exclusivo Súper Admin)</h2>
           <span class="insignia gris" id="cf-badge">Consultando…</span>
         </div>
-        <p class="suave">Monitorea tus bases D1 en Cloudflare (<b>10 BD en Plan Gratis</b> o <b>50.000 BD en el Plan Workers Paid de $5/mes</b>), tu Worker y Turnstile sin cambiar una sola línea de código. Las bases D1 nuevas se crean automáticamente al usar <b>➕ Dar de Alta Cliente</b> y se eliminan al dar de baja una empresa.</p>
+        <p class="suave">Monitorea tus bases D1 en Cloudflare (<b>10 BD en Plan Gratis</b> o <b>50.000 BD en el Plan Workers Paid de $5/mes</b>), tu Worker y Turnstile sin cambiar código. <b>Bindings Nativos automáticos:</b> si das de alta un cliente de noche (9:00 PM–5:59 AM VET), se conecta al Worker al instante; si lo haces de día (6:00 AM–8:59 PM VET), opera aislado por HTTP D1 sin tocar el Worker y el mantenimiento nocturno de las 2:00 AM VET lo promueve a Binding Nativo.</p>
         <div id="cf-resumen"><p class="suave">Verificando conexión con Cloudflare API…</p></div>
         <div class="dos-botones" style="margin-top:10px">
           <button type="button" class="boton chico contorno-azul" id="cf-refrescar">🔄 Sincronizar Cloudflare</button>
-          <button type="button" class="boton chico azul" id="cf-ir-builds">🚀 Ver Builds, Logs y Rollback</button>
+          <button type="button" class="boton chico verde" id="cf-sync-bindings">⚡ Sincronizar Bindings Nativos ahora</button>
         </div>
         <div class="dos-botones" style="margin-top:6px">
-          <button type="button" class="boton chico verde" id="cf-ir-alta">➕ Dar de Alta Cliente (Crea su D1)</button>
-          <button type="button" class="boton chico contorno-azul" id="cf-generar-toml">⚡ Generar wrangler.toml (Bindings Nativos Pro)</button>
+          <button type="button" class="boton chico azul" id="cf-ir-builds">🚀 Ver Builds, Mantenimiento y Rollback</button>
+          <button type="button" class="boton chico contorno-azul" id="cf-generar-toml">📄 Ver / Descargar wrangler.toml (respaldo)</button>
+        </div>
+        <div style="margin-top:6px">
+          <button type="button" class="boton chico contorno" id="cf-ir-alta">➕ Dar de Alta Cliente (Crea su D1)</button>
         </div>
         <div id="cf-toml-box" class="tarjeta" hidden style="margin-top:10px;border:1px solid #1A73E8"></div>
         <details style="margin-top:12px">
@@ -1716,6 +1750,20 @@ async function vistaInquilinos(subvista = "") {
     };
     cargarCloudflare(false);
     $("#cf-refrescar")?.addEventListener("click", () => cargarCloudflare(true));
+    $("#cf-sync-bindings")?.addEventListener("click", async () => {
+      const btn = $("#cf-sync-bindings");
+      if (btn) { btn.disabled = true; btn.textContent = "⏳ Sincronizando bindings…"; }
+      try {
+        const res = await api("inquilinos/cloudflare/sincronizar-bindings", "POST", {});
+        aviso(res.resultado?.mensaje || res.mensaje || "Bindings nativos sincronizados ✅");
+        if (res.estado) pintarCloudflare(res.estado);
+        else await cargarCloudflare(false);
+      } catch (e) {
+        aviso(e.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "⚡ Sincronizar Bindings Nativos ahora"; }
+      }
+    });
     $("#cf-generar-toml")?.addEventListener("click", async () => {
       const box = $("#cf-toml-box");
       if (!box) return;
@@ -1769,16 +1817,33 @@ async function vistaInquilinos(subvista = "") {
     return;
   }
 
-  // 4b) Subvista: DESPLIEGUES Y BUILDS CLOUDFLARE (#/inquilinos/builds)
+  // 4b) Subvista: DESPLIEGUES Y BUILDS CLOUDFLARE (#/inquilinos/builds) + MODO MANTENIMIENTO DESPLIEGUE
   if (subvista === "builds") {
     raiz.innerHTML = `
       ${barraVolverInq("🚀 Despliegues y Builds")}
+      <section class="tarjeta" id="mant-despliegue-card">
+        <div class="reng-cab">
+          <h2>🛠️ Modo Mantenimiento para Despliegues</h2>
+          <span class="insignia gris" id="mant-badge">Consultando…</span>
+        </div>
+        <p class="suave">Activa este interruptor <b>antes de subir un push a GitHub</b> cuando haya cambios de código o leyes SENIAT. Cierra la sesión de todos los usuarios de todas las empresas (<b>excepto la tuya de Súper Admin</b>), los envía a la portada con aviso de actualización y bloquea operaciones hasta que verifiques el despliegue OK y reabras las sesiones.</p>
+        <div class="mant-pasos" id="mant-pasos-box">
+          <div class="mant-paso" data-paso="1"><span>1️⃣ 🔒</span><strong>Sesiones cerradas</strong></div>
+          <div class="mant-paso" data-paso="2"><span>2️⃣ 🚀</span><strong>Despliegue realizándose</strong></div>
+          <div class="mant-paso" data-paso="3"><span>3️⃣ ✅</span><strong>Despliegue verificado OK</strong></div>
+          <div class="mant-paso" data-paso="4"><span>4️⃣ 🟢</span><strong>Sesiones listas para usar</strong></div>
+        </div>
+        <div id="mant-despliegue-zona"><p class="suave">Cargando estado de mantenimiento…</p></div>
+        <div id="mant-logs-despliegue" style="margin-top:12px"></div>
+      </section>
+
       <section class="tarjeta" id="builds-card">
         <div class="reng-cab">
           <h2>🚀 Control de Compilaciones y Despliegues (Cloudflare)</h2>
           <span class="insignia gris" id="builds-badge">Consultando…</span>
         </div>
         <p class="suave">Revisa en vivo si las compilaciones desde GitHub terminaron en <b>Listo</b> o presentaron algún error, inspecciona el log exacto y relanza un build o restaura una versión estable anterior (<i>Rollback</i>).</p>
+        <p class="pista" style="margin-bottom:8px">💡 <b>Buenas prácticas GitHub → Cloudflare:</b> sube tus cambios siempre a la rama <code>main</code> (sin tildes ni espacios en nombres de ramas) y mantén desactivada la opción <i>«Builds for non-production branches»</i> en Cloudflare Workers para evitar builds fallidos en 0s de ramas secundarias.</p>
         <div class="dos-botones" style="margin-top:8px">
           <button type="button" class="boton chico contorno-azul" id="builds-refrescar">🔄 Actualizar estado</button>
           <button type="button" class="boton chico verde" id="builds-abrir-reintentar">▶️ Relanzar compilación</button>
@@ -1808,6 +1873,7 @@ async function vistaInquilinos(subvista = "") {
 
     $("#volver-inq").addEventListener("click", () => (location.hash = "#/inquilinos"));
     const formReintentar = $("#builds-reintentar-form");
+    let triggersActuales = [];
     $("#builds-abrir-reintentar")?.addEventListener("click", () => {
       if (formReintentar) formReintentar.hidden = !formReintentar.hidden;
     });
@@ -1824,6 +1890,134 @@ async function vistaInquilinos(subvista = "") {
       const d = new Date(s);
       if (Number.isNaN(d.getTime())) return String(s);
       return d.toLocaleString("es-VE", { timeZone: "America/Caracas", dateStyle: "short", timeStyle: "short" });
+    };
+
+    const pintarEstadoMantenimiento = (mant, logsDesp = []) => {
+      const badge = $("#mant-badge"), zona = $("#mant-despliegue-zona"), pasosBox = $("#mant-pasos-box"), logsBox = $("#mant-logs-despliegue");
+      if (!badge || !zona) return;
+      const activo = Boolean(mant?.activo);
+      const etapa = mant?.etapa || "NORMAL";
+      estado.mantenimiento_despliegue = mant || { activo: false, etapa: "NORMAL" };
+
+      const pasoActivo = !activo
+        ? 4
+        : etapa === "VERIFICADO_OK"
+          ? 3
+          : etapa === "DESPLEGANDO"
+            ? 2
+            : 1;
+      pasosBox?.querySelectorAll("[data-paso]").forEach((el) => {
+        const n = Number(el.dataset.paso || 0);
+        el.classList.remove("hecho", "actual");
+        if (!activo) {
+          if (n === 4) el.classList.add("hecho");
+        } else if (n < pasoActivo) {
+          el.classList.add("hecho");
+        } else if (n === pasoActivo) {
+          el.classList.add("actual");
+        }
+      });
+
+      if (activo) {
+        badge.textContent = etapa === "VERIFICADO_OK"
+          ? "✅ DESPLIEGUE OK · LISTO PARA REABRIR"
+          : etapa === "DESPLEGANDO"
+            ? "🚀 DESPLIEGUE EN CURSO"
+            : "🔒 SESIONES CERRADAS";
+        badge.className = `insignia ${etapa === "VERIFICADO_OK" ? "verde" : "rojo"}`;
+        zona.innerHTML = `
+          <div class="aviso-anulado" style="margin-bottom:10px">
+            <b>🔒 Modo Mantenimiento ACTIVO desde ${esc(fmtFechaIso(mant.activado_en))}</b><br>
+            Sesiones cerradas: <b>${Number(mant.sesiones_cerradas_total || 0)}</b> en <b>${Number(mant.empresas_cerradas || 0)}</b> empresa(s). Solo tu cuenta Súper Admin puede operar.<br>
+            <small>Aviso visible a usuarios: «${esc(mant.mensaje || "")}»</small>
+          </div>
+          <div class="dos-botones" style="margin-bottom:10px">
+            <button type="button" class="boton chico contorno-azul" id="mant-marcar-desp">🚀 Marcar: Despliegue realizándose</button>
+            <button type="button" class="boton chico contorno-azul" id="mant-marcar-ok">✅ Marcar: Despliegue OK</button>
+          </div>
+          <form id="mant-desactivar-form" class="tarjeta" style="border:1.5px solid #10b981;margin-bottom:0">
+            <h3 style="margin-top:0">🔓 Finalizar mantenimiento y reabrir sesiones</h3>
+            <p class="suave">Una vez que el último build en Cloudflare figure como <b>✅ Listo</b>, reabre el sistema para todos los clientes.</p>
+            <label class="opcion"><input type="checkbox" name="sincronizar_bindings" checked> ⚡ Sincronizar Bindings Nativos D1 en Cloudflare automáticamente al reabrir</label>
+            ${campo("mant_clave_off", "🔒 Tu contraseña de Súper Admin", "", "password", 'required autocomplete="current-password"')}
+            ${ERROR}
+            <button type="submit" class="boton verde">🟢 FINALIZAR MANTENIMIENTO Y REABRIR SESIONES</button>
+          </form>`;
+        $("#mant-marcar-desp")?.addEventListener("click", async () => {
+          try {
+            const r = await api("inquilinos/mantenimiento/despliegue/etapa", "POST", { etapa: "DESPLEGANDO" });
+            aviso("Etapa actualizada: Despliegue realizándose 🚀");
+            pintarEstadoMantenimiento(r.estado || r.mantenimiento, logsDesp);
+          } catch (e) { aviso(e.message); }
+        });
+        $("#mant-marcar-ok")?.addEventListener("click", async () => {
+          try {
+            const r = await api("inquilinos/mantenimiento/despliegue/etapa", "POST", { etapa: "VERIFICADO_OK" });
+            aviso("Etapa actualizada: Despliegue verificado OK ✅");
+            pintarEstadoMantenimiento(r.estado || r.mantenimiento, logsDesp);
+          } catch (e) { aviso(e.message); }
+        });
+        enviar($("#mant-desactivar-form"), async (d) => {
+          const r = await api("inquilinos/mantenimiento/despliegue/desactivar", "POST", {
+            clave: d.mant_clave_off,
+            sincronizar_bindings: Boolean($("#mant-desactivar-form [name='sincronizar_bindings']")?.checked),
+          });
+          aviso("Sesiones listas para usar ✅ Sistema reabierto para todos los clientes.");
+          pintarEstadoMantenimiento(r.estado || r.mantenimiento, r.logs_despliegue || logsDesp);
+          await cargarBuilds(false);
+        });
+      } else {
+        badge.textContent = "🟢 SESIONES LISTAS PARA USAR";
+        badge.className = "insignia verde";
+        zona.innerHTML = `
+          <button type="button" class="boton rojo" id="mant-abrir-activar">🔒 Activar Modo Mantenimiento (Cerrar sesiones y preparar despliegue)</button>
+          <form id="mant-activar-form" class="tarjeta" hidden style="margin-top:10px;border:1.5px solid #dc2626">
+            <h3 style="margin-top:0">🔒 Confirmar cierre temporal de sesiones</h3>
+            <p class="suave">Esta acción cerrará inmediatamente las sesiones de todos los usuarios de todas las empresas (excepto tú) y los redirigirá a la portada mientras subes y verificas la actualización.</p>
+            ${campo("mant_mensaje", "📢 Aviso visible a los usuarios en la portada", "Estamos actualizando FacturaYa Venezuela para mejorar el servicio. Por seguridad, las sesiones fueron cerradas temporalmente; podrás ingresar en unos minutos.", "text", 'maxlength="240"')}
+            ${campo("mant_clave_on", "🔒 Tu contraseña de Súper Admin", "", "password", 'required autocomplete="current-password"')}
+            <label class="opcion"><input type="checkbox" id="mant-confirmo" required> ☑️ Confirmo cerrar todas las sesiones de clientes para realizar un despliegue seguro.</label>
+            ${ERROR}
+            <div class="dos-botones">
+              <button type="submit" class="boton rojo">🔒 Cerrar sesiones ahora</button>
+              <button type="button" class="boton contorno" id="mant-cancel-activar">Cancelar</button>
+            </div>
+          </form>`;
+        $("#mant-abrir-activar")?.addEventListener("click", () => {
+          const f = $("#mant-activar-form");
+          if (f) f.hidden = !f.hidden;
+        });
+        $("#mant-cancel-activar")?.addEventListener("click", () => {
+          const f = $("#mant-activar-form");
+          if (f) f.hidden = true;
+        });
+        enviar($("#mant-activar-form"), async (d) => {
+          const r = await api("inquilinos/mantenimiento/despliegue/activar", "POST", {
+            clave: d.mant_clave_on,
+            mensaje: d.mant_mensaje,
+          });
+          aviso(`Modo mantenimiento activado: ${r.sesiones_cerradas} sesión(es) cerrada(s) 🔒`);
+          pintarEstadoMantenimiento(r.estado || r.mantenimiento, r.logs_despliegue || logsDesp);
+          await cargarBuilds(false);
+        });
+      }
+
+      if (logsBox) {
+        logsBox.innerHTML = logsDesp.length
+          ? `<details>
+              <summary style="cursor:pointer;font-weight:600;color:#1A73E8">📜 Historial de ventanas de despliegue (${logsDesp.length})</summary>
+              <div class="lista" style="margin-top:8px">
+                ${logsDesp.map((l) => `<div class="reng">
+                  <div class="reng-cab">
+                    <strong>${l.tipo === "DESPLIEGUE_INICIO" ? "🔒 Cierre de sesiones" : l.tipo === "DESPLIEGUE_FIN" ? "🟢 Sesiones reabiertas" : "⚡ Bindings Nativos"}</strong>
+                    <span class="insignia ${l.estado === "OK" ? "verde" : l.estado === "ADVERTENCIA" ? "ambar" : "rojo"}">${esc(l.estado)}</span>
+                  </div>
+                  <small class="suave">${esc(l.resumen)}<br>${esc(fmtFechaIso(l.iniciado_en || l.finalizado_en))} · ${Number(l.duracion_ms || 0)} ms</small>
+                </div>`).join("")}
+              </div>
+            </details>`
+          : "";
+      }
     };
 
     const abrirLog = async (buildUuid, etiqueta) => {
@@ -1849,6 +2043,9 @@ async function vistaInquilinos(subvista = "") {
     };
 
     const pintarBuilds = (dataCf) => {
+      if (dataCf.mantenimiento !== undefined) {
+        pintarEstadoMantenimiento(dataCf.mantenimiento, dataCf.logs_despliegue || []);
+      }
       const badge = $("#builds-badge"), box = $("#builds-resumen"), trigBox = $("#builds-trigger-box"), btnRetry = $("#builds-abrir-reintentar");
       if (!badge || !box) return;
       if (btnRetry) btnRetry.hidden = !dataCf.configurado;
@@ -1881,11 +2078,12 @@ async function vistaInquilinos(subvista = "") {
       badge.className = `insignia ${est.cls}`;
 
       const trigs = dataCf.triggers || [];
+      triggersActuales = trigs;
       if (trigBox) {
         trigBox.innerHTML = trigs.length
           ? `<label for="builds-trig-sel">Rama / Trigger conectado</label>
              <select id="builds-trig-sel" name="trigger_uuid">
-               ${trigs.map((t) => `<option value="${esc(t.trigger_uuid)}">${esc(t.trigger_name)} (rama: ${esc(t.branch)})</option>`).join("")}
+               ${trigs.map((t) => `<option value="${esc(t.trigger_uuid)}" data-branch="${esc(t.branch || "main")}">${esc(t.trigger_name)} (rama: ${esc(t.branch || "main")})</option>`).join("")}
              </select>`
           : `<p class="suave">No se detectó un trigger de compilación automático en este Worker.</p>`;
       }
@@ -1990,7 +2188,7 @@ async function vistaInquilinos(subvista = "") {
       try {
         const res = await api("inquilinos/cloudflare/builds");
         pintarBuilds(res);
-        if (manual) aviso(res.configurado ? "Estado de compilaciones actualizado ✅" : "Conecta tu API Token primero.");
+        if (manual) aviso(res.configurado ? "Estado de compilaciones actualizado ✅" : "Estado de mantenimiento actualizado ✅");
       } catch (e) {
         if (manual) aviso(e.message);
       } finally {
@@ -2001,8 +2199,10 @@ async function vistaInquilinos(subvista = "") {
     $("#builds-refrescar")?.addEventListener("click", () => cargarBuilds(true));
     if (formReintentar) {
       enviar(formReintentar, async (d) => {
+        const trigObj = triggersActuales.find((t) => t.trigger_uuid === d.trigger_uuid) || triggersActuales[0];
         const r = await api("inquilinos/cloudflare/builds/reintentar", "POST", {
           trigger_uuid: d.trigger_uuid || "",
+          branch: trigObj?.branch || "main",
           purgar_cache: Boolean(formReintentar.querySelector('[name="purgar_cache"]')?.checked),
           clave: d.clave,
         });
@@ -2013,6 +2213,129 @@ async function vistaInquilinos(subvista = "") {
         if (r.estado) pintarBuilds(r.estado);
       });
     }
+    return;
+  }
+
+  // 4c) Subvista: MANTENIMIENTO NOCTURNO AUTOMÁTICO (#/inquilinos/mantenimiento)
+  if (subvista === "mantenimiento") {
+    raiz.innerHTML = `
+      ${barraVolverInq("🌙 Mantenimiento Nocturno")}
+      <section class="tarjeta" id="mant-nocturno-card">
+        <div class="reng-cab">
+          <h2>🌙 Mantenimiento Automático Nocturno (2:00 AM VET)</h2>
+          <span class="insignia gris" id="mn-horario-badge">Consultando…</span>
+        </div>
+        <p class="suave">Protección operativa garantizada: entre <b>6:00 AM y 9:00 PM (hora Venezuela)</b> el sistema mantiene <b>silencio total</b> (cero respaldos R2, cero escaneos PRAGMA ni cierres pesados) para no afectar a ningún cajero. Cada madrugada a las <b>2:00 AM VET</b> audita todas las BD, aplica saneamiento seguro, sincroniza Bindings Nativos D1, respalda en R2 y registra su resumen aquí.</p>
+        <div id="mn-resumen"><p class="suave">Cargando estado y bitácora…</p></div>
+        <div class="dos-botones" style="margin-top:10px">
+          <button type="button" class="boton chico verde" id="mn-ejecutar-ahora">▶️ Ejecutar mantenimiento ahora</button>
+          <button type="button" class="boton chico contorno-azul" id="mn-refrescar">🔄 Actualizar bitácora</button>
+        </div>
+        <div style="margin-top:12px">
+          <label for="mn-correo-modo">✉️ Reporte por correo al Súper Admin</label>
+          <select id="mn-correo-modo">
+            <option value="SOLO_ALERTAS">Solo si hay alertas o errores (Recomendado)</option>
+            <option value="SIEMPRE">Enviar resumen diario todas las madrugadas</option>
+            <option value="DESACTIVADO">No enviar correos (solo guardar logs en panel)</option>
+          </select>
+        </div>
+      </section>
+      <section class="tarjeta">
+        <h2>📜 Historial de Ejecuciones y Logs</h2>
+        <div id="mn-logs" class="lista"><p class="suave">Cargando registros…</p></div>
+      </section>`;
+
+    $("#volver-inq").addEventListener("click", () => (location.hash = "#/inquilinos"));
+
+    const pintarMantenimientoNocturno = (res) => {
+      const badge = $("#mn-horario-badge"), resBox = $("#mn-resumen"), logsBox = $("#mn-logs"), selCorreo = $("#mn-correo-modo");
+      if (badge) {
+        const esDiurno = Boolean(res.horario_diurno_vet);
+        const horaTxt = typeof res.hora_caracas === "number" ? `${String(res.hora_caracas).padStart(2, "0")}:00` : String(res.hora_caracas || "");
+        badge.textContent = esDiurno
+          ? `☀️ ${horaTxt} VET · Silencio diurno activo`
+          : `🌙 ${horaTxt} VET · Ventana nocturna`;
+        badge.className = `insignia ${esDiurno ? "verde" : "azul"}`;
+      }
+      const modoCorreo = res.mantenimiento?.correo_resumen_modo || res.correo_resumen_modo;
+      if (selCorreo && modoCorreo) selCorreo.value = modoCorreo;
+
+      const logs = res.logs || [];
+      const ultimoNocturno = logs.find((l) => l.tipo === "NOCTURNO_AUTO" || l.tipo === "NOCTURNO_MANUAL");
+      if (resBox) {
+        resBox.innerHTML = ultimoNocturno
+          ? `<div class="reng">
+              <div class="reng-cab">
+                <strong>Último mantenimiento (${ultimoNocturno.tipo === "NOCTURNO_AUTO" ? "Automático 2:00 AM" : "Manual"})</strong>
+                <span class="insignia ${ultimoNocturno.estado === "OK" ? "verde" : ultimoNocturno.estado === "ADVERTENCIA" ? "ambar" : "rojo"}">${esc(ultimoNocturno.estado)}</span>
+              </div>
+              <small class="suave">${esc(ultimoNocturno.resumen)}<br>Fecha: ${esc(fechaLocal(ultimoNocturno.iniciado_en || ultimoNocturno.finalizado_en))} · Duración: ${Number(ultimoNocturno.duracion_ms || 0)} ms</small>
+            </div>`
+          : `<p class="suave">Aún no se ha registrado ninguna corrida nocturna. Se ejecutará automáticamente a las 2:00 AM VET o puedes probarla ahora con el botón inferior.</p>`;
+      }
+
+      if (logsBox) {
+        logsBox.innerHTML = logs.length
+          ? logs.map((l) => {
+              const etqTipo = {
+                NOCTURNO_AUTO: "🌙 Mantenimiento 2:00 AM",
+                NOCTURNO_MANUAL: "🛠️ Mantenimiento Manual",
+                DESPLIEGUE_INICIO: "🔒 Despliegue: Sesiones cerradas",
+                DESPLIEGUE_FIN: "🟢 Despliegue: Sesiones reabiertas",
+                BINDINGS_SYNC: "⚡ Sync Bindings Nativos",
+              }[l.tipo] || l.tipo;
+              const detItems = [];
+              if (Number(l.empresas_revisadas || 0) > 0) detItems.push(`BD auditadas: ${l.empresas_sanas}/${l.empresas_revisadas} sanas`);
+              if (Number(l.bindings_sanados || 0) > 0) detItems.push(`Bindings nativos enlazados: ${l.bindings_sanados}`);
+              if (Number(l.respaldos_ok || 0) > 0) detItems.push(`Respaldos R2: ${l.respaldos_ok} OK`);
+              if (Number(l.sesiones_purgadas || 0) > 0) detItems.push(`Sesiones purgadas: ${l.sesiones_purgadas}`);
+              if (Number(l.alertas_count || 0) > 0) detItems.push(`Alertas: ${l.alertas_count}`);
+              return `<div class="reng">
+                <div class="reng-cab">
+                  <strong>${esc(etqTipo)}</strong>
+                  <span class="insignia ${l.estado === "OK" ? "verde" : l.estado === "ADVERTENCIA" ? "ambar" : "rojo"}">${esc(l.estado)}</span>
+                </div>
+                <small class="suave">${esc(l.resumen)}</small>
+                ${detItems.length ? `<small class="suave" style="display:block;margin-top:4px">${esc(detItems.join(" · "))}</small>` : ""}
+                <small class="suave" style="display:block;margin-top:4px">${esc(fechaLocal(l.iniciado_en || l.finalizado_en))} · ${Number(l.duracion_ms || 0)} ms</small>
+              </div>`;
+            }).join("")
+          : `<p class="suave">Sin registros todavía.</p>`;
+      }
+    };
+
+    const cargarMantenimiento = async (manual = false) => {
+      try {
+        const res = await api("inquilinos/mantenimiento/estado");
+        pintarMantenimientoNocturno(res);
+        if (manual) aviso("Bitácora de mantenimiento actualizada ✅");
+      } catch (e) {
+        if (manual) aviso(e.message);
+      }
+    };
+    cargarMantenimiento(false);
+    $("#mn-refrescar")?.addEventListener("click", () => cargarMantenimiento(true));
+    $("#mn-correo-modo")?.addEventListener("change", async (e) => {
+      try {
+        await api("inquilinos/mantenimiento/correo-modo", "POST", { modo: e.target.value });
+        aviso("Preferencia de reporte por correo guardada ✅");
+      } catch (err) {
+        aviso(err.message);
+      }
+    });
+    $("#mn-ejecutar-ahora")?.addEventListener("click", async () => {
+      const btn = $("#mn-ejecutar-ahora");
+      if (btn) { btn.disabled = true; btn.textContent = "⏳ Ejecutando auditoría y respaldos…"; }
+      try {
+        const r = await api("inquilinos/mantenimiento/nocturno/ejecutar", "POST", {});
+        aviso(`Mantenimiento finalizado (${r.resultado?.estado || "OK"}) ✅`);
+        await cargarMantenimiento(false);
+      } catch (err) {
+        aviso(err.message);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "▶️ Ejecutar mantenimiento ahora"; }
+      }
+    });
     return;
   }
 
@@ -2545,11 +2868,17 @@ function vistaAjustes() {
         </div>` : ""}
       </div>
     </section>
+    ${botonInstalarPwaHtml("ajustes") ? `<section class="tarjeta" id="card-pwa-ajustes">
+      <h2>📲 Aplicación Instalable (Celular y PC)</h2>
+      <p class="suave">Instala FacturaYa Venezuela en la pantalla principal de tu teléfono, tablet o computadora para abrirlo a pantalla completa en un toque, sin perder las actualizaciones automáticas ni la sincronización fiscal SENIAT.</p>
+      ${botonInstalarPwaHtml("ajustes")}
+    </section>` : ""}
     <button class="boton contorno" id="salir">Cerrar sesión</button>`;
 
   $("#atras").addEventListener("click", () => (location.hash = "#/inicio"));
   $("#ir-inquilinos")?.addEventListener("click", () => (location.hash = "#/inquilinos"));
-  raiz.querySelectorAll(".barra-super [data-destino]").forEach((b) => b.addEventListener("click", () => (location.hash = b.dataset.destino)));
+  raiz.querySelectorAll(".barra-super [data-destino], .barra-mant-super [data-destino]").forEach((b) => b.addEventListener("click", () => (location.hash = b.dataset.destino)));
+  enlazarBotonesPwa(raiz, aviso);
   $("#cambiar-clave")?.addEventListener("click", () => vistaCambiarClave(estado, { forzado: false, alTerminar: () => { if (location.hash !== "#/ajustes") location.hash = "#/ajustes"; return ruta(); } }));
   $("#salir").addEventListener("click", async () => { await api("logout", "POST"); history.replaceState(null, "", "/"); await ruta(); });
 
@@ -2859,6 +3188,18 @@ async function ruta() {
     $("#reintentar").addEventListener("click", ruta);
   }
 }
+window.addEventListener("facturaya:mantenimiento", (ev) => {
+  detenerRelojDemo();
+  estado = {
+    ...estado,
+    sesion: false,
+    mantenimiento: true,
+    mensaje_mantenimiento: ev?.detail?.mensaje || ev?.detail?.error || "",
+  };
+  history.replaceState(null, "", "/");
+  vistaLogin();
+  window.scrollTo(0, 0);
+});
 window.addEventListener("facturaya:demo-expirado", (ev) => {
   detenerRelojDemo();
   estado = {
@@ -2873,5 +3214,6 @@ window.addEventListener("facturaya:demo-expirado", (ev) => {
   window.scrollTo(0, 0);
 });
 window.addEventListener("hashchange", ruta);
+iniciarPwaYConectividad();
 ruta();
 

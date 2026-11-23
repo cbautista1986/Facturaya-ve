@@ -29,8 +29,14 @@
   <meta name="twitter:description" content="Sistema de facturación digital en Venezuela a tasa oficial BCV conforme a SNAT/2011/0071 y SNAT/2024/000102.">
   <meta name="twitter:image" content="https://facturayave.com/og-facturaya.png">
 
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261122v491">
-  <link rel="stylesheet" href="/estilos.css?v=20261122v491">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="FacturaYa">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20261123v500">
+  <link rel="stylesheet" href="/estilos.css?v=20261123v500">
 
   <script type="application/ld+json">
   {
@@ -128,6 +134,7 @@
   </script>
 </head>
 <body>
+  <div id="barra-red" class="barra-red" hidden role="status" aria-live="polite"></div>
   <main id="app" aria-live="polite">
     <section class="tarjeta seo-prehidratacion">
       <h1>FacturaYa Venezuela — Facturación Digital SENIAT y Libros Contables</h1>
@@ -137,6 +144,6 @@
     </section>
   </main>
   <div id="burbuja" class="burbuja" hidden></div>
-  <script type="module" src="/app.js?v=20261122v491"></script>
+  <script type="module" src="/app.js?v=20261123v500"></script>
 </body>
 </html>

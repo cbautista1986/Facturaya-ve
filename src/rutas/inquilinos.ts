@@ -29,7 +29,20 @@ import {
   obtenerUuidBdPrincipal,
   relanzarBuildCloudflare,
   rollbackWorkerCloudflare,
+  sincronizarBindingsD1Cloudflare,
 } from "../cloudflare-api";
+import {
+  activarModoMantenimientoDespliegue,
+  actualizarEtapaDespliegue,
+  configurarCorreoResumenMantenimiento,
+  desactivarModoMantenimientoDespliegue,
+  ejecutarMantenimientoNocturno,
+  esHorarioDiurnoCaracas,
+  guardarLogMantenimiento,
+  horaCaracas,
+  leerEstadoMantenimiento,
+  listarLogsMantenimiento,
+} from "../mantenimiento";
 import { EMAIL, RIF, ahora, auditar, falla, fechaCaracas, leerJson, requiereSesion, texto, type Env } from "../comun";
 import { enviarCorreo } from "../correo";
 import {
@@ -574,12 +587,45 @@ inquilinos.post("/", async (c) => {
   });
   if (resCorreo.ok) correo_enviado = true;
 
+  // 3b) Auto-enlace Nativo D1 (v5.0.0):
+  // - De noche (9:00 PM – 5:59 AM VET): conecta el Binding Nativo al Worker al instante vía API de Cloudflare.
+  // - De día (6:00 AM – 8:59 PM VET): opera 100% aislado por HTTP D1 sin tocar el Worker de las demás empresas,
+  //   y el Mantenimiento Nocturno de las 2:00 AM lo promueve automáticamente a Binding Nativo.
+  let binding_nativo_enlazado = false;
+  let binding_nativo_programado_2am = false;
+  let binding_nativo_aviso = "";
+  if (d1Uuid && cfgCf.configurado) {
+    if (esHorarioDiurnoCaracas()) {
+      binding_nativo_programado_2am = true;
+      binding_nativo_aviso = "Alta diurna aislada (isla segura): ya opera vía D1 HTTP sin afectar a otras empresas; a las 2:00 AM pasará automáticamente a Binding Nativo.";
+    } else {
+      const syncNativo = await sincronizarBindingsD1Cloudflare(rawDb, envObj, { soloCodigo: codigo }).catch((e) => ({
+        ok: false,
+        cambios: 0,
+        enlazados: [] as string[],
+        ya_nativos: [] as string[],
+        mensaje: "",
+        error: (e as Error).message,
+      }));
+      if (syncNativo.ok) {
+        binding_nativo_enlazado = true;
+        binding_nativo_aviso = syncNativo.mensaje || `Binding Nativo ${codigo} conectado automáticamente en Cloudflare.`;
+      } else {
+        binding_nativo_programado_2am = true;
+        binding_nativo_aviso = syncNativo.error || "Operando en modo HTTP aislado; se reintentará enlace nativo a las 2:00 AM.";
+      }
+    }
+  }
+
   await auditar(c, c.get("usuario").id, "INQUILINO_CREAR", `${codigo} (${d1Nombre}${d1Uuid ? " · D1:" + d1Uuid : ""}) ${nombre_negocio} (${rif}) -> ${email_dueno}`);
   return c.json({
     ok: true,
     codigo,
     d1_uuid: d1Uuid,
     d1_nombre: d1Nombre,
+    binding_nativo_enlazado,
+    binding_nativo_programado_2am,
+    binding_nativo_aviso,
     nombre_negocio,
     rif,
     tipo_contribuyente,
@@ -1153,12 +1199,68 @@ inquilinos.post("/cloudflare/eliminar-bd", async (c) => {
   return c.json({ ok: true, estado });
 });
 
+inquilinos.post("/cloudflare/sincronizar-bindings", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
+  await asegurarTablasMultiTenant(rawDb);
+  const t0 = Date.now();
+  const iniciadoEn = new Date().toISOString();
+  const res = await sincronizarBindingsD1Cloudflare(rawDb, envObj);
+  await guardarLogMantenimiento(rawDb, {
+    tipo: "BINDINGS_SYNC",
+    estado: res.ok ? "OK" : "ADVERTENCIA",
+    iniciado_en: iniciadoEn,
+    finalizado_en: new Date().toISOString(),
+    duracion_ms: Date.now() - t0,
+    empresas_revisadas: res.enlazados.length + res.ya_nativos.length,
+    empresas_sanas: res.enlazados.length + res.ya_nativos.length,
+    bindings_sanados: res.cambios,
+    respaldos_ok: 0,
+    sesiones_purgadas: 0,
+    alertas_count: res.ok ? 0 : 1,
+    resumen: res.ok ? (res.mensaje || "Bindings D1 sincronizados.") : (res.error || "No se pudo sincronizar bindings D1."),
+    detalle_json: JSON.stringify(res),
+  });
+  await auditar(c, c.get("usuario").id, "CLOUDFLARE_BINDINGS_SYNC", `${res.cambios} enlazado(s): ${res.enlazados.join(", ") || "sin cambios"}`);
+  const estado = await consultarEstadoCloudflare(rawDb, envObj);
+  if (!res.ok) return c.json({ ok: false, error: res.error, permiso_faltante: res.permiso_faltante, resultado: res, estado }, 400);
+  return c.json({ ok: true, resultado: res, estado });
+});
+
 inquilinos.get("/cloudflare/builds", async (c) => {
   const rawDb = c.get("rawDb") || c.env.DB;
   const envObj = c.env as unknown as Record<string, unknown>;
   await asegurarTablasMultiTenant(rawDb);
-  const res = await consultarDesplieguesYBuilds(rawDb, envObj);
-  return c.json(res);
+  const [res, mant, logs] = await Promise.all([
+    consultarDesplieguesYBuilds(rawDb, envObj),
+    leerEstadoMantenimiento(rawDb, { omitirCache: true }),
+    listarLogsMantenimiento(rawDb, 15),
+  ]);
+  // Si el Modo Mantenimiento de despliegue está activo, sincronizar automáticamente la etapa con el estado real del último build de main
+  let mantFinal = mant;
+  if (mant.activo && res.configurado && res.builds?.length) {
+    const ultimoMain = res.builds.find((b) => (b.branch || "main") === "main") || res.builds[0];
+    if (ultimoMain) {
+      const estRaw = `${ultimoMain.status} ${ultimoMain.build_outcome}`.toLowerCase();
+      const creadoMs = Date.parse(ultimoMain.created_on || "");
+      const activadoMs = Date.parse(mant.activado_en || "");
+      const esPosterior = Number.isFinite(creadoMs) && Number.isFinite(activadoMs) && creadoMs >= activadoMs - 60_000;
+      if (esPosterior) {
+        if (/queued|running|initializing|active|pending/.test(estRaw) && !/success|succeed|fail|error/.test(estRaw)) {
+          mantFinal = await actualizarEtapaDespliegue(rawDb, "DESPLEGANDO", {
+            ultimo_build_uuid: ultimoMain.build_uuid,
+            ultimo_build_estado: "COMPILANDO",
+          });
+        } else if (/success|succeed/.test(estRaw) && !/fail|error/.test(estRaw)) {
+          mantFinal = await actualizarEtapaDespliegue(rawDb, "VERIFICADO_OK", {
+            ultimo_build_uuid: ultimoMain.build_uuid,
+            ultimo_build_estado: "OK",
+          });
+        }
+      }
+    }
+  }
+  return c.json({ ...res, mantenimiento: mantFinal, logs_despliegue: logs.filter((l) => l.tipo === "DESPLIEGUE_INICIO" || l.tipo === "DESPLIEGUE_FIN").slice(0, 10) });
 });
 
 inquilinos.get("/cloudflare/builds/:buildUuid/logs", async (c) => {
@@ -1179,15 +1281,26 @@ inquilinos.post("/cloudflare/builds/reintentar", async (c) => {
     return falla(c, 401, "Tu contraseña de Súper Administrador no es correcta.");
   }
   const triggerUuid = texto(b.trigger_uuid, 80);
+  const branch = texto(b.branch, 80);
   const purgarCache = Boolean(b.purgar_cache);
   const res = await relanzarBuildCloudflare(rawDb, envObj, {
     trigger_uuid: triggerUuid || undefined,
+    branch: branch || undefined,
     purgar_cache: purgarCache,
   });
   if (!res.ok) return falla(c, 400, res.error);
-  await auditar(c, c.get("usuario").id, "CLOUDFLARE_BUILD_REINTENTAR", `Build: ${res.build_uuid} · Cache: ${purgarCache ? "purgado" : "normal"}`);
-  const estado = await consultarDesplieguesYBuilds(rawDb, envObj);
-  return c.json({ ok: true, lanzado: res, estado });
+  const mant = await leerEstadoMantenimiento(rawDb, { omitirCache: true });
+  if (mant.activo) {
+    await actualizarEtapaDespliegue(rawDb, "DESPLEGANDO", { ultimo_build_uuid: res.build_uuid, ultimo_build_estado: "COMPILANDO" });
+  }
+  await auditar(c, c.get("usuario").id, "CLOUDFLARE_BUILD_REINTENTAR", `Build: ${res.build_uuid} · Rama: ${res.branch} · Cache: ${purgarCache ? "purgado" : "normal"}`);
+  const [estado, mantDespues, logsDesp] = await Promise.all([
+    consultarDesplieguesYBuilds(rawDb, envObj),
+    leerEstadoMantenimiento(rawDb, { omitirCache: true }),
+    listarLogsMantenimiento(rawDb, 15),
+  ]);
+  const logsFiltrados = logsDesp.filter((l) => l.tipo === "DESPLIEGUE_INICIO" || l.tipo === "DESPLIEGUE_FIN").slice(0, 10);
+  return c.json({ ok: true, lanzado: res, estado: { ...estado, mantenimiento: mantDespues, logs_despliegue: logsFiltrados } });
 });
 
 inquilinos.post("/cloudflare/rollback", async (c) => {
@@ -1205,8 +1318,13 @@ inquilinos.post("/cloudflare/rollback", async (c) => {
   const res = await rollbackWorkerCloudflare(rawDb, envObj, versionId, motivo);
   if (!res.ok) return falla(c, 400, res.error);
   await auditar(c, c.get("usuario").id, "CLOUDFLARE_ROLLBACK", `Version: ${res.version_id} · ${motivo}`);
-  const estado = await consultarDesplieguesYBuilds(rawDb, envObj);
-  return c.json({ ok: true, rollback: res, estado });
+  const [estado, mantDespues, logsDesp] = await Promise.all([
+    consultarDesplieguesYBuilds(rawDb, envObj),
+    leerEstadoMantenimiento(rawDb, { omitirCache: true }),
+    listarLogsMantenimiento(rawDb, 15),
+  ]);
+  const logsFiltrados = logsDesp.filter((l) => l.tipo === "DESPLIEGUE_INICIO" || l.tipo === "DESPLIEGUE_FIN").slice(0, 10);
+  return c.json({ ok: true, rollback: res, estado: { ...estado, mantenimiento: mantDespues, logs_despliegue: logsFiltrados } });
 });
 
 // Diagnóstico integral de salud de base de datos en las empresas (soporta ?desde=0&limite=8 o ?codigo=DB_X para 100+ BD)
@@ -1340,6 +1458,107 @@ inquilinos.get("/respaldos-r2/descargar", async (c) => {
     headers["Content-Length"] = String(obj.size);
   }
   return new Response(cuerpo as ConstructorParameters<typeof Response>[0], { headers });
+});
+
+// ---- MODO MANTENIMIENTO PARA DESPLIEGUES Y MANTENIMIENTO NOCTURNO AUTOMÁTICO (v5.0.0) ----
+
+inquilinos.get("/mantenimiento/estado", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  await asegurarTablasMultiTenant(rawDb);
+  const [mantenimiento, logs] = await Promise.all([
+    leerEstadoMantenimiento(rawDb, { omitirCache: true }),
+    listarLogsMantenimiento(rawDb, 40),
+  ]);
+  return c.json({
+    ok: true,
+    mantenimiento,
+    horario_diurno_vet: esHorarioDiurnoCaracas(),
+    hora_caracas: horaCaracas(),
+    ventana_nocturna: "1:00 AM – 5:00 AM (Hora Venezuela · Cron automático 2:00 AM)",
+    silencio_diurno: "6:00 AM – 9:00 PM (Cero tareas pesadas ni respaldos)",
+    logs,
+  });
+});
+
+inquilinos.post("/mantenimiento/despliegue/activar", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
+  const b = await leerJson(c);
+  const clave = String(b.clave ?? "");
+  if (!(await verificarClaveSuperAdmin(rawDb, clave, envObj))) {
+    return falla(c, 401, "Tu contraseña de Súper Administrador no es correcta.");
+  }
+  const mensaje = texto(b.mensaje, 280);
+  const res = await activarModoMantenimientoDespliegue(rawDb, envObj, {
+    emailSuper: c.get("usuario").email,
+    mensaje: mensaje || undefined,
+  });
+  await auditar(
+    c,
+    c.get("usuario").id,
+    "MANTENIMIENTO_DESPLIEGUE_ACTIVAR",
+    `${res.sesiones_cerradas} sesión(es) cerrada(s) en ${res.empresas_procesadas} empresa(s)`
+  );
+  const logs = await listarLogsMantenimiento(rawDb, 15);
+  return c.json({ ok: true, ...res, logs_despliegue: logs.filter((l) => l.tipo === "DESPLIEGUE_INICIO" || l.tipo === "DESPLIEGUE_FIN").slice(0, 10) });
+});
+
+inquilinos.post("/mantenimiento/despliegue/etapa", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const b = await leerJson(c);
+  const etapaRaw = texto(b.etapa, 30).toUpperCase();
+  if (!["SESIONES_CERRADAS", "DESPLEGANDO", "VERIFICADO_OK"].includes(etapaRaw)) {
+    return falla(c, 400, "Etapa de despliegue no válida.");
+  }
+  const actual = await leerEstadoMantenimiento(rawDb, { omitirCache: true });
+  if (!actual.activo) {
+    return falla(c, 409, "Activa primero el Modo Mantenimiento antes de cambiar la etapa de despliegue.");
+  }
+  const estado = await actualizarEtapaDespliegue(rawDb, etapaRaw as "SESIONES_CERRADAS" | "DESPLEGANDO" | "VERIFICADO_OK");
+  return c.json({ ok: true, estado });
+});
+
+inquilinos.post("/mantenimiento/despliegue/desactivar", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
+  const b = await leerJson(c);
+  const clave = String(b.clave ?? "");
+  if (!(await verificarClaveSuperAdmin(rawDb, clave, envObj))) {
+    return falla(c, 401, "Tu contraseña de Súper Administrador no es correcta.");
+  }
+  const res = await desactivarModoMantenimientoDespliegue(rawDb, envObj, {
+    emailSuper: c.get("usuario").email,
+    sincronizarBindings: b.sincronizar_bindings !== false,
+  });
+  await auditar(
+    c,
+    c.get("usuario").id,
+    "MANTENIMIENTO_DESPLIEGUE_DESACTIVAR",
+    `Sesiones listas para usar · bindings sanados: ${res.bindings_sanados}`
+  );
+  const logs = await listarLogsMantenimiento(rawDb, 15);
+  return c.json({ ok: true, ...res, logs_despliegue: logs.filter((l) => l.tipo === "DESPLIEGUE_INICIO" || l.tipo === "DESPLIEGUE_FIN").slice(0, 10) });
+});
+
+inquilinos.post("/mantenimiento/nocturno/ejecutar", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
+  const resultado = await ejecutarMantenimientoNocturno(rawDb, envObj, { tipo: "NOCTURNO_MANUAL" });
+  await auditar(c, c.get("usuario").id, "MANTENIMIENTO_NOCTURNO_MANUAL", resultado.resumen);
+  const logs = await listarLogsMantenimiento(rawDb, 40);
+  return c.json({ ok: true, resultado, logs });
+});
+
+inquilinos.post("/mantenimiento/correo-modo", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const b = await leerJson(c);
+  const modoRaw = texto(b.modo, 20).toUpperCase();
+  if (!["SOLO_ALERTAS", "SIEMPRE", "DESACTIVADO"].includes(modoRaw)) {
+    return falla(c, 400, "Modo de correo no válido (SOLO_ALERTAS, SIEMPRE o DESACTIVADO).");
+  }
+  const mantenimiento = await configurarCorreoResumenMantenimiento(rawDb, modoRaw as "SOLO_ALERTAS" | "SIEMPRE" | "DESACTIVADO");
+  await auditar(c, c.get("usuario").id, "MANTENIMIENTO_CORREO_MODO", modoRaw);
+  return c.json({ ok: true, mantenimiento });
 });
 
 export default inquilinos;

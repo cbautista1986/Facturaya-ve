@@ -888,7 +888,15 @@ test("6. Paquete v3.4: Tasa BCV Centralizada (Auto vs Manual), Notas de Débito 
     const syncRes = await reqJson(env, jar, "/api/sistema/tasa-bcv/sincronizar", "POST", {});
     assert.equal(syncRes.status, 200);
     assert.equal(syncRes.data.tasa_bcv, "78.45");
-    assert.equal(llamadasBcvExternas, 1, "Debe realizar 1 sola consulta externa al BCV y replicarla a todas las empresas en AUTOMATICO");
+    assert.equal(llamadasBcvExternas, 1, "Debe realizar 1 sola consulta externa al BCV");
+
+    // En v5.0.0 las demás empresas en AUTOMATICO heredan la tasa global de forma perezosa en /api/estado (sin bucle N-empresas)
+    await reqJson(env, jar, "/api/inquilinos/cambiar", "POST", { codigo: "DB_1" });
+    await reqJson(env, jar, "/api/estado");
+    await reqJson(env, jar, "/api/inquilinos/cambiar", "POST", { codigo: "DB_2" });
+    await reqJson(env, jar, "/api/estado");
+    await reqJson(env, jar, "/api/inquilinos/cambiar", "POST", { codigo: "principal" });
+    assert.equal(llamadasBcvExternas, 1, "La herencia perezosa no debe realizar nuevas llamadas externas al BCV");
 
     const filaPrin = await db.prepare(`SELECT tasa_bcv, tasa_bcv_modo FROM perfil_emisor WHERE id = 1`).first<{ tasa_bcv: number | string; tasa_bcv_modo: string }>();
     const filaDb1 = await db.prepare(`SELECT tasa_bcv, tasa_bcv_modo FROM db1_perfil_emisor WHERE id = 1`).first<{ tasa_bcv: number | string; tasa_bcv_modo: string }>();

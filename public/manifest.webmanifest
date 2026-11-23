@@ -1,0 +1,34 @@
+{
+  "id": "/",
+  "name": "FacturaYa Venezuela",
+  "short_name": "FacturaYa",
+  "description": "Sistema de facturación digital en Venezuela conforme al SENIAT, tasa oficial BCV y libros contables.",
+  "lang": "es-VE",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#0A1F3C",
+  "background_color": "#0A1F3C",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -416,6 +416,37 @@ export async function asegurarTablasMultiTenant(rawDb: D1Database, env: Record<s
         limpiado INTEGER NOT NULL DEFAULT 1,
         actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
       )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_mantenimiento_estado (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        activo INTEGER NOT NULL DEFAULT 0,
+        etapa TEXT NOT NULL DEFAULT 'NORMAL',
+        mensaje TEXT NOT NULL DEFAULT '',
+        activado_en TEXT NOT NULL DEFAULT '',
+        activado_por TEXT NOT NULL DEFAULT '',
+        desactivado_en TEXT NOT NULL DEFAULT '',
+        sesiones_cerradas_total INTEGER NOT NULL DEFAULT 0,
+        empresas_cerradas INTEGER NOT NULL DEFAULT 0,
+        ultimo_build_uuid TEXT NOT NULL DEFAULT '',
+        ultimo_build_estado TEXT NOT NULL DEFAULT '',
+        correo_resumen_modo TEXT NOT NULL DEFAULT 'SOLO_ALERTAS',
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`),
+      rawDb.prepare(`CREATE TABLE IF NOT EXISTS _mt_mantenimiento_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tipo TEXT NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'OK',
+        iniciado_en TEXT NOT NULL,
+        finalizado_en TEXT NOT NULL,
+        duracion_ms INTEGER NOT NULL DEFAULT 0,
+        empresas_revisadas INTEGER NOT NULL DEFAULT 0,
+        empresas_sanas INTEGER NOT NULL DEFAULT 0,
+        bindings_sanados INTEGER NOT NULL DEFAULT 0,
+        respaldos_ok INTEGER NOT NULL DEFAULT 0,
+        sesiones_purgadas INTEGER NOT NULL DEFAULT 0,
+        alertas_count INTEGER NOT NULL DEFAULT 0,
+        resumen TEXT NOT NULL DEFAULT '',
+        detalle_json TEXT NOT NULL DEFAULT '{}'
+      )`),
     ]);
 
     // Asegurar columnas adicionales en instalaciones previas (append-only seguro)
@@ -730,9 +761,9 @@ export async function generarWranglerTomlBindings(rawDb: D1Database, envObj?: Re
     `EMAIL_REMITENTE = "facturas@mail.facturayave.com"`,
     `EMAIL_NOMBRE_PLATAFORMA = "FacturaYa Venezuela"`,
     ``,
-    `# Sincronización automática de Tasa BCV, Cierre Contable Mensual y Respaldo Diario/Mensual R2 (8:00 AM, 1:00 PM y 6:00 PM hora Caracas UTC-4)`,
+    `# Ventana de Mantenimiento Nocturno (2:00 AM VET = "0 6 * * *") + Tasa BCV liviana diurna (8 AM, 1 PM, 6 PM VET = "0 12,17,22 * * *")`,
     `[triggers]`,
-    `crons = ["0 12,17,22 * * *"]`,
+    `crons = ["0 6 * * *", "0 12,17,22 * * *"]`,
     ``,
     `# Base de datos principal (Directorio Maestro + Negocio Principal)`,
     `[[d1_databases]]`,

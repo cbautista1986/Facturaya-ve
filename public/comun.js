@@ -42,14 +42,37 @@ export async function api(ruta, metodo = "GET", cuerpo) {
     const inqTab = sessionStorage.getItem("inq_tab");
     if (inqTab && ruta !== "login") headers["X-Inquilino"] = inqTab;
   } catch {}
-  const r = await fetch(`/api/${ruta}`, {
-    method: metodo,
-    headers,
-    body: cuerpo ? JSON.stringify(cuerpo) : undefined,
-  });
+  const inicioMs = Date.now();
+  let r;
+  try {
+    r = await fetch(`/api/${ruta}`, {
+      method: metodo,
+      headers,
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    });
+  } catch {
+    try { window.dispatchEvent(new CustomEvent("facturaya:red-caida")); } catch {}
+    throw new Error(
+      navigator.onLine === false
+        ? "Sin conexión a internet. Verifica tu señal y vuelve a intentar."
+        : "Conexión inestable o interrumpida con el servidor. Intenta de nuevo en unos segundos."
+    );
+  }
+  const duracionMs = Date.now() - inicioMs;
+  if (duracionMs >= 4000) {
+    try { window.dispatchEvent(new CustomEvent("facturaya:red-lenta", { detail: { ms: duracionMs } })); } catch {}
+  } else {
+    try { window.dispatchEvent(new CustomEvent("facturaya:red-ok")); } catch {}
+  }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const err = new Error(j.error || `Error ${r.status}`);
+    if (r.status === 503 && j.mantenimiento) {
+      err.mantenimiento = true;
+      err.mensaje_mantenimiento = j.mensaje || j.error || "";
+      fijarInquilinoTab("");
+      try { window.dispatchEvent(new CustomEvent("facturaya:mantenimiento", { detail: j })); } catch {}
+    }
     if (j.demo_expirado) {
       err.demo_expirado = true;
       if (ruta !== "login") {

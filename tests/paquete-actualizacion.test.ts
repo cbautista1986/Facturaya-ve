@@ -921,7 +921,7 @@ test("8. Paquete v4.0 Escala Pro (100 Empresas × 100 Facturas/día): Deduplicac
   assert.equal(respOtroAnio.data.anio_filtro, 2021);
   assert.equal(respOtroAnio.data.conteos.documentos, 0);
 
-  // 6) Probar Cron por lotes (cursor persistente cuando hay > 15 inquilinos) + purga de sesiones vencidas
+  // 6) Probar Cron Nocturno (2:00 AM VET = "0 6 * * *"): purga de sesiones vencidas + bitácora de mantenimiento
   await db.prepare("INSERT INTO sesiones (token_hash, usuario_id, expira_en) VALUES ('expirada_hash_123', 1, 100)").run();
   for (let i = 1; i <= 18; i++) {
     await db
@@ -933,13 +933,14 @@ test("8. Paquete v4.0 Escala Pro (100 Empresas × 100 Facturas/día): Deduplicac
       .run();
   }
   const scheduledFn = (app as unknown as { scheduled: (ev: unknown, env: unknown) => Promise<void> }).scheduled;
-  await scheduledFn({}, env);
+  await scheduledFn({ cron: "0 6 * * *" }, env);
 
   const sesExpirada = await db.prepare("SELECT 1 FROM sesiones WHERE token_hash = 'expirada_hash_123'").first();
-  assert.equal(sesExpirada, null, "La sesión expirada debió purgarse en scheduled()");
+  assert.equal(sesExpirada, null, "La sesión expirada debió purgarse en el Cron nocturno 0 6 * * *");
 
-  const cursorFila = await db.prepare("SELECT valor FROM integraciones WHERE clave = 'cron_cursor_inq'").first<{ valor: string }>();
-  assert.equal(cursorFila?.valor, "15", "El cursor del cron debe avanzar a 15 tras procesar el primer lote de 15 empresas");
+  const logNocturno = await db.prepare("SELECT tipo, empresas_revisadas FROM _mt_mantenimiento_logs ORDER BY id DESC LIMIT 1").first<{ tipo: string; empresas_revisadas: number }>();
+  assert.equal(logNocturno?.tipo, "NOCTURNO_AUTO");
+  assert.ok((logNocturno?.empresas_revisadas || 0) >= 18, "El mantenimiento nocturno debe auditar todas las empresas activas");
 });
 
 test("9. Paquete v4.2 Blindaje de Auditoría Claude: Llave Privada por Instancia D1 (_mt_llave_plataforma), Recuperación de Un Solo Uso, Cobertura Exacta de Respaldo antes de Reinicio en REAL, Retenciones 75%/100% e ISLR y Conector Imprenta Digital con Idempotency-Key y Reintento sin alterar APP_SENIAT", async () => {

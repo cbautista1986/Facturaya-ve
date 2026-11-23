@@ -7,7 +7,6 @@ import { CLAVE_FALSA, claveTemporal, codigoRecuperacion, hashClave, normalizarCo
 import { NOMBRE_ROL, emailSuperAdminConfig, esSuperAdmin, permisosDe, permitido, sinCostos, tiene, veCostos } from "./permisos";
 import { enviarCorreo } from "./correo";
 import { asegurarTablasMultiTenant, buscarInquilinoPorCorreo, esCorreoSuperAdmin, fijarVistaSuperAdmin, hidratarBindingsCloudflare, invalidarCacheInquilinos, obtenerDbInquilino, obtenerEstadoInquilino, obtenerSuperAdminPrincipal, registrarCorreoDirectorio, tieneBindingDedicado, type InquilinoInfo } from "./inquilinos";
-import { ejecutarCobroAutomaticoDia1 } from "./suscripciones";
 import { usuarios, cuenta } from "./rutas/usuarios";
 import { restaurar } from "./rutas/restaurar";
 import { EMAIL, RIF, ahora, auditar, falla, fechaCaracas, ip, leerJson, modoActual, usuarioActual, type Ctx, type Env } from "./comun";
@@ -22,7 +21,13 @@ import {
 } from "./seguridad-red";
 import { aRifSeniat } from "../public/dinero.js";
 import { intentarCierreMensualAutomatico, mesAnteriorCaracas, obtenerTasaBcvGlobal, sincronizarTasaInquilinoSiAuto } from "./tasa-bcv";
-import { intentarArchivoMensualR2, intentarRespaldoDiarioR2, leerUltimoErrorR2, obtenerBucketR2 } from "./respaldos-r2";
+import { leerUltimoErrorR2, obtenerBucketR2 } from "./respaldos-r2";
+import {
+  ejecutarMantenimientoNocturno,
+  esCronMantenimientoNocturno,
+  esHorarioDiurnoCaracas,
+  leerEstadoMantenimiento,
+} from "./mantenimiento";
 import { verificarCodigoTotp, verificarYConsumirCodigoRespaldo2fa } from "./totp";
 import { normalizarTipoContribuyente, reglasRegimen, validarTipoContribuyenteEstricto } from "./regimen";
 import clientes from "./rutas/clientes";
@@ -187,10 +192,24 @@ app.use("/api/*", async (c, next) => {
   const ruta = c.req.path;
   if (PUBLICAS.has(ruta) || ruta.startsWith("/api/correo/eventos/")) return next();
   const u = await usuarioActual(c).catch(() => null);
-  if (!u) return falla(c, 401, "Inicia sesión para continuar.");
+  if (!u) {
+    const rawDbMant = c.get("rawDb") || c.env.DB;
+    const mant = await leerEstadoMantenimiento(rawDbMant);
+    if (mant.activo) {
+      return c.json({ ok: false, mantenimiento: true, etapa: mant.etapa, error: mant.mensaje, mensaje: mant.mensaje }, 503);
+    }
+    return falla(c, 401, "Inicia sesión para continuar.");
+  }
   c.set("usuario", u);
   const envObj = c.env as unknown as Record<string, unknown>;
   const inqCod = c.get("inquilinoCodigo") || "principal";
+  if (!esSuperAdmin(u.rol, u.email, envObj)) {
+    const rawDbMant = c.get("rawDb") || c.env.DB;
+    const mant = await leerEstadoMantenimiento(rawDbMant);
+    if (mant.activo) {
+      return c.json({ ok: false, mantenimiento: true, etapa: mant.etapa, error: mant.mensaje, mensaje: mant.mensaje }, 503);
+    }
+  }
   if (inqCod === CODIGO_DEMO && !esSuperAdmin(u.rol, u.email, envObj)) {
     const rawDb = c.get("rawDb") || c.env.DB;
     const estDemo = calcularEstadoDemo(await leerFilaDemoEstado(rawDb));
@@ -272,7 +291,20 @@ app.get("/api/estado", async (c) => {
       fijarCookieInquilino(c, "principal");
     }
   }
+  const mantEstado = await leerEstadoMantenimiento(rawDb);
   if (!usuario) {
+    if (mantEstado.activo) {
+      return c.json({
+        instalado: true,
+        sesion: false,
+        mantenimiento: true,
+        mantenimiento_etapa: mantEstado.etapa,
+        mantenimiento_mensaje: mantEstado.mensaje,
+        mensaje_mantenimiento: mantEstado.mensaje,
+        turnstile_site_key: turnstileKey,
+        ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
+      });
+    }
     if (inqCod === CODIGO_DEMO) {
       await limpiarDemoExpiradaSiCorresponde(rawDb, envObj).catch(() => {});
       const filaDemo = await leerFilaDemoEstado(rawDb);
@@ -309,6 +341,18 @@ app.get("/api/estado", async (c) => {
     return c.json({
       instalado: true,
       sesion: false,
+      turnstile_site_key: turnstileKey,
+      ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
+    });
+  }
+  if (mantEstado.activo && !esSuperAdmin(usuario.rol, usuario.email, envObj)) {
+    return c.json({
+      instalado: true,
+      sesion: false,
+      mantenimiento: true,
+      mantenimiento_etapa: mantEstado.etapa,
+      mantenimiento_mensaje: mantEstado.mensaje,
+      mensaje_mantenimiento: mantEstado.mensaje,
       turnstile_site_key: turnstileKey,
       ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
     });
@@ -388,11 +432,11 @@ app.get("/api/estado", async (c) => {
     negocio.tasa_bcv_modo = negocio.tasa_bcv_modo === "MANUAL" ? "MANUAL" : "AUTOMATICO";
     negocio.tasa_bcv_fuente = syncBcv?.fuente || (negocio.tasa_bcv_modo === "MANUAL" ? "Manual" : "BCV Oficial");
 
-    // Envío automático de cierre mensual en los primeros 5 días del mes si aún no se ha despachado el mes anterior (nunca en Demo)
+    // Envío automático de cierre mensual en los primeros 5 días del mes SOLO fuera de horario comercial diurno (nunca de 6 AM a 9 PM ni en Demo)
     const hoyIso = fechaCaracas();
     const diaMes = Number(hoyIso.slice(8, 10));
     const mesAnt = mesAnteriorCaracas(hoyIso);
-    if (inqCod !== CODIGO_DEMO && esNavegador && Number(negocio.cierre_mensual_correo ?? 1) === 1 && diaMes >= 1 && diaMes <= 5 && negocio.ultimo_cierre_correo !== mesAnt) {
+    if (inqCod !== CODIGO_DEMO && !esHorarioDiurnoCaracas() && esNavegador && Number(negocio.cierre_mensual_correo ?? 1) === 1 && diaMes >= 1 && diaMes <= 5 && negocio.ultimo_cierre_correo !== mesAnt) {
       const envStr = c.env as unknown as Record<string, string>;
       const promCierre = intentarCierreMensualAutomatico(c.env.DB, envStr, mesAnt).catch(() => false);
       try {
@@ -479,6 +523,7 @@ app.get("/api/estado", async (c) => {
     ...(demoInfoRespuesta ? { demo: demoInfoRespuesta } : {}),
     ...(esSuper ? {
       inquilinos: listaInquilinos, facturas_reales_n: facturasRealesN,
+      mantenimiento_despliegue: mantEstado,
       demo_resumen: estDemoGlobal
         ? {
             activo: estDemoGlobal.activo,
@@ -588,6 +633,12 @@ app.post("/api/login", async (c) => {
 
   const envObjLogin = c.env as unknown as Record<string, unknown>;
   const esSuperLogin = await esCorreoSuperAdmin(rawDb, email, envObjLogin);
+  if (!esSuperLogin) {
+    const mantLogin = await leerEstadoMantenimiento(rawDb);
+    if (mantLogin.activo) {
+      return c.json({ ok: false, mantenimiento: true, etapa: mantLogin.etapa, error: mantLogin.mensaje, mensaje: mantLogin.mensaje }, 503);
+    }
+  }
   let infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjLogin);
   if ((infoInq.codigo === CODIGO_DEMO && !infoInq.activo) || (email.endsWith("@demo.facturayave.com") && infoInq.codigo !== CODIGO_DEMO)) {
     await limpiarDemoExpiradaSiCorresponde(rawDb, envObjLogin).catch(() => {});
@@ -776,6 +827,12 @@ app.post("/api/recuperar", async (c) => {
   if (nueva.length < 10) return falla(c, 400, "La clave nueva debe tener al menos 10 caracteres.");
 
   const envObjRec = c.env as unknown as Record<string, unknown>;
+  if (!(await esCorreoSuperAdmin(rawDb, email, envObjRec))) {
+    const mantRec = await leerEstadoMantenimiento(rawDb);
+    if (mantRec.activo) {
+      return c.json({ ok: false, mantenimiento: true, etapa: mantRec.etapa, error: mantRec.mensaje, mensaje: mantRec.mensaje }, 503);
+    }
+  }
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRec);
   if (infoInq.codigo === CODIGO_DEMO) return falla(c, 403, "La recuperación de contraseña no está disponible en el Entorno Demo.");
   if (!infoInq.activo) return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
@@ -849,6 +906,12 @@ app.post("/api/recuperar-correo", async (c) => {
   await registrarEventoIp(rawDb, POLITICA_LIMITE.CORREO_REC_IP, ipCliente, t);
 
   const envObjRecCor = c.env as unknown as Record<string, unknown>;
+  if (!(await esCorreoSuperAdmin(rawDb, email, envObjRecCor))) {
+    const mantRecCor = await leerEstadoMantenimiento(rawDb);
+    if (mantRecCor.activo) {
+      return c.json({ ok: false, mantenimiento: true, etapa: mantRecCor.etapa, error: mantRecCor.mensaje, mensaje: mantRecCor.mensaje }, 503);
+    }
+  }
   const infoInq = await buscarInquilinoPorCorreo(rawDb, email, envObjRecCor);
   if (infoInq.codigo === CODIGO_DEMO) return falla(c, 403, "La recuperación de contraseña no está disponible en el Entorno Demo.");
   if (!infoInq.activo) return falla(c, 403, mensajeSuspension(infoInq.motivo_suspension));
@@ -1072,22 +1135,9 @@ app.post("/api/sistema/tasa-bcv/sincronizar", async (c) => {
     .bind(global.tasa_bcv, global.actualizado_en)
     .run();
 
-  // Replicar en las demás empresas que estén en modo AUTOMATICO (1 sola consulta externa compartida para todas)
-  try {
-    const envObj = c.env as unknown as Record<string, unknown>;
-    const { results: inqs } = await rawDb.prepare(`SELECT codigo FROM _mt_inquilinos WHERE activo = 1`).all<{ codigo: string }>();
-    for (const r of inqs) {
-      const dbInq = obtenerDbInquilino({ ...envObj, DB: rawDb }, r.codigo);
-      await dbInq
-        .prepare(`UPDATE perfil_emisor SET tasa_bcv = ?, tasa_bcv_fecha = ? WHERE id = 1 AND COALESCE(tasa_bcv_modo, 'AUTOMATICO') = 'AUTOMATICO'`)
-        .bind(global.tasa_bcv, global.actualizado_en)
-        .run()
-        .catch(() => {});
-    }
-  } catch {
-    // Ignorar si aún no existen múltiples inquilinos
-  }
-
+  // Escala Pro (50–200+ empresas): NO iteramos las N bases de clientes en una sola petición HTTP.
+  // La tasa oficial ya quedó guardada en `_mt_tasa_bcv_global` y cada empresa en modo AUTOMATICO la hereda
+  // instantáneamente en su siguiente lectura de `/api/estado` (y durante el mantenimiento nocturno 2:00 AM).
   await auditar(c, usuario.id, "TASA_BCV_SYNC", `${global.tasa_bcv} (${global.fuente})`);
   return c.json({
     ok: true,
@@ -1124,98 +1174,32 @@ app.onError((e, c) => {
   return c.json({ ok: false, error: "Error interno del servidor." }, 500);
 });
 
-// Tarea programada (Cron Trigger de Cloudflare Workers v4.0 Escala Pro 100 Empresas):
-// 1. Consulta la tasa oficial del BCV una sola vez y la guarda en `_mt_tasa_bcv_global` (de donde cada empresa la toma al instante en `/api/estado`).
-// 2. Procesa las empresas en lotes seguros de hasta 15 por invocación usando un cursor persistente (`cron_cursor_inq`) para nunca superar el límite de subrequests de Cloudflare con 100+ empresas.
-// 3. Purga sesiones vencidas (`sesiones.expira_en < ahora()`) e intentos de login antiguos para mantener las tablas D1 ultraligeras.
-const MAX_LOTE_CRON = 15;
-(app as unknown as { scheduled: (event: unknown, env: Env["Bindings"]) => Promise<void> }).scheduled = async (_event, env) => {
+// Tarea programada (Cron Trigger de Cloudflare Workers v5.0.0):
+// - Cron Nocturno ("0 6 * * *" = 2:00 AM VET, dentro de la ventana contractual 1:00 AM – 5:00 AM):
+//   Ejecuta mantenimiento completo: auto-bindings D1, salud/sanación/optimización de todas las BD, respaldos R2 general y por cliente,
+//   cierre mensual (días 1–5), cobro SaaS (día 1), limpieza de sesiones/demo, log en _mt_mantenimiento_logs y correo resumen.
+// - Cron Diurno ("0 12,17,22 * * *" = 8:00 AM, 1:00 PM y 6:00 PM VET — Silencio diurno estricto de 6 AM a 9 PM):
+//   ÚNICAMENTE consulta la tasa BCV oficial (1 petición + 1 fila en la base principal) y limpia DB_DEMO si ya expiró.
+//   CERO respaldos R2, CERO auditorías masivas y CERO toques a bases de clientes en horario comercial.
+(app as unknown as { scheduled: (event: unknown, env: Env["Bindings"]) => Promise<void> }).scheduled = async (event, env) => {
   const rawDb = env.DB;
   if (!rawDb) return;
   await migrar(rawDb);
   await asegurarTablasMultiTenant(rawDb);
   const envObj = env as unknown as Record<string, unknown>;
   await cargarLlavesLegadas(rawDb);
-  await recifrarSecretosHeredados(rawDb, envObj, rawDb).catch((e) => console.error("[recifrado] cron principal:", e));
-  await hidratarBindingsCloudflare(rawDb, envObj);
-  const global = await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true }).catch(() => null);
-  const hoyIso = fechaCaracas();
-  const diaMes = Number(hoyIso.slice(8, 10));
-  const mesAnt = mesAnteriorCaracas(hoyIso);
-  const tAhora = ahora();
 
-  const { results: inqsTodos } = await rawDb
-    .prepare(`SELECT codigo FROM _mt_inquilinos WHERE activo = 1 ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en ASC`)
-    .all<{ codigo: string }>()
-    .catch(() => ({ results: [{ codigo: "principal" }] }));
-
-  const listaInqs = inqsTodos.length ? inqsTodos : [{ codigo: "principal" }];
-  let cursor = 0;
-  if (listaInqs.length > MAX_LOTE_CRON) {
-    const filaCur = await rawDb
-      .prepare(`SELECT valor FROM integraciones WHERE clave = 'cron_cursor_inq'`)
-      .first<{ valor: string }>()
-      .catch(() => null);
-    cursor = Math.max(0, Number(filaCur?.valor || 0) || 0);
-    if (cursor >= listaInqs.length) cursor = 0;
+  const cronExpr = String((event as { cron?: string } | null)?.cron || "").trim();
+  if (esCronMantenimientoNocturno(cronExpr)) {
+    await ejecutarMantenimientoNocturno(rawDb, envObj, { tipo: "NOCTURNO_AUTO" }).catch((e) =>
+      console.error("[mantenimiento-nocturno-cron]:", e)
+    );
+    return;
   }
 
-  const loteInqs = listaInqs.length > MAX_LOTE_CRON
-    ? listaInqs.slice(cursor, cursor + MAX_LOTE_CRON)
-    : listaInqs;
-
-  if (listaInqs.length > MAX_LOTE_CRON) {
-    const sigCursor = cursor + loteInqs.length >= listaInqs.length ? 0 : cursor + loteInqs.length;
-    await rawDb
-      .prepare(
-        `INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('cron_cursor_inq', ?, datetime('now'))
-         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`
-      )
-      .bind(String(sigCursor))
-      .run()
-      .catch(() => {});
-  }
-
-  let setInq = migradosPorDb.get(rawDb);
-  if (!setInq) {
-    setInq = new Set(["principal"]);
-    migradosPorDb.set(rawDb, setInq);
-  }
-  for (const r of loteInqs) {
-    const dbInq = obtenerDbInquilino(envObj, r.codigo);
-    if (!setInq.has(r.codigo)) {
-      await migrar(dbInq).catch(() => {});
-      setInq.add(r.codigo);
-    }
-    await recifrarSecretosHeredados(dbInq, envObj, rawDb).catch((e) => console.error(`[recifrado] cron ${r.codigo}:`, e));
-    // Purga preventiva de sesiones expiradas e intentos de login antiguos
-    await dbInq.prepare(`DELETE FROM sesiones WHERE expira_en < ?`).bind(tAhora).run().catch(() => {});
-    await dbInq.prepare(`DELETE FROM intentos_login WHERE bloqueado_hasta > 0 AND bloqueado_hasta < ?`).bind(tAhora - 86400).run().catch(() => {});
-
-    if (global?.tasa_bcv) {
-      await dbInq
-        .prepare(`UPDATE perfil_emisor SET tasa_bcv = ?, tasa_bcv_fecha = ? WHERE id = 1 AND COALESCE(tasa_bcv_modo, 'AUTOMATICO') = 'AUTOMATICO'`)
-        .bind(global.tasa_bcv, global.actualizado_en)
-        .run()
-        .catch(() => {});
-    }
-    if (diaMes >= 1 && diaMes <= 5) {
-      await intentarCierreMensualAutomatico(
-        dbInq,
-        { ...(env as unknown as Record<string, unknown>), __rawDb: rawDb, __inquilinoCodigo: r.codigo } as unknown as Record<string, string>,
-        mesAnt
-      ).catch(() => false);
-    }
-  }
-  // Cobro mensual SaaS opcional (SOLO día 1 hora Caracas y SOLO empresas con cobro_auto_dia1 = 1; NUNCA suspende)
-  if (diaMes === 1) {
-    await ejecutarCobroAutomaticoDia1(rawDb, envObj, hoyIso).catch((e) => console.error("[cobro-saas-cron]:", e));
-  }
-  // Limpieza automática del Entorno Demo efímero si ya venció su tiempo
+  // Modo Diurno Ultraligero (6:00 AM – 9:00 PM VET): solo tasa BCV global + limpieza Demo expirada (sin tocar BD de clientes)
+  await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true }).catch(() => null);
   await limpiarDemoExpiradaSiCorresponde(rawDb, envObj).catch((e) => console.error("[demo-cron]:", e));
-  // Respaldo automático diario firmado + archivo fiscal mensual de conservación (10+ años) en Cloudflare R2
-  await intentarRespaldoDiarioR2(rawDb, envObj, hoyIso).catch((e) => console.error("[respaldo-r2] cron diario:", e));
-  await intentarArchivoMensualR2(rawDb, envObj, hoyIso, mesAnt).catch((e) => console.error("[respaldo-r2] cron mensual:", e));
 };
 
 export default app;

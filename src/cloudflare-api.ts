@@ -607,6 +607,13 @@ export function diagnosticarErrorBuild(textoLog: string): { codigo: string; resu
       sugerencia: "Revisa la línea marcada arriba en el log, corrige el archivo indicado en GitHub o usa Rollback si necesitas volver a la versión anterior.",
     };
   }
+  if (/non-production|preview.*disabled|invalid branch|workers_dev/i.test(raw)) {
+    return {
+      codigo: "RAMA_NO_PRODUCCION",
+      resumen: "Cloudflare intentó compilar una rama secundaria (no-producción) con workers_dev desactivado o nombre con acentos.",
+      sugerencia: "En Cloudflare → Settings → Build → Branch control desactiva «Builds for non-production branches» y usa solo ramas sin tildes o Git Tags para respaldos.",
+    };
+  }
   return null;
 }
 
@@ -883,21 +890,27 @@ export async function consultarLogBuildCloudflare(
 export async function relanzarBuildCloudflare(
   rawDb: D1Database,
   env: Record<string, unknown> | undefined,
-  opc?: { trigger_uuid?: string; purgar_cache?: boolean },
+  opc?: { trigger_uuid?: string; branch?: string; purgar_cache?: boolean },
   fetchFn: typeof fetch = fetch
-): Promise<{ ok: true; build_uuid: string; trigger_uuid: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; build_uuid: string; trigger_uuid: string; branch: string } | { ok: false; error: string }> {
   const cfg = await leerConfigCloudflare(rawDb, env);
   if (!cfg.configurado) return { ok: false, error: "Conecta primero tu API Token de Cloudflare." };
 
   let triggerUuid = String(opc?.trigger_uuid || "").trim();
-  if (!triggerUuid) {
+  let branch = String(opc?.branch || "").trim();
+  if (!triggerUuid || !branch) {
     const est = await consultarDesplieguesYBuilds(rawDb, env, fetchFn);
     if (!est.ok && est.error_api) return { ok: false, error: est.error_api };
-    triggerUuid = est.triggers?.[0]?.trigger_uuid || "";
+    const trigEncontrado = triggerUuid
+      ? est.triggers?.find((t) => t.trigger_uuid === triggerUuid)
+      : est.triggers?.[0];
+    if (!triggerUuid) triggerUuid = trigEncontrado?.trigger_uuid || "";
+    if (!branch) branch = trigEncontrado?.branch || "main";
   }
   if (!UUID_OR_TAG.test(triggerUuid)) {
     return { ok: false, error: "No se encontró un trigger de compilación conectado a GitHub para este Worker." };
   }
+  branch = branch || "main";
 
   const headers = { Authorization: `Bearer ${cfg.api_token}`, "Content-Type": "application/json" };
   const baseAcc = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cfg.account_id)}`;
@@ -910,11 +923,12 @@ export async function relanzarBuildCloudflare(
         signal: AbortSignal.timeout(8_000),
       }).catch(() => null);
     }
+    // La API oficial de Workers Builds exige al menos `branch` (o `commit_hash`) en el cuerpo JSON; `{}` devuelve "Invalid request body".
     const r = await fetchFn(`${baseAcc}/builds/triggers/${encodeURIComponent(triggerUuid)}/builds`, {
       method: "POST",
       headers,
       signal: AbortSignal.timeout(12_000),
-      body: JSON.stringify({}),
+      body: JSON.stringify({ branch }),
     });
     const j = (await r.json().catch(() => null)) as {
       success?: boolean;
@@ -924,9 +938,204 @@ export async function relanzarBuildCloudflare(
     if (!r.ok || !j?.success) {
       return { ok: false, error: j?.errors?.[0]?.message || `Cloudflare rechazó relanzar el build (HTTP ${r.status}).` };
     }
-    return { ok: true, build_uuid: String(j.result?.build_uuid ?? j.result?.uuid ?? ""), trigger_uuid: triggerUuid };
+    return { ok: true, build_uuid: String(j.result?.build_uuid ?? j.result?.uuid ?? ""), trigger_uuid: triggerUuid, branch };
   } catch (e) {
     return { ok: false, error: `Error al relanzar compilación en Cloudflare: ${(e as Error).message}` };
+  }
+}
+
+// ============================================================================
+// Auto-Enlace de Bindings Nativos D1 vía Cloudflare Workers Settings API (v5.0.0)
+// Elimina la necesidad de editar wrangler.toml y hacer Push a GitHub por cada cliente nuevo.
+// ============================================================================
+export async function sincronizarBindingsD1Cloudflare(
+  rawDb: D1Database,
+  env: Record<string, unknown> | undefined,
+  opc?: { soloCodigo?: string },
+  fetchFn: typeof fetch = fetch
+): Promise<{
+  ok: boolean;
+  cambios: number;
+  enlazados: string[];
+  ya_nativos: string[];
+  mensaje?: string;
+  error?: string;
+  permiso_faltante?: boolean;
+}> {
+  const cfg = await leerConfigCloudflare(rawDb, env);
+  if (!cfg.configurado) {
+    return { ok: false, cambios: 0, enlazados: [], ya_nativos: [], error: "API Token de Cloudflare no configurado." };
+  }
+
+  const sqlInq = opc?.soloCodigo
+    ? rawDb
+        .prepare(`SELECT codigo, d1_uuid FROM _mt_inquilinos WHERE activo = 1 AND codigo = ? AND d1_uuid IS NOT NULL AND trim(d1_uuid) <> ''`)
+        .bind(opc.soloCodigo)
+    : rawDb.prepare(`SELECT codigo, d1_uuid FROM _mt_inquilinos WHERE activo = 1 AND codigo <> 'principal' AND d1_uuid IS NOT NULL AND trim(d1_uuid) <> ''`);
+
+  const { results: inquilinosD1 } = await sqlInq
+    .all<{ codigo: string; d1_uuid: string }>()
+    .catch(() => ({ results: [] as { codigo: string; d1_uuid: string }[] }));
+
+  const candidatos = (inquilinosD1 || []).filter((r) => /^DB_\d+$/i.test(r.codigo) && UUID_OR_TAG.test(String(r.d1_uuid || "").trim()));
+  if (!candidatos.length) {
+    return { ok: true, cambios: 0, enlazados: [], ya_nativos: [], mensaje: "No hay bases D1 de clientes pendientes de enlace nativo." };
+  }
+
+  const urlSettings = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cfg.account_id)}/workers/scripts/${encodeURIComponent(cfg.worker_name)}/settings`;
+  const authHeader = { Authorization: `Bearer ${cfg.api_token}` };
+
+  try {
+    // 1) Leer bindings actuales del Worker para preservar DB, DB_DEMO, RESPALDOS_R2, ASSETS y variables existentes
+    const rGet = await fetchFn(urlSettings, {
+      method: "GET",
+      headers: { ...authHeader, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const jGet = (await rGet.json().catch(() => null)) as {
+      success?: boolean;
+      result?: { bindings?: Record<string, unknown>[] };
+      errors?: { message?: string }[];
+    } | null;
+    if (rGet.status === 401 || rGet.status === 403) {
+      return {
+        ok: false,
+        cambios: 0,
+        enlazados: [],
+        ya_nativos: [],
+        permiso_faltante: true,
+        error: `Tu API Token no tiene permiso «Workers Scripts: Edit» (HTTP ${rGet.status}). Los clientes seguirán operando en modo HTTP aislado sin interrupción.`,
+      };
+    }
+    if (!rGet.ok || !jGet?.success || !Array.isArray(jGet.result?.bindings)) {
+      return {
+        ok: false,
+        cambios: 0,
+        enlazados: [],
+        ya_nativos: [],
+        error: jGet?.errors?.[0]?.message || `Cloudflare no devolvió los bindings actuales del Worker (HTTP ${rGet.status}).`,
+      };
+    }
+
+    const actuales = jGet.result.bindings;
+    const bindingPrincipal = actuales.find((b) => String(b.name || "") === "DB" && String(b.type || "") === "d1");
+    if (!bindingPrincipal) {
+      return {
+        ok: false,
+        cambios: 0,
+        enlazados: [],
+        ya_nativos: [],
+        error: "Protección de seguridad: no se detectó el binding principal DB en la configuración actual del Worker; se abortó el PATCH.",
+      };
+    }
+
+    // Respetar exactamente el nombre de campo que usa Cloudflare en este Worker (`id` o `database_id`)
+    const campoUuidD1 = "database_id" in bindingPrincipal && !("id" in bindingPrincipal) ? "database_id" : "id";
+
+    // Preservar todos los bindings no-secret_text y no-assets (los secrets y assets se protegen con keep_bindings + keep_assets)
+    const mapaD1Actual = new Map<string, string>();
+    const bindingsPreservados: Record<string, unknown>[] = [];
+    for (const b of actuales) {
+      const tipo = String(b.type || "");
+      const nombre = String(b.name || "");
+      if (tipo === "secret_text" || tipo === "assets") continue;
+      if (tipo === "d1" && nombre) {
+        mapaD1Actual.set(nombre.toUpperCase(), String(b.id ?? b.database_id ?? "").trim());
+      }
+      bindingsPreservados.push(b);
+    }
+
+    const yaNativos: string[] = [];
+    const porEnlazar: { codigo: string; uuid: string }[] = [];
+    for (const c of candidatos) {
+      const codUp = c.codigo.toUpperCase();
+      const uuidLimpio = c.d1_uuid.trim();
+      if (mapaD1Actual.get(codUp) === uuidLimpio) {
+        yaNativos.push(codUp);
+      } else {
+        porEnlazar.push({ codigo: codUp, uuid: uuidLimpio });
+      }
+    }
+
+    if (!porEnlazar.length) {
+      return {
+        ok: true,
+        cambios: 0,
+        enlazados: [],
+        ya_nativos: yaNativos,
+        mensaje: `Todos los bindings nativos D1 (${yaNativos.length}) ya están enlazados en Cloudflare.`,
+      };
+    }
+
+    // Reemplazar o agregar los bindings D1 nuevos sin tocar ningún otro binding del Worker
+    const nombresNuevos = new Set(porEnlazar.map((p) => p.codigo));
+    const bindingsFinales: Record<string, unknown>[] = bindingsPreservados.filter(
+      (b) => !(String(b.type || "") === "d1" && nombresNuevos.has(String(b.name || "").toUpperCase()))
+    );
+    for (const item of porEnlazar) {
+      bindingsFinales.push({
+        type: "d1",
+        name: item.codigo,
+        [campoUuidD1]: item.uuid,
+      });
+    }
+
+    const fd = new FormData();
+    fd.set(
+      "settings",
+      JSON.stringify({
+        bindings: bindingsFinales,
+        keep_bindings: ["secret_text", "assets"],
+        keep_assets: true,
+      })
+    );
+
+    const rPatch = await fetchFn(urlSettings, {
+      method: "PATCH",
+      headers: authHeader,
+      body: fd,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const jPatch = (await rPatch.json().catch(() => null)) as {
+      success?: boolean;
+      errors?: { message?: string }[];
+    } | null;
+
+    if (rPatch.status === 401 || rPatch.status === 403) {
+      return {
+        ok: false,
+        cambios: 0,
+        enlazados: [],
+        ya_nativos: yaNativos,
+        permiso_faltante: true,
+        error: `Tu API Token necesita permiso «Workers Scripts: Edit» para enlazar bindings nativos automáticamente (HTTP ${rPatch.status}).`,
+      };
+    }
+    if (!rPatch.ok || !jPatch?.success) {
+      return {
+        ok: false,
+        cambios: 0,
+        enlazados: [],
+        ya_nativos: yaNativos,
+        error: jPatch?.errors?.[0]?.message || `Cloudflare rechazó actualizar bindings nativos (HTTP ${rPatch.status}).`,
+      };
+    }
+
+    return {
+      ok: true,
+      cambios: porEnlazar.length,
+      enlazados: porEnlazar.map((p) => p.codigo),
+      ya_nativos: yaNativos,
+      mensaje: `Enlazado(s) automáticamente en modo Nativo D1: ${porEnlazar.map((p) => p.codigo).join(", ")}.`,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      cambios: 0,
+      enlazados: [],
+      ya_nativos: [],
+      error: `Error conectando con Cloudflare Settings API: ${(e as Error).message}`,
+    };
   }
 }
 

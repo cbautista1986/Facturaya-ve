@@ -1,11 +1,14 @@
 // Service Worker seguro de FacturaYa Venezuela (v5.0.0)
 // REGLA FISCAL INQUEBRANTABLE: JAMÁS cachea /api/*, /descargar-cf/* ni peticiones POST/PUT/DELETE.
 // Solo resguarda la carcasa estática para arranque instantáneo y aviso limpio cuando no hay internet.
-const CACHE_NAME = "facturaya-shell-v500";
+const CACHE_NAME = "facturaya-shell-v501";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
   "/estilos.css",
+  "/logo-oficial.png",
+  "/favicon-32x32.png",
+  "/favicon.ico",
   "/favicon.svg",
   "/manifest.webmanifest",
   "/pwa-192x192.png",

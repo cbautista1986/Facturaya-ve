@@ -188,7 +188,7 @@ function logoHeader(n) {
   if (n?.logo_base64 && String(n.logo_base64).startsWith("data:image/")) {
     return `<span class="logo logo-con-img"><img src="${esc(n.logo_base64)}" alt="Logo" class="logo-img"></span>`;
   }
-  return `<span class="logo">🖼️</span>`;
+  return `<span class="logo logo-con-img"><img src="/logo-oficial.png?v=20261123v501" alt="FacturaYa Venezuela" class="logo-img"></span>`;
 }
 
 let timerDemo = null;
@@ -281,8 +281,14 @@ function barraSuper() {
 }
 
 function vistaInstalar() {
-  raiz.innerHTML = `<section class="tarjeta"><h1>🛡️ Bienvenido a FacturaYa Venezuela</h1>
-    <p class="suave">Configuración inicial del contribuyente conforme a las Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102.</p>
+  raiz.innerHTML = `<section class="tarjeta">
+    <div class="instalar-marca">
+      <img src="/logo-oficial.png?v=20261123v501" alt="FacturaYa Venezuela" width="52" height="52">
+      <div>
+        <h1 style="margin:0">Bienvenido a FacturaYa Venezuela</h1>
+        <p class="suave" style="margin:4px 0 0">Configuración inicial del contribuyente conforme a las Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102.</p>
+      </div>
+    </div>
     <form id="f">
       ${campo("nombre", "👤 Nombre o razón social", "", "text", 'required autocomplete="organization"')}
       ${campo("rif", "🪪 RIF fiscal (ej: V-12345678-0 o J-12345678-9)", "", "text", 'required placeholder="V-12345678-0 o J-12345678-9"')}
@@ -342,7 +348,7 @@ function vistaLogin() {
     <div class="portada">
       <header class="portada-topbar" id="inicio-portada">
         <button type="button" class="portada-marca" data-scroll="inicio-portada" aria-label="FacturaYa Venezuela">
-          <img src="/favicon.svg?v=20261123v500" alt="" width="34" height="34">
+          <img src="/logo-oficial.png?v=20261123v501" alt="FacturaYa Venezuela" width="38" height="38">
           <span>FacturaYa Venezuela</span>
         </button>
         <nav class="portada-nav" aria-label="Secciones principales">
@@ -379,7 +385,7 @@ function vistaLogin() {
           <div class="doc-demo">
             <div class="doc-demo-cab">
               <div class="doc-demo-emisor">
-                <img src="/favicon.svg?v=20261121v480" alt="" width="36" height="36">
+                <img src="/logo-oficial.png?v=20261123v501" alt="FacturaYa Venezuela" width="40" height="40" style="border-radius:10px">
                 <div>
                   <strong>Tu Empresa C.A.</strong>
                   <span>RIF J-00000000-0 · Caracas</span>
@@ -524,7 +530,7 @@ function vistaLogin() {
       </section>
 
       <footer class="portada-pie">
-        <span>FacturaYa Venezuela · www.facturayave.com · Facturación Digital y Libros Contables</span>
+        <span class="portada-pie-marca"><img src="/logo-oficial.png?v=20261123v501" alt="FacturaYa Venezuela" width="24" height="24">FacturaYa Venezuela · www.facturayave.com · Facturación Digital y Libros Contables</span>
         <div class="portada-pie-enlaces">
           ${wa ? `<a href="${esc(wa.url)}" target="_blank" rel="nofollow noopener noreferrer">WhatsApp comercial</a>` : ""}
           <button type="button" class="portada-pie-btn" data-correo-comercial>Correo de solicitudes</button>

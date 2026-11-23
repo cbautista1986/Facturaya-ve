@@ -46,7 +46,7 @@ export function botonInstalarPwaHtml(variante = "portada") {
   }
   if (variante === "inicio") {
     return `<button type="button" class="pwa-banner-btn" data-pwa-instalar>
-      <span class="pwa-banner-ico" aria-hidden="true">📲</span>
+      <img src="/pwa-192x192.png?v=20261123v501" alt="FacturaYa Venezuela" width="40" height="40" class="pwa-banner-logo">
       <span class="pwa-banner-txt"><strong>Instalar FacturaYa en tu equipo</strong><small>Acceso directo en pantalla de inicio · Pantalla completa</small></span>
       <span class="pwa-banner-cta">Instalar</span>
     </button>`;
@@ -105,7 +105,7 @@ export function abrirGuiaInstalacionPwa() {
     <div class="pwa-modal">
       <div class="pwa-modal-cab">
         <div class="pwa-modal-marca">
-          <img src="/pwa-192x192.png" alt="FacturaYa Venezuela" width="44" height="44">
+          <img src="/pwa-192x192.png?v=20261123v501" alt="FacturaYa Venezuela" width="48" height="48">
           <div>
             <h2 id="pwa-modal-tit">Instalar FacturaYa Venezuela</h2>
             <p class="suave" style="margin:2px 0 0;font-size:13px">${ios ? "Guía rápida para iPhone y iPad (Safari)" : "Instala la aplicación en 2 pasos"}</p>

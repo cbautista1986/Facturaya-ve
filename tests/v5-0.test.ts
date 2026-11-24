@@ -409,3 +409,57 @@ test("5. Cloudflare API v5.0.0: Fix branch en relanzarBuildCloudflare, Auto-Bind
   assert.ok(tomlRes.toml.includes('"0 6 * * *"'));
   assert.ok(tomlRes.toml.includes('"0 12,17,22 * * *"'));
 });
+
+test("6. Detección inteligente de App instalada (oculta franja si ya está instalada y solo aparece cuando realmente se puede instalar)", async () => {
+  const { evaluarVisibilidadInstalacionPwa } = await import("../public/pwa.js");
+
+  // 1) Abierta dentro de la App instalada (standalone / fullscreen / minimal-ui / iOS home screen): JAMÁS mostrar
+  assert.equal(
+    evaluarVisibilidadInstalacionPwa({ esStandalone: true, tienePromptNativo: true, esIos: true }),
+    false
+  );
+
+  // 2) Ya confirmada como instalada (appinstalled o navigator.getInstalledRelatedApps): JAMÁS mostrar
+  assert.equal(
+    evaluarVisibilidadInstalacionPwa({ instaladaConfirmada: true, tienePromptNativo: false, esIos: false }),
+    false
+  );
+  assert.equal(
+    evaluarVisibilidadInstalacionPwa({ instaladaConfirmada: true, tienePromptNativo: true, esIos: true }),
+    false
+  );
+
+  // 3) Abierta en navegador Chrome/Edge cuando la app YA está instalada (el navegador NO dispara beforeinstallprompt): NO mostrar
+  assert.equal(
+    evaluarVisibilidadInstalacionPwa({ esStandalone: false, instaladaConfirmada: false, instaladaLocal: false, tienePromptNativo: false, esIos: false }),
+    false
+  );
+
+  // 4) Abierta en Chrome/Edge cuando NO está instalada (o fue desinstalada y el navegador dispara beforeinstallprompt): SÍ mostrar
+  assert.equal(
+    evaluarVisibilidadInstalacionPwa({ esStandalone: false, instaladaConfirmada: false, instaladaLocal: false, tienePromptNativo: true, esIos: false }),
+    true
+  );
+
+  // 5) iOS Safari fuera de standalone y aún no marcada como instalada: SÍ mostrar guía de 2 pasos
+  assert.equal(
+    evaluarVisibilidadInstalacionPwa({ esStandalone: false, instaladaConfirmada: false, instaladaLocal: false, tienePromptNativo: false, esIos: true }),
+    true
+  );
+
+  // 6) iOS Safari donde el usuario ya marcó "Ya la tengo instalada": NO mostrar
+  assert.equal(
+    evaluarVisibilidadInstalacionPwa({ esStandalone: false, instaladaConfirmada: false, instaladaLocal: true, tienePromptNativo: false, esIos: true }),
+    false
+  );
+
+  // 7) Verificar manifest.webmanifest incluye related_applications para getInstalledRelatedApps()
+  const manifest = JSON.parse(readFileSync(resolve("public/manifest.webmanifest"), "utf8"));
+  assert.equal(manifest.prefer_related_applications, false);
+  assert.ok(
+    Array.isArray(manifest.related_applications) &&
+      manifest.related_applications.some((r: any) => r.platform === "webapp" && String(r.url).endsWith("/manifest.webmanifest")),
+    "manifest debe declarar related_applications webapp para detección nativa en navegador"
+  );
+});
+

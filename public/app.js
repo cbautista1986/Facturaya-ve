@@ -11,7 +11,7 @@ import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
 import { renderHistorialCorreoInquilino, vistaPanelCorreosPlataforma } from "./correos.js";
-import { iniciarPwaYConectividad, botonInstalarPwaHtml, enlazarBotonesPwa } from "./pwa.js";
+import { iniciarPwaYConectividad, botonInstalarPwaHtml, enlazarBotonesPwa, puedeMostrarBotonInstalar } from "./pwa.js?v=20261123v502";
 
 const NEGOCIO = [
   ["nombre_razon_social", "🏷️ Nombre o razón social (según RIF SENIAT)"],
@@ -2874,7 +2874,7 @@ function vistaAjustes() {
         </div>` : ""}
       </div>
     </section>
-    ${botonInstalarPwaHtml("ajustes") ? `<section class="tarjeta" id="card-pwa-ajustes">
+    ${botonInstalarPwaHtml("ajustes") ? `<section class="tarjeta" id="card-pwa-ajustes" data-pwa-seccion${puedeMostrarBotonInstalar() ? "" : " hidden"}>
       <h2>📲 Aplicación Instalable (Celular y PC)</h2>
       <p class="suave">Instala FacturaYa Venezuela en la pantalla principal de tu teléfono, tablet o computadora para abrirlo a pantalla completa en un toque, sin perder las actualizaciones automáticas ni la sincronización fiscal SENIAT.</p>
       ${botonInstalarPwaHtml("ajustes")}

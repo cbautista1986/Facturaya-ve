@@ -1,21 +1,46 @@
 // PWA instalable (Android / Desktop / iOS Safari) + Monitor global de conectividad (Web y App).
 // Nunca cachea ni altera peticiones fiscales (/api/*); solo ofrece instalación limpia y alertas de red en tiempo real.
 
+const CLAVE_PWA_INSTALADA = "facturaya_pwa_instalada";
+
 let eventoInstalacion = null;
-let appRecienInstalada = false;
-let estadoRedActual = navigator.onLine === false ? "offline" : "online";
+let appInstaladaConfirmada = false;
+let estadoRedActual = typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "online";
 let temporizadorInestable = null;
 let temporizadorRecuperado = null;
 let iniciado = false;
 const escPwa = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+function leerMarcaInstaladaLocal() {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(CLAVE_PWA_INSTALADA) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function guardarMarcaInstaladaLocal(instalada) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (instalada) localStorage.setItem(CLAVE_PWA_INSTALADA, "1");
+    else localStorage.removeItem(CLAVE_PWA_INSTALADA);
+  } catch {}
+}
+
 export function esModoStandalone() {
   try {
-    return (
-      window.matchMedia?.("(display-mode: standalone)")?.matches === true ||
-      window.navigator?.standalone === true ||
-      document.referrer.startsWith("android-app://")
-    );
+    if (typeof window === "undefined") return false;
+    const modosApp = [
+      "(display-mode: standalone)",
+      "(display-mode: fullscreen)",
+      "(display-mode: minimal-ui)",
+      "(display-mode: window-controls-overlay)",
+      "(display-mode: tabbed)",
+    ];
+    if (modosApp.some((q) => window.matchMedia?.(q)?.matches === true)) return true;
+    if (window.navigator?.standalone === true) return true;
+    if (typeof document !== "undefined" && document.referrer.startsWith("android-app://")) return true;
+    return false;
   } catch {
     return false;
   }
@@ -23,6 +48,7 @@ export function esModoStandalone() {
 
 export function esDispositivoIos() {
   try {
+    if (typeof navigator === "undefined" || typeof window === "undefined") return false;
     const ua = navigator.userAgent || "";
     const iosUa = /iPad|iPhone|iPod/i.test(ua);
     const ipadOs = navigator.platform === "MacIntel" && (navigator.maxTouchPoints || 0) > 1;
@@ -32,36 +58,91 @@ export function esDispositivoIos() {
   }
 }
 
+/**
+ * Regla pura y instantánea (0ms, sin peticiones de red) para decidir si mostrar la franja/botón de instalación:
+ * - Si ya corre como app instalada (standalone / fullscreen / minimal-ui / iOS home screen): NUNCA mostrar.
+ * - Si el sistema operativo o localStorage confirman que ya está instalada y no hay prompt nativo nuevo: NUNCA mostrar.
+ * - En Chrome/Edge/Android/PC: SOLO mostrar cuando el navegador dispara `beforeinstallprompt` (lo que garantiza
+ *   que la app NO está instalada todavía; si el usuario la desinstala luego, el navegador vuelve a dispararlo).
+ * - En iOS Safari (que no soporta `beforeinstallprompt`): mostrar la guía de 2 pasos solo fuera de standalone
+ *   y mientras el usuario no la haya marcado como instalada.
+ */
+export function evaluarVisibilidadInstalacionPwa({
+  esStandalone = false,
+  instaladaConfirmada = false,
+  instaladaLocal = false,
+  tienePromptNativo = false,
+  esIos = false,
+} = {}) {
+  if (esStandalone || instaladaConfirmada) return false;
+  if (tienePromptNativo) return true;
+  if (instaladaLocal) return false;
+  return Boolean(esIos);
+}
+
 export function puedeMostrarBotonInstalar() {
-  if (esModoStandalone() || appRecienInstalada) return false;
-  // Siempre visible fuera de standalone: si hay beforeinstallprompt instala en 1 toque;
-  // en iOS abre guía visual 2 pasos; en otros navegadores explica cómo instalar desde el menú del navegador.
-  return true;
+  const standalone = esModoStandalone();
+  if (standalone) {
+    appInstaladaConfirmada = true;
+    guardarMarcaInstaladaLocal(true);
+    return false;
+  }
+  return evaluarVisibilidadInstalacionPwa({
+    esStandalone: false,
+    instaladaConfirmada: appInstaladaConfirmada,
+    instaladaLocal: leerMarcaInstaladaLocal(),
+    tienePromptNativo: Boolean(eventoInstalacion),
+    esIos: esDispositivoIos(),
+  });
 }
 
 export function botonInstalarPwaHtml(variante = "portada") {
-  if (!puedeMostrarBotonInstalar()) return "";
+  // Si ya está corriendo dentro de la app instalada, ni siquiera insertamos nodos en el DOM.
+  if (esModoStandalone()) return "";
+  const ocultoAttr = puedeMostrarBotonInstalar() ? "" : " hidden";
   if (variante === "topbar") {
-    return `<button type="button" class="pwa-btn-topbar" data-pwa-instalar aria-label="Instalar aplicación FacturaYa">📲 Instalar App</button>`;
+    return `<button type="button" class="pwa-btn-topbar" data-pwa-instalar aria-label="Instalar aplicación FacturaYa"${ocultoAttr}>📲 Instalar App</button>`;
   }
   if (variante === "inicio") {
-    return `<button type="button" class="pwa-banner-btn" data-pwa-instalar>
+    return `<button type="button" class="pwa-banner-btn" data-pwa-instalar${ocultoAttr}>
       <img src="/pwa-192x192.png?v=20261123v501" alt="FacturaYa Venezuela" width="40" height="40" class="pwa-banner-logo">
       <span class="pwa-banner-txt"><strong>Instalar FacturaYa en tu equipo</strong><small>Acceso directo en pantalla de inicio · Pantalla completa</small></span>
       <span class="pwa-banner-cta">Instalar</span>
     </button>`;
   }
-  return `<button type="button" class="boton chico contorno-azul" data-pwa-instalar>📲 Instalar App en este dispositivo</button>`;
+  return `<button type="button" class="boton chico contorno-azul" data-pwa-instalar${ocultoAttr}>📲 Instalar App en este dispositivo</button>`;
 }
 
 function sincronizarVisibilidadBotonesPwa() {
-  const oculto = esModoStandalone() || appRecienInstalada;
+  if (typeof document === "undefined") return;
+  const visible = puedeMostrarBotonInstalar();
+  const oculto = !visible;
   document.querySelectorAll("[data-pwa-instalar]").forEach((btn) => {
     btn.hidden = oculto;
     if (eventoInstalacion) {
       btn.setAttribute("data-pwa-nativo", "1");
+    } else {
+      btn.removeAttribute("data-pwa-nativo");
     }
   });
+  document.querySelectorAll("[data-pwa-seccion]").forEach((sec) => {
+    sec.hidden = oculto;
+  });
+}
+
+function verificarAppRelacionadaInstalada() {
+  try {
+    if (typeof navigator === "undefined" || typeof navigator.getInstalledRelatedApps !== "function") return;
+    navigator.getInstalledRelatedApps().then((apps) => {
+      if (Array.isArray(apps) && apps.length > 0) {
+        appInstaladaConfirmada = true;
+        eventoInstalacion = null;
+        guardarMarcaInstaladaLocal(true);
+        cerrarModalPwa();
+        sincronizarVisibilidadBotonesPwa();
+      }
+    }).catch(() => {});
+  } catch {}
 }
 
 function cerrarModalPwa() {
@@ -116,6 +197,7 @@ export function abrirGuiaInstalacionPwa() {
       ${pasosHtml}
       <p class="pista" style="margin:12px 0 14px">🛡️ Al instalarla se abre como aplicación independiente, mantiene la sincronización fiscal SENIAT en tiempo real y no ocupa espacio extra en tu teléfono o PC.</p>
       <button type="button" class="boton" id="pwa-modal-ok">Entendido</button>
+      <button type="button" class="boton contorno chico" id="pwa-modal-ya-instalada" style="width:100%;margin-top:8px">Ya la tengo instalada · Ocultar aviso</button>
     </div>`;
 
   backdrop.addEventListener("click", (e) => {
@@ -124,6 +206,12 @@ export function abrirGuiaInstalacionPwa() {
   document.body.appendChild(backdrop);
   document.getElementById("pwa-modal-cerrar")?.addEventListener("click", cerrarModalPwa);
   document.getElementById("pwa-modal-ok")?.addEventListener("click", cerrarModalPwa);
+  document.getElementById("pwa-modal-ya-instalada")?.addEventListener("click", () => {
+    appInstaladaConfirmada = true;
+    guardarMarcaInstaladaLocal(true);
+    cerrarModalPwa();
+    sincronizarVisibilidadBotonesPwa();
+  });
 }
 
 export async function ejecutarInstalacionPwa(onAviso) {
@@ -135,6 +223,8 @@ export async function ejecutarInstalacionPwa(onAviso) {
       await promptEv.prompt();
       const eleccion = await promptEv.userChoice;
       if (eleccion?.outcome === "accepted") {
+        appInstaladaConfirmada = true;
+        guardarMarcaInstaladaLocal(true);
         onAviso?.("FacturaYa se está instalando en tu dispositivo ✅");
       }
       sincronizarVisibilidadBotonesPwa();
@@ -241,15 +331,38 @@ export function iniciarPwaYConectividad() {
 
   registrarServiceWorker();
 
+  if (esModoStandalone()) {
+    appInstaladaConfirmada = true;
+    guardarMarcaInstaladaLocal(true);
+  } else {
+    verificarAppRelacionadaInstalada();
+    try {
+      const mq = window.matchMedia?.("(display-mode: standalone)");
+      mq?.addEventListener?.("change", (ev) => {
+        if (ev.matches) {
+          appInstaladaConfirmada = true;
+          eventoInstalacion = null;
+          guardarMarcaInstaladaLocal(true);
+          cerrarModalPwa();
+          sincronizarVisibilidadBotonesPwa();
+        }
+      });
+    } catch {}
+  }
+
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     eventoInstalacion = e;
+    // Si el navegador dispara beforeinstallprompt, garantiza que la app NO está instalada (o fue desinstalada).
+    appInstaladaConfirmada = false;
+    guardarMarcaInstaladaLocal(false);
     sincronizarVisibilidadBotonesPwa();
   });
 
   window.addEventListener("appinstalled", () => {
     eventoInstalacion = null;
-    appRecienInstalada = true;
+    appInstaladaConfirmada = true;
+    guardarMarcaInstaladaLocal(true);
     cerrarModalPwa();
     sincronizarVisibilidadBotonesPwa();
   });

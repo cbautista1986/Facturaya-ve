@@ -530,7 +530,8 @@ body.modo-portada main { max-width: 1160px; padding: 0 16px 56px; }
   cursor: pointer;
   font: inherit;
 }
-.pwa-banner-btn[hidden] { display: none !important; }
+.pwa-banner-btn[hidden],
+[data-pwa-seccion][hidden] { display: none !important; }
 .pwa-banner-ico { font-size: 24px; flex-shrink: 0; }
 .pwa-banner-logo { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; display: block; box-shadow: 0 2px 6px rgba(11, 39, 50, .22); }
 .instalar-marca { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }

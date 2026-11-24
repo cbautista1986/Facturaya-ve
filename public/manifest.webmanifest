@@ -10,6 +10,13 @@
   "orientation": "any",
   "theme_color": "#0B2732",
   "background_color": "#0B2732",
+  "prefer_related_applications": false,
+  "related_applications": [
+    {
+      "platform": "webapp",
+      "url": "https://facturayave.com/manifest.webmanifest"
+    }
+  ],
   "categories": ["business", "finance", "productivity"],
   "icons": [
     {

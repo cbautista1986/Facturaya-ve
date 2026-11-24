@@ -1,8 +1,8 @@
 // Módulo PAGOS (pantallas): por cobrar, cobros, datos de cobro, registrar un pago y recibos.
 // El saldo siempre lo calcula el servidor (total - pagos vigentes); aquí solo se muestra. Los Bs se convierten con la tasa del día del pago.
-import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, telefono, ERROR } from "./comun.js";
+import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, telefono, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCentavos, bsAUsd, usdABs } from "./dinero.js";
-import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js";
+import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js?v=20261123v503";
 
 const fechaDoc = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
 const hoyCaracas = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Caracas" }).format(new Date());
@@ -286,7 +286,7 @@ async function formPago(estado, docId) {
             : esEspecial
               ? (D.aplica_igtf
                   ? "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): esta factura ya incluye el IGTF (3% SNAT/2022/000013)."
-                  : "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): como Sujeto Pasivo Especial (SPE), los cobros en moneda extranjera causan IGTF (3% SNAT/2022/000013).")
+                  : "⚠️ Pago en divisas (SPE): esta factura fue emitida sin IGTF (3%). Como Sujeto Pasivo Especial, si cobras en divisas corresponde emitir una Nota de Débito por el 3% de IGTF (SNAT/2022/000013).")
               : "💵 Pago en divisas (Zelle / Binance / PayPal / Efectivo USD): se acredita directamente al saldo en USD (sin IGTF).";
     }
     const monto = aCentavos($("#monto").value), tasa = aTasaE8($("#tasa").value), el = $("#equivale");
@@ -399,7 +399,11 @@ async function verRecibo(estado, id) {
     <button type="button" class="boton contorno-azul" data-acc="correo">✉️ Enviar recibo por correo (PDF)</button>
     <button type="button" class="boton" data-acc="whatsapp">💬 Enviar mensaje por WhatsApp</button>
     <button type="button" class="boton contorno-azul" data-acc="doc">Ver el documento</button>
-    ${anulado ? "" : `<button type="button" class="boton contorno" data-acc="anular">⛔ Anular este pago</button>`}
+    ${!anulado && puede("anular") && datos.puede_anular_fiscal !== false
+      ? `<button type="button" class="boton contorno" data-acc="anular">⛔ Anular este pago</button>`
+      : (!anulado && puede("anular") && datos.motivo_bloqueo_anular
+        ? `<section class="tarjeta"><span class="etiqueta">🛡️ PROTECCIÓN FISCAL SENIAT</span><p class="suave" style="margin:6px 0 0">${esc(datos.motivo_bloqueo_anular)}</p></section>`
+        : "")}
     <form id="recibo-correo-form" class="tarjeta" hidden>
       <h2>✉️ Enviar Recibo ${esc(numeroRecibo(P.numero))} con PDF adjunto</h2>
       <p class="pista">Se enviará el comprobante de pago en Bolívares y USD con el PDF del recibo adjunto.</p>

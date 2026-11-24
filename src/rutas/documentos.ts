@@ -11,6 +11,7 @@ import { sha256 } from "../seguridad";
 import { solicitarControlImprentaDigital } from "./sistema";
 import { EMAIL, PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
 import { leerTipoContribuyente, normalizarTipoContribuyente, reglasRegimen } from "../regimen";
+import { evaluarAnulacionDocumento, puedeInvocarImprentaDigital, validarIgtfNotaCredito } from "../reglas-fiscales";
 
 const documentos = new Hono<Env>();
 documentos.use("*", requiereSesion);
@@ -271,11 +272,22 @@ documentos.get("/:id", async (c) => {
   const pagadoEfectivo = results.filter((p) => p.estado === "VIGENTE").reduce((s, p) => s + p.monto_usd, 0);
   const acreditadoNc = notasCredito.filter((n) => n.estado === "EMITIDO").reduce((s, n) => s + (n.total_usd ?? 0), 0);
   const pagadoTotal = pagadoEfectivo + acreditadoNc;
+  const evalAnul = evaluarAnulacionDocumento(r.doc, {
+    pagosVigentes: results.filter((p) => p.estado === "VIGENTE").length,
+    notasVigentes: notasCredito.filter((n) => n.estado === "EMITIDO").length + notasDebito.filter((n) => n.estado === "EMITIDO").length,
+    mesActualCaracas: fechaCaracas().slice(0, 7),
+  });
   return c.json({
     ok: true, documento: r.doc, lineas: lineasConDev, impuestos: r.impuestos,
     pagos: results, notas_credito: notasCredito, notas_debito: notasDebito, factura_afectada: facturaAfectada,
     pagado_usd: pagadoTotal, acreditado_nc_usd: acreditadoNc,
     saldo_usd: r.doc.estado === "BORRADOR" || r.doc.es_nota_credito ? null : Math.max((r.doc.total_usd ?? 0) - pagadoTotal, 0),
+    anulacion: {
+      permitida: evalAnul.permitida,
+      codigo: evalAnul.codigo,
+      motivo: evalAnul.motivo,
+      sugerir_nota_credito: evalAnul.sugerirNotaCredito,
+    },
   });
 });
 
@@ -347,6 +359,9 @@ documentos.post("/:id/emitir", async (c) => {
   if (lineas.some((l) => l.precio_usd <= 0)) return falla(c, 400, "Todos los renglones deben tener un precio mayor que 0.");
 
   const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, tipo_contribuyente, igtf_activo, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  if (doc.tipo === "FACTURA" && doc.modo === "REAL" && (!perfil?.medio_facturacion || perfil.medio_facturacion === "SIN_DEFINIR")) {
+    return falla(c, 400, "Antes de emitir facturas fiscales reales, elige tu modalidad digital (Sistema Digital SENIAT o Imprenta Digital) en Ajustes.");
+  }
   const reglasTipo = reglasRegimen(perfil?.tipo_contribuyente, perfil?.igtf_activo);
   if (!reglasTipo.cobraIva && lineas.some((l) => Number(l.alicuota_cent) !== 0)) {
     return falla(c, 400, "Este borrador tiene renglones con IVA, pero el negocio es Contribuyente Formal (Art. 8 Ley del IVA). Edita el borrador para dejarlos Exentos (0%).");
@@ -429,10 +444,11 @@ documentos.post("/:id/emitir", async (c) => {
   }
   const f = await db.prepare(`SELECT numero, control_interno FROM documentos WHERE id = ?`).bind(id).first<Fila>();
   let controlFiscalAsignado: string | null = null;
-  if (esFactura && perfil?.medio_facturacion === "IMPRENTA_DIGITAL" && f?.numero) {
+  if (esFactura && puedeInvocarImprentaDigital(perfil?.medio_facturacion, doc.modo) && f?.numero) {
     const resImp = await solicitarControlImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
       documento_id: id,
       tipo_documento: "FACTURA",
+      modo: String(doc.modo),
       numero: Number(f.numero),
       control_interno: Number(f.control_interno ?? f.numero),
       fecha_emision: fecha,
@@ -466,7 +482,7 @@ documentos.post("/:id/devolver", async (c) => {
   const origen = await cargar(c, id);
   if (!origen) return falla(c, 404, "Factura no encontrada.");
   const { doc: F, lineas: rengsOrigen } = origen;
-  if (F.tipo !== "FACTURA" || F.es_nota_credito || F.estado !== "EMITIDO") {
+  if (F.tipo !== "FACTURA" || F.es_nota_credito || F.es_nota_debito || F.estado !== "EMITIDO") {
     return falla(c, 409, "Solo se puede emitir una Nota de Crédito sobre una factura emitida y vigente.");
   }
 
@@ -506,14 +522,14 @@ documentos.post("/:id/devolver", async (c) => {
   if (!lineasNc.length) return falla(c, 400, "Indica al menos un renglón con cantidad a devolver mayor que 0.");
 
   const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, tipo_contribuyente, igtf_activo, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
-  const reglasTipo = reglasRegimen(perfil?.tipo_contribuyente, perfil?.igtf_activo);
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? "")) || F.tasa_e8;
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV en Ajustes antes de emitir la Nota de Crédito.");
 
   const fecha = fechaCaracas(), params = await parametrosVigentes(db, fecha);
   const aplicaIgtf = b.aplica_igtf === undefined ? !!F.aplica_igtf : (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on");
-  if (aplicaIgtf && !F.aplica_igtf && !reglasTipo.cobraIgtf) {
-    return falla(c, 400, `No se puede incluir IGTF (3%) en la Nota de Crédito porque ni la factura ni tu condición (${reglasTipo.etiquetaCorta}) aplican IGTF.`);
+  const validacionIgtf = validarIgtfNotaCredito(aplicaIgtf, Boolean(F.aplica_igtf));
+  if (!validacionIgtf.ok) {
+    return falla(c, 400, validacionIgtf.error);
   }
   const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? F.igtf_alicuota_cent ?? 300) || 300;
   const calc = calcular(lineasNc, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf });
@@ -558,7 +574,7 @@ documentos.post("/:id/devolver", async (c) => {
     pasos.push(
       db.prepare(
         `INSERT INTO verificaciones (ok) SELECT 0 WHERE
-           NOT EXISTS (SELECT 1 FROM documentos WHERE id = ? AND tipo = 'FACTURA' AND es_nota_credito = 0 AND estado = 'EMITIDO')
+           NOT EXISTS (SELECT 1 FROM documentos WHERE id = ? AND tipo = 'FACTURA' AND es_nota_credito = 0 AND COALESCE(es_nota_debito, 0) = 0 AND estado = 'EMITIDO')
            OR (SELECT COALESCE(SUM(dr.cantidad_milli), 0)
                FROM documento_renglones dr JOIN documentos nc ON nc.id = dr.documento_id
                WHERE nc.factura_afectada_id = ? AND nc.es_nota_credito = 1 AND nc.estado = 'EMITIDO' AND dr.orden = ?) + ? > ?`
@@ -633,10 +649,11 @@ documentos.post("/:id/devolver", async (c) => {
   }
   const emitida = await db.prepare(`SELECT numero, control_interno FROM documentos WHERE id = ?`).bind(ncId).first<{ numero: number; control_interno: number }>();
   let controlFiscalNc: string | null = null;
-  if (perfil?.medio_facturacion === "IMPRENTA_DIGITAL" && emitida?.numero) {
+  if (puedeInvocarImprentaDigital(perfil?.medio_facturacion, F.modo) && emitida?.numero) {
     const resImp = await solicitarControlImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
       documento_id: ncId,
       tipo_documento: "NOTA_CREDITO",
+      modo: String(F.modo),
       numero: Number(emitida.numero),
       control_interno: Number(emitida.control_interno ?? emitida.numero),
       fecha_emision: fecha,
@@ -714,11 +731,16 @@ documentos.post("/:id/nota-debito", async (c) => {
   const reglas = {
     iva_alicuotas_cent: params.iva_alicuotas_cent,
     igtf_alicuota_cent: String(alicuotaIgtf),
-    titulo_sin_control: params.titulo_sin_control,
+    titulo_sin_control: "NOTA DE DÉBITO",
     leyenda_sin_control: params.leyenda_sin_control,
     leyenda_cambio: params.leyenda_cambio,
     validez_presupuesto_dias: Number(params.validez_presupuesto_dias ?? 15),
     plantilla_version: Number(params.plantilla_version ?? 1),
+    factura_afectada_numero: F.numero,
+    factura_afectada_fecha: F.fecha_emision,
+    factura_afectada_control: F.control_fiscal || F.control_interno,
+    factura_afectada_total_usd: F.total_usd,
+    factura_afectada_total_bs: F.total_bs,
   };
 
   const notaTexto = `Nota de débito sobre Factura N.º ${String(F.numero).padStart(8, "0")} — Motivo: ${motivo}`;
@@ -790,10 +812,11 @@ documentos.post("/:id/nota-debito", async (c) => {
   }
   const emitida = await db.prepare(`SELECT numero, control_interno FROM documentos WHERE id = ?`).bind(ndId).first<{ numero: number; control_interno: number }>();
   let controlFiscalNd: string | null = null;
-  if (perfil?.medio_facturacion === "IMPRENTA_DIGITAL" && emitida?.numero) {
+  if (puedeInvocarImprentaDigital(perfil?.medio_facturacion, F.modo) && emitida?.numero) {
     const resImp = await solicitarControlImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
       documento_id: ndId,
       tipo_documento: "NOTA_DEBITO",
+      modo: String(F.modo),
       numero: Number(emitida.numero),
       control_interno: Number(emitida.control_interno ?? emitida.numero),
       fecha_emision: fecha,
@@ -822,26 +845,17 @@ documentos.post("/:id/anular", async (c) => {
   if (motivo.length < 5) return falla(c, 400, "Escribe el motivo de la anulación (mínimo 5 letras).");
   const doc = await db.prepare(`SELECT id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, presupuesto_id, modo, estado, fecha_emision, medio, control_fiscal FROM documentos WHERE id = ?`).bind(id).first<Fila>();
   if (!doc) return falla(c, 404, "Documento no encontrado.");
-  if (doc.estado !== "EMITIDO") return falla(c, 409, "Solo se puede anular un documento emitido (no un borrador, ni uno ya anulado o facturado).");
 
   const conPagos = await db.prepare(`SELECT COUNT(*) AS n FROM pagos WHERE (documento_id = ? OR (? IS NOT NULL AND documento_id = ?)) AND estado = 'VIGENTE'`)
     .bind(id, doc.presupuesto_id ?? null, doc.presupuesto_id ?? null).first<{ n: number }>();
-  if (conPagos && conPagos.n > 0) return falla(c, 409, "Este documento tiene pagos registrados: anula primero sus pagos o emite una Nota de Crédito por devolución.");
-
   const conNc = await db.prepare(`SELECT COUNT(*) AS n FROM documentos WHERE factura_afectada_id = ? AND (es_nota_credito = 1 OR COALESCE(es_nota_debito, 0) = 1) AND estado = 'EMITIDO'`).bind(id).first<{ n: number }>();
-  if (conNc && conNc.n > 0) return falla(c, 409, "Esta factura ya tiene Notas de Crédito o Débito emitidas: según la normativa SENIAT no se puede anular directamente.");
-
-  if (doc.tipo === "FACTURA") {
-    const mesDoc = String(doc.fecha_emision ?? "").slice(0, 7), mesActual = fechaCaracas().slice(0, 7);
-    if (mesDoc && mesDoc !== mesActual) {
-      return falla(
-        c,
-        409,
-        doc.es_nota_credito || doc.es_nota_debito
-          ? "Según la normativa SENIAT, una Nota de Crédito o Débito de un período fiscal anterior no puede anularse directamente porque altera el Libro de Ventas cerrado."
-          : "Según la normativa SENIAT, una factura de un período fiscal anterior no puede anularse directamente porque altera el Libro de Ventas cerrado: debes emitir una Nota de Crédito («↩️ Devolver»)."
-      );
-    }
+  const evalAnul = evaluarAnulacionDocumento(doc, {
+    pagosVigentes: conPagos?.n ?? 0,
+    notasVigentes: conNc?.n ?? 0,
+    mesActualCaracas: fechaCaracas().slice(0, 7),
+  });
+  if (!evalAnul.permitida) {
+    return falla(c, 409, evalAnul.motivo || "Este documento no puede anularse directamente.");
   }
 
   if (doc.es_nota_credito) {
@@ -895,15 +909,45 @@ documentos.post("/:id/anular", async (c) => {
 
 async function clonar(c: Ctx, origenId: number, tipo: "FACTURA" | "PRESUPUESTO", presupuestoId: number | null) {
   const db = c.env.DB;
+  const origen = await cargar(c, origenId);
+  const reglasTipo = reglasRegimen(await leerTipoContribuyente(db));
+  const params = await parametrosVigentes(db, fechaCaracas());
+  const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? 300) || 300;
+  const origDoc = origen!.doc;
+  const aplicaIgtf = tipo === "FACTURA" && reglasTipo.cobraIgtf && Boolean(origDoc.aplica_igtf) ? 1 : 0;
+  const lineasSanitizadas: Linea[] = origen!.lineas.map((l) => ({
+    catalogo_id: l.catalogo_id ?? null,
+    tipo: l.tipo,
+    descripcion: l.descripcion,
+    cantidad_milli: l.cantidad_milli,
+    precio_usd: l.precio_usd,
+    costo_usd: l.costo_usd ?? null,
+    alicuota_cent: reglasTipo.cobraIva ? Number(l.alicuota_cent ?? 0) : 0,
+  }));
+  const calc = calcular(lineasSanitizadas, null, { aplica_igtf: aplicaIgtf === 1, igtf_alicuota_cent: alicuotaIgtf });
   const nuevo = await db.prepare(
     `INSERT INTO documentos (tipo, estado, modo, cliente_id, nota, presupuesto_id, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd, costo_total_usd, creado_por, condicion, dias_credito)
-     SELECT ?, 'BORRADOR', ?, cliente_id, nota, ?, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd, costo_total_usd, ?, condicion, dias_credito FROM documentos WHERE id = ? RETURNING id`
-  ).bind(tipo, await modoActual(db), presupuestoId, c.get("usuario").id, origenId).first<{ id: number }>();
-  await db.prepare(
-    `INSERT INTO documento_renglones (documento_id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd)
-     SELECT ?, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd
-     FROM documento_renglones WHERE documento_id = ? ORDER BY orden`
-  ).bind(nuevo!.id, origenId).run();
+     VALUES (?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+  ).bind(
+    tipo,
+    await modoActual(db),
+    origDoc.cliente_id ?? null,
+    origDoc.nota ?? null,
+    presupuestoId,
+    calc.subtotal_usd,
+    calc.iva_usd,
+    aplicaIgtf,
+    calc.igtf_alicuota_cent,
+    calc.igtf_usd,
+    calc.total_usd,
+    calc.costo_total_usd,
+    c.get("usuario").id,
+    tipo === "FACTURA" ? (origDoc.condicion ?? "CONTADO") : "CONTADO",
+    tipo === "FACTURA" ? (origDoc.dias_credito ?? null) : null
+  ).first<{ id: number }>();
+  if (lineasSanitizadas.length) {
+    await db.batch(insertarLineas(c, nuevo!.id, lineasSanitizadas, calc.renglones));
+  }
   return nuevo!.id;
 }
 
@@ -926,6 +970,9 @@ documentos.post("/:id/fiscal", async (c) => {
 
   const numeroManual = texto(b.numero, 30).toUpperCase();
   if (d.medio === "IMPRENTA_DIGITAL" && (b.reintentar_imprenta === true || !numeroManual)) {
+    if (!puedeInvocarImprentaDigital(d.medio, d.modo)) {
+      return falla(c, 409, "La Imprenta Digital en vivo solo se invoca en documentos fiscales reales (modo REAL). En modo práctica registra un número de control de prueba.");
+    }
     let facAfectadaNum: number | null = null;
     if (d.factura_afectada_id) {
       const fa = await db.prepare(`SELECT numero FROM documentos WHERE id = ?`).bind(d.factura_afectada_id).first<{ numero: number }>().catch(() => null);

@@ -6,6 +6,7 @@ import { aCentavos, aRifSeniat, aTasaE8, bsAUsd } from "../../public/dinero.js";
 import { enviarCorreo } from "../correo";
 import { EMAIL, PAGADO, RIF, auditar, comodin, falla, fechaCaracas, idParam, leerJson, modoActual, normalizarWhatsapp, parametrosVigentes, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
 import { leerTipoContribuyente } from "../regimen";
+import { evaluarAnulacionPago } from "../reglas-fiscales";
 
 const pagos = new Hono<Env>();
 pagos.use("*", requiereSesion);
@@ -292,7 +293,14 @@ pagos.get("/:id", async (c) => {
       logo_base64: logoResuelto,
     });
   }
-  return c.json({ ok: true, pago: p, documento: d });
+  const evalAnul = evaluarAnulacionPago(p, d, fechaCaracas().slice(0, 7));
+  return c.json({
+    ok: true,
+    pago: p,
+    documento: d,
+    puede_anular_fiscal: evalAnul.permitida,
+    motivo_bloqueo_anular: evalAnul.motivo,
+  });
 });
 
 pagos.post("/:id/enviar-correo", async (c) => {
@@ -375,9 +383,17 @@ pagos.post("/:id/enviar-correo", async (c) => {
 });
 
 pagos.post("/:id/anular", async (c) => {
-  const id = idParam(c), motivo = texto((await leerJson(c)).motivo, 200), u = c.get("usuario");
+  const id = idParam(c), motivo = texto((await leerJson(c)).motivo, 200), u = c.get("usuario"), db = c.env.DB;
   if (motivo.length < 5) return falla(c, 400, "Escribe el motivo de la anulación (mínimo 5 letras).");
-  const r = await c.env.DB.prepare(
+  const p = await db
+    .prepare(`SELECT id, documento_id, estado, fecha_pago, es_retencion_iva, COALESCE(es_retencion_islr, 0) AS es_retencion_islr FROM pagos WHERE id = ?`)
+    .bind(id)
+    .first<Fila>();
+  if (!p) return falla(c, 404, "Pago no encontrado.");
+  const d = await db.prepare(`SELECT tipo, estado, modo FROM documentos WHERE id = ?`).bind(p.documento_id).first<Fila>();
+  const evalAnul = evaluarAnulacionPago(p, d, fechaCaracas().slice(0, 7));
+  if (!evalAnul.permitida) return falla(c, 409, evalAnul.motivo || "No se puede anular este pago.");
+  const r = await db.prepare(
     `UPDATE pagos SET estado = 'ANULADO', anulado_en = ?, anulado_por = ?, motivo_anulacion = ? WHERE id = ? AND estado = 'VIGENTE'`
   ).bind(new Date().toISOString(), u.id, motivo, id).run();
   if (!r.meta.changes) return falla(c, 409, "Ese pago no existe o ya estaba anulado.");

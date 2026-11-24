@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261123v503";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261123v503";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -358,7 +358,7 @@ async function ver(estado, id) {
   const esEspecial = tipoContrib === "ESPECIAL";
   const emisorDoc = JSON.parse(D.emisor_json || "{}");
   const docEsFormal = (emisorDoc.tipo_contribuyente || tipoContrib) === "FORMAL";
-  const permitirIgtfNc = !!D.aplica_igtf || esEspecial;
+  const permitirIgtfNc = !!D.aplica_igtf && (D.igtf_usd ?? 0) > 0;
   const cliente = D.cliente_nombre ? { nombre: D.cliente_nombre, rif: D.cliente_rif, email: D.cliente_email || "" } : D.cliente_id ? await api(`clientes/${D.cliente_id}`).then((r) => ({ nombre: r.cliente.nombre_apellido, rif: r.cliente.rif_cedula, email: r.cliente.email || "" })) : null;
   const nom = nombreDe(D);
   const titulo = esNc ? "Nota de crédito" : esNd ? "Nota de débito" : nom;
@@ -369,6 +369,25 @@ async function ver(estado, id) {
   const pideFiscal = D.tipo === "FACTURA" && D.estado === "EMITIDO" && !D.control_fiscal;
   const tieneDisponibleDevolver = D.tipo === "FACTURA" && !esNc && !esNd && D.estado === "EMITIDO" && lineas.some((l) => l.cantidad_milli - (l.devuelto_milli ?? 0) > 0);
   const puedeEmitirNd = D.tipo === "FACTURA" && !esNc && !esNd && D.estado === "EMITIDO" && puede("anular");
+
+  const tienePagosVigentes = pagos.some((p) => p.estado === "VIGENTE");
+  const tieneNcVigentes = notas_credito.some((n) => n.estado === "EMITIDO");
+  const tieneNdVigentes = notas_debito.some((n) => n.estado === "EMITIDO");
+  const mesCerrado = D.tipo === "FACTURA" && D.fecha_emision && String(D.fecha_emision).slice(0, 7) !== dia(new Date()).slice(0, 7);
+  const anulServer = datos.anulacion;
+  const bloqueoAnularFactura = anulServer && anulServer.permitida === false
+    ? anulServer.motivo
+    : D.tipo === "FACTURA"
+      ? (tienePagosVigentes ? (esNd ? "Esta Nota de Débito tiene pagos registrados y no puede anularse directamente." : "Según la normativa SENIAT (Art. 25 Providencia SNAT/2011/0071), esta factura tiene pagos registrados y no puede anularse directamente: debes emitir una Nota de Crédito («↩️ Devolver»).")
+        : !esNc && !esNd && tieneNcVigentes ? "Esta factura ya tiene Notas de Crédito aplicadas; no puede anularse directamente."
+        : !esNc && !esNd && tieneNdVigentes ? "Esta factura ya tiene Notas de Débito asociadas; no puede anularse directamente."
+        : mesCerrado ? (esNc || esNd
+          ? `Esta Nota de ${esNd ? "Débito" : "Crédito"} pertenece a un mes fiscal anterior. Según la normativa SENIAT no puede anularse directamente porque altera el Libro de Ventas cerrado.`
+          : "Esta factura pertenece a un mes fiscal anterior. Para no alterar el Libro de Ventas cerrado, debes emitir una Nota de Crédito.")
+        : (esNc || esNd) && esImprenta && D.control_fiscal ? "Esta Nota Fiscal ya cuenta con N.º de Control asignado por Imprenta Digital Autorizada: no puede anularse directamente."
+        : null)
+      : (tienePagosVigentes ? "Este presupuesto tiene abonos registrados: anula primero los abonos si deseas anularlo." : null);
+  const puedeAnularDirecto = D.estado === "EMITIDO" && puede("anular") && !bloqueoAnularFactura;
 
   const botones = D.estado === "BORRADOR"
     ? [["editar", "✏️ Editar", ""], ["emitir", `EMITIR ${nom.toUpperCase()}`, "verde"], ["borrar", "Eliminar borrador", "contorno"]]
@@ -381,21 +400,7 @@ async function ver(estado, id) {
       ...(!esNc && !esNd ? [["copiar", "📑 Copiar como borrador nuevo", "contorno-azul"]] : []),
       ...(tieneDisponibleDevolver && puede("anular") ? [["devolver", "↩️ Devolver (Nota de crédito SENIAT)", "morado"]] : []),
       ...(puedeEmitirNd ? [["nota_debito", "📈 Emitir Nota de débito (Recargo / Ajuste)", "contorno-azul"]] : []),
-      ...(D.estado === "EMITIDO" && puede("anular") ? [["anular", "⛔ Anular", "contorno"]] : [])];
-
-  const tienePagosVigentes = pagos.some((p) => p.estado === "VIGENTE");
-  const tieneNcVigentes = notas_credito.some((n) => n.estado === "EMITIDO");
-  const tieneNdVigentes = notas_debito.some((n) => n.estado === "EMITIDO");
-  const mesCerrado = D.tipo === "FACTURA" && D.fecha_emision && String(D.fecha_emision).slice(0, 7) !== dia(new Date()).slice(0, 7);
-  const bloqueoAnularFactura = D.tipo === "FACTURA"
-    ? (tienePagosVigentes ? (esNd ? "Esta Nota de Débito tiene pagos registrados. Anula primero los pagos para poder anularla." : "Esta factura tiene pagos registrados. Anula primero los pagos o emite una Nota de Crédito.")
-      : !esNc && !esNd && tieneNcVigentes ? "Esta factura ya tiene Notas de Crédito aplicadas; no puede anularse directamente."
-      : !esNc && !esNd && tieneNdVigentes ? "Esta factura ya tiene Notas de Débito asociadas; no puede anularse directamente."
-      : mesCerrado ? (esNc || esNd
-        ? `Esta Nota de ${esNd ? "Débito" : "Crédito"} pertenece a un mes fiscal anterior. Según la normativa SENIAT no puede anularse directamente porque altera el Libro de Ventas cerrado.`
-        : "Esta factura pertenece a un mes fiscal anterior. Para no alterar el Libro de Ventas cerrado, debes emitir una Nota de Crédito.")
-      : null)
-    : null;
+      ...(puedeAnularDirecto ? [["anular", "⛔ Anular", "contorno"]] : [])];
 
   raiz.innerHTML = `
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver a la lista" aria-label="Volver">←</button>
@@ -425,12 +430,19 @@ async function ver(estado, id) {
       <div class="tot grande"><span>${D.aplica_igtf && D.igtf_usd > 0 ? "TOTAL + IGTF" : "TOTAL"}</span><b>${usd(D.total_usd)}</b></div>
       ${emitido ? `<div class="tot"><span>Total en Bs.</span><b>Bs. ${bs(D.total_bs / 100)}</b></div>` : `<small class="suave">Los montos en Bs. se fijan al emitir a la tasa BCV vigente.</small>`}
       ${D.costo_total_usd ? `<small class="ganancia-txt">🔒 Ganancia: ${usd(D.subtotal_usd - D.costo_total_usd)} (solo la ves tú)</small>` : ""}</section>
-    ${pideFiscal ? `<section class="tarjeta"><span class="etiqueta">🔢 N.º DE CONTROL FISCAL (SNAT/2024/000102)</span>
-      <p class="suave">Correlativo asignado: <b>${esc(nroControlMostrar)}</b>. Si tu medio digital asigna un número de control específico, actualízalo aquí:</p>
+    ${pideFiscal ? `<section class="tarjeta"><span class="etiqueta">🔢 ${esAppSeniat ? "CONTROL INTERNO Y N.º FISCAL SENIAT (SNAT/2024/000102)" : "N.º DE CONTROL FISCAL (IMPRENTA DIGITAL)"}</span>
+      <p class="suave">${esAppSeniat
+        ? `Control interno asignado: <b>${esc(nroControlMostrar)}</b>. Usa este documento como control interno inmediato y copia el resumen fiscal en la App del SENIAT; cuando el SENIAT te emita el comprobante oficial, registra aquí el N.º de Control definitivo:`
+        : `Correlativo interno: <b>${esc(nroControlMostrar)}</b>. Aún no se ha registrado el N.º de Control definitivo de la Imprenta Digital.`}</p>
+      ${esImprenta && D.modo === "REAL" ? `<button type="button" class="boton chico" id="reintentar-imprenta" style="margin-bottom:10px">🔄 Reintentar asignación con Imprenta Digital</button>` : ""}
       <form id="fiscal-form">${campo("numero", "N.º de Control definitivo", nroControlMostrar, "text", 'required maxlength="30" autocomplete="off"')}
         ${ERROR}<button class="boton chico" type="submit">GUARDAR N.º DE CONTROL</button></form></section>` : ""}
     ${emitido && !esNc ? seccionPagos(D, pagos, notas_credito, notas_debito, pagado_usd, acreditado_nc_usd, saldo_usd) : ""}
     ${D.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(D.nota)}</p></section>` : ""}
+    ${D.estado === "EMITIDO" && puede("anular") && bloqueoAnularFactura ? `<section class="tarjeta" id="aviso-proteccion-fiscal">
+      <span class="etiqueta">🛡️ PROTECCIÓN FISCAL SENIAT (ART. 25 SNAT/2011/0071)</span>
+      <p class="suave" style="margin:6px 0 0">${esc(bloqueoAnularFactura)}</p>
+    </section>` : ""}
     <p class="error" id="error" role="alert" hidden></p>
     ${botones.map(([id2, txt, clase]) => `<button type="button" class="boton ${clase}" data-acc="${id2}">${txt}</button>`).join("")}
     <form id="correo-form" class="tarjeta" hidden>
@@ -554,19 +566,32 @@ async function ver(estado, id) {
       if (!$("#correo-form").hidden) $("#email_destino")?.focus();
     },
     clonar_seniat: () => pedir(async () => {
+      const regimenEmisor = (emisorDoc.tipo_contribuyente || tipoContrib) === "FORMAL"
+        ? "Contribuyente Formal (Exento IVA · Art. 8 Ley IVA)"
+        : (emisorDoc.tipo_contribuyente || tipoContrib) === "ESPECIAL"
+          ? "Contribuyente Especial (SPE · Agente IGTF)"
+          : "Contribuyente Ordinario";
+      const desgloseIva = impuestos.map((i) =>
+        i.alicuota_cent === 0
+          ? `Base Exenta (0%): Bs. ${bs(i.base_bs / 100)} (${usd(i.base_usd)})`
+          : `Base ${i.alicuota_cent / 100}%: Bs. ${bs(i.base_bs / 100)} (${usd(i.base_usd)}) | IVA ${i.alicuota_cent / 100}%: Bs. ${bs(i.iva_bs / 100)} (${usd(i.iva_usd)})`
+      );
       const resumenSeniat = [
         `DOCUMENTO: ${esNc ? "NOTA DE CRÉDITO" : esNd ? "NOTA DE DÉBITO" : "FACTURA"} N.º ${numeroDoc(D)}`,
-        `N.º DE CONTROL: ${nroControlMostrar}`,
-        `FECHA EMISIÓN: ${fechaDoc(D.fecha_emision)}`,
+        `RÉGIMEN EMISOR: ${regimenEmisor}`,
+        `${D.control_fiscal ? "N.º DE CONTROL FISCAL" : "N.º DE CONTROL INTERNO"}: ${nroControlMostrar}`,
+        `FECHA EMISIÓN: ${fechaDoc(D.fecha_emision)} | CONDICIÓN: ${D.condicion === "CREDITO" ? `Crédito (${D.dias_credito} días)` : "Contado"}`,
         `CLIENTE: ${cliente?.nombre ?? D.cliente_nombre ?? ""}`,
         `RIF / C.I.: ${cliente?.rif ?? D.cliente_rif ?? ""}`,
         `DIRECCIÓN: ${D.cliente_direccion || "-"}`,
+        ...(cliente?.email ? [`CORREO: ${cliente.email}`] : []),
         `TASA BCV: Bs. ${bs(D.tasa_e8 / 1e8)}`,
         `--- RENGLONES ---`,
         ...lineas.map((l, idx) => `${idx + 1}. ${l.descripcion} | Cant: ${cantidadTexto(l.cantidad_milli)} | P.Unit: Bs. ${bs(usdABs(l.precio_usd, D.tasa_e8) / 100)} (${usd(l.precio_usd)}) | IVA: ${l.alicuota_cent / 100}% | Monto: Bs. ${bs(l.monto_bs / 100)} (${usd(l.monto_usd)})`),
-        `--- TOTALES ---`,
+        `--- DESGLOSE FISCAL ---`,
+        ...desgloseIva,
         `Subtotal: Bs. ${bs(D.subtotal_bs / 100)} (${usd(D.subtotal_usd)})`,
-        `IVA: Bs. ${bs(D.iva_bs / 100)} (${usd(D.iva_usd)})`,
+        `IVA Total: Bs. ${bs(D.iva_bs / 100)} (${usd(D.iva_usd)})`,
         ...(D.aplica_igtf && D.igtf_usd > 0 ? [`IGTF (3%): Bs. ${bs((D.igtf_bs ?? 0) / 100)} (${usd(D.igtf_usd)})`] : []),
         `TOTAL: Bs. ${bs(D.total_bs / 100)} (${usd(D.total_usd)})`,
       ].join("\n");
@@ -595,6 +620,11 @@ async function ver(estado, id) {
   $("#monto_nd")?.addEventListener("input", recalcularNd);
   $("#alicuota_nd")?.addEventListener("change", recalcularNd);
   $("#nd_igtf")?.addEventListener("change", recalcularNd);
+  $("#reintentar-imprenta")?.addEventListener("click", () => pedir(async () => {
+    const r = await api(`documentos/${id}/fiscal`, "POST", { reintentar_imprenta: true });
+    aviso(`N.º de Control asignado por Imprenta Digital: ${r.control_fiscal} ✅`);
+    await ver(estado, id);
+  }));
   if ($("#fiscal-form")) enviar($("#fiscal-form"), async (d) => {
     await api(`documentos/${id}/fiscal`, "POST", { numero: d.numero });
     aviso("N.º de Control guardado ✅"); await ver(estado, id);

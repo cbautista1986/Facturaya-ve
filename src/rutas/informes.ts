@@ -4,6 +4,7 @@ import { Hono } from "hono";
 import { redondear } from "../../public/dinero.js";
 import { PAGADO, auditar, falla, fechaCaracas, leerJson, modoActual, requiereSesion, texto, type Ctx, type Env } from "../comun";
 import { enviarCierreMensualInquilino } from "../tasa-bcv";
+import { leerTipoContribuyente } from "../regimen";
 import { clasificarRenglonesCompra } from "./compras";
 
 const informes = new Hono<Env>();
@@ -88,8 +89,9 @@ informes.get("/ventas", async (c) => {
     porAlicuota.set(i.alicuota_cent, { base_bs: t.base_bs + i.base_bs, iva_bs: t.iva_bs + i.iva_bs });
   }
   const alicuotas = [...porAlicuota].sort((a, b) => a[0] - b[0]).map(([alicuota_cent, t]) => ({ alicuota_cent, ...t }));
+  const tipo_contribuyente = await leerTipoContribuyente(db);
   return c.json({
-    ok: true, modo, desde: r.desde, hasta: r.hasta, filas, alicuotas,
+    ok: true, modo, tipo_contribuyente, desde: r.desde, hasta: r.hasta, filas, alicuotas,
     n_vigentes: vigentes.filter((f) => !f.es_nota_credito && !f.es_nota_debito).length,
     n_notas_credito: vigentes.filter((f) => f.es_nota_credito).length,
     n_notas_debito: vigentes.filter((f) => f.es_nota_debito).length,
@@ -177,8 +179,9 @@ informes.get("/resumen-iva", async (c) => {
     };
   });
   const t = (k: string) => suma(filas, k);
+  const tipo_contribuyente = await leerTipoContribuyente(db);
   return c.json({
-    ok: true, modo, desde: r.desde, hasta: r.hasta, filas,
+    ok: true, modo, tipo_contribuyente, desde: r.desde, hasta: r.hasta, filas,
     total: {
       ventas_gravadas_bs: t("ventas_gravadas_bs"), ventas_exentas_bs: t("ventas_exentas_bs"), debito_bs: t("debito_bs"),
       compras_gravadas_bs: t("compras_gravadas_bs"), compras_exentas_bs: t("compras_exentas_bs"), credito_bs: t("credito_bs"),
@@ -225,8 +228,9 @@ informes.get("/igtf", async (c) => {
   const vigentes = filas.filter((f) => f.estado === "EMITIDO");
   const base_divisas_bs = suma(vigentes, "base_divisas_bs");
   const base_divisas_usd = suma(vigentes, "base_divisas_usd");
+  const tipo_contribuyente = await leerTipoContribuyente(db);
   return c.json({
-    ok: true, modo, desde: r.desde, hasta: r.hasta, filas,
+    ok: true, modo, tipo_contribuyente, desde: r.desde, hasta: r.hasta, filas,
     n_documentos: vigentes.length,
     n_vigentes: vigentes.filter((f) => !f.es_nota_credito && !f.es_nota_debito).length,
     n_notas_credito: vigentes.filter((f) => f.es_nota_credito).length,

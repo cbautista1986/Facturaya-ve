@@ -34,13 +34,14 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   const limpio = (t) => [...String(t ?? "").replace(/\s+/g, " ").trim()].map((ch) => (permitido.has(ch.codePointAt(0)) ? ch : "?")).join("");
   const emisorGuardado = JSON.parse(D.emisor_json), reglas = JSON.parse(D.parametros_json || "{}");
   const esDemoPdf = Boolean(esDemo || emisorGuardado.es_demo || reglas.es_demo || D?.es_demo);
+  const congelado = D.modo === "REAL" && D.estado !== "BORRADOR";
   const emisor = {
-    nombre_razon_social: negocio?.nombre_razon_social || emisorGuardado.nombre_razon_social,
-    rif: aRifSeniat(negocio?.rif || emisorGuardado.rif),
-    direccion_fiscal: negocio?.direccion_fiscal || emisorGuardado.direccion_fiscal,
-    telefono: negocio?.telefono ?? emisorGuardado.telefono,
-    email: negocio?.email ?? emisorGuardado.email,
-    logo_base64: negocio?.logo_base64 ?? emisorGuardado.logo_base64 ?? null,
+    nombre_razon_social: congelado ? (emisorGuardado.nombre_razon_social || negocio?.nombre_razon_social) : (negocio?.nombre_razon_social || emisorGuardado.nombre_razon_social),
+    rif: aRifSeniat(congelado ? (emisorGuardado.rif || negocio?.rif) : (negocio?.rif || emisorGuardado.rif)),
+    direccion_fiscal: congelado ? (emisorGuardado.direccion_fiscal || negocio?.direccion_fiscal) : (negocio?.direccion_fiscal || emisorGuardado.direccion_fiscal),
+    telefono: congelado ? (emisorGuardado.telefono ?? negocio?.telefono) : (negocio?.telefono ?? emisorGuardado.telefono),
+    email: congelado ? (emisorGuardado.email ?? negocio?.email) : (negocio?.email ?? emisorGuardado.email),
+    logo_base64: emisorGuardado.logo_base64 ?? negocio?.logo_base64 ?? null,
     tipo_contribuyente: emisorGuardado.tipo_contribuyente || negocio?.tipo_contribuyente || "ORDINARIO",
   };
   const esFormal = emisor.tipo_contribuyente === "FORMAL";
@@ -93,9 +94,10 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   let dy = y; const R = ANCHO - M;
   T(titulo, R, dy, { s: titulo.length > 14 ? 15 : 22, b: true, der: true }); dy += 26;
   T(`N.º: ${numeroDoc(D)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
+  const esAppSeniatInterno = esFactura && D.medio === "APP_SENIAT" && !D.control_fiscal;
   if (esFactura) {
     const nroControl = D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`;
-    T(`N.º de Control: ${nroControl}`, R, dy, { s: 9, b: true, der: true }); dy += 13;
+    T(`${esAppSeniatInterno ? "N.º de Control Interno" : "N.º de Control"}: ${nroControl}`, R, dy, { s: 9, b: true, der: true }); dy += 13;
   }
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
@@ -123,7 +125,12 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   }
   if (esNc || esNd) {
     const numAf = FA?.numero ?? reglas.factura_afectada_numero, fecAf = FA?.fecha_emision ?? reglas.factura_afectada_fecha, ctlAf = FA?.control_fiscal || FA?.control_interno || reglas.factura_afectada_control;
-    const refTxt = `FACTURA AFECTADA (SENIAT Providencia SNAT/2011/0071): Factura N.º ${String(numAf ?? "").padStart(8, "0")}  ·  Fecha: ${fecha(fecAf)}${ctlAf ? `  ·  Control: ${String(ctlAf).padStart(8, "0")}` : ""}`;
+    const fmtCtlAf = (v) => {
+      const s = String(v ?? "").trim();
+      if (!s) return "";
+      return s.includes("-") ? s : /^\d+$/.test(s) ? `00-${s.padStart(8, "0")}` : s;
+    };
+    const refTxt = `FACTURA AFECTADA (SENIAT Providencia SNAT/2011/0071): Factura N.º ${String(numAf ?? "").padStart(8, "0")}  ·  Fecha: ${fecha(fecAf)}${ctlAf ? `  ·  Control: ${fmtCtlAf(ctlAf)}` : ""}`;
     const motTxt = `Motivo de ${esNd ? "la nota de débito / recargo" : "la devolución / ajuste"}: ${D.motivo_nc || D.nota || ""}`;
     const ls = [...envolver(refTxt, ANCHO - 2 * M - 16, 9, true), ...envolver(motTxt, ANCHO - 2 * M - 16, 9)], h = ls.length * 12 + 10;
     caja(y, h, [0.94, 0.96, 1], [0.16, 0.34, 0.66]);
@@ -186,6 +193,9 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   y += 4; notaLineas.forEach((l) => { T(l, M, y, { s: 9 }); y += 12; });
 
   paginas.forEach((p, i) => { // pie de cada página
+    if (esAppSeniatInterno) {
+      T("Control interno de facturación · Emisión fiscal oficial vía Sistema Digital SENIAT (SNAT/2024/000102)", R, ALTO - 39, { s: 7, c: [0.45, 0.45, 0.45], der: true, p });
+    }
     T(`Página ${i + 1} de ${paginas.length}  ·  Conforme a Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102`, ANCHO / 2 + 115, ALTO - 28, { s: 7.5, c: [0.55, 0.55, 0.55], der: true, p });
   });
   return pdf.save();

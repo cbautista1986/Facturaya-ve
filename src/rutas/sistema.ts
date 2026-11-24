@@ -100,6 +100,9 @@ export async function solicitarControlImprentaDigital(
     impuestos?: Record<string, unknown>[];
   }
 ): Promise<{ ok: boolean; control_fiscal: string | null; proveedor?: string; error?: string; idempotency_key?: string }> {
+  if (payload.modo && String(payload.modo).toUpperCase() !== "REAL") {
+    return { ok: false, control_fiscal: null, error: "La Imprenta Digital solo se invoca en documentos fiscales reales (modo REAL)." };
+  }
   const { results } = await db
     .prepare(`SELECT clave, valor FROM integraciones WHERE clave LIKE 'imprenta_%'`)
     .all<{ clave: string; valor: string }>()

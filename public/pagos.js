@@ -2,7 +2,7 @@
 // El saldo siempre lo calcula el servidor (total - pagos vigentes); aquí solo se muestra. Los Bs se convierten con la tasa del día del pago.
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, telefono, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCentavos, bsAUsd, usdABs } from "./dinero.js";
-import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js?v=20261124v504";
+import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js?v=20261124v505";
 
 const fechaDoc = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
 const hoyCaracas = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Caracas" }).format(new Date());
@@ -202,6 +202,7 @@ async function editarMetodo(metodo) {
 // ------------------------------------------------------------------ registrar un pago
 async function formPago(estado, docId) {
   const { documento: D, pagado_usd, saldo_usd } = await api(`documentos/${encodeURIComponent(docId)}`), hoy = hoyCaracas();
+  if (D.tipo !== "FACTURA") throw new Error("No se pueden registrar pagos sobre un presupuesto: primero conviértelo en factura y emítela.");
   if (D.estado !== "EMITIDO" || !(saldo_usd > 0)) throw new Error("Este documento no admite más pagos.");
   const tipoContrib = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
   const esFormal = tipoContrib === "FORMAL";

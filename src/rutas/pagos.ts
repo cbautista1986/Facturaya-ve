@@ -134,6 +134,9 @@ pagos.post("/", async (c) => {
   const D = await db.prepare(`SELECT d.id, d.tipo, d.es_nota_credito, COALESCE(d.es_nota_debito, 0) AS es_nota_debito, d.estado, d.modo, d.total_usd, d.subtotal_bs, d.iva_bs, d.tasa_e8, d.fecha_emision, ${PAGADO} AS pagado FROM documentos d WHERE d.id = ?`).bind(docId).first<Fila>();
   if (!D) return falla(c, 404, "Documento no encontrado.");
   if (D.es_nota_credito) return falla(c, 409, "No se registran cobros sobre una nota de crédito.");
+  if (D.tipo !== "FACTURA") {
+    return falla(c, 409, "No se pueden registrar pagos sobre un presupuesto: primero conviértelo en factura y emítela (Art. 13 LIVA · SNAT/2011/0071).");
+  }
   if (D.estado !== "EMITIDO") return falla(c, 409, "Solo se registran pagos en documentos emitidos y vigentes.");
   const esRetencionIva = metodo === "RETENCION_IVA" || b.es_retencion_iva === true ? 1 : 0;
   const esRetencionIslr = !esRetencionIva && (metodo === "RETENCION_ISLR" || b.es_retencion_islr === true) ? 1 : 0;

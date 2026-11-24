@@ -185,7 +185,7 @@ test("1. NC: bloqueo de PUT en borrador NC, concurrencia /devolver sin huérfano
   assert.equal(anularNcCerrada.status, 409);
   assert.ok(String(anularNcCerrada.data.error || "").includes("período fiscal anterior"));
 
-  // Presupuesto abonado convertido en factura: anular la factura debe estar bloqueado por el pago vigente del presupuesto
+  // Presupuesto: cobrar directamente sobre presupuesto está bloqueado (Art. 13 LIVA -> debe convertirse primero en factura)
   const pres = await reqJson(env, jar, "/api/documentos", "POST", {
     tipo: "PRESUPUESTO",
     cliente_id: cli.data.id,
@@ -193,7 +193,7 @@ test("1. NC: bloqueo de PUT en borrador NC, concurrencia /devolver sin huérfano
   });
   assert.equal(pres.status, 200);
   await reqJson(env, jar, `/api/documentos/${pres.data.id}/emitir`, "POST", {});
-  const abono = await reqJson(env, jar, "/api/pagos", "POST", {
+  const abonoBloqueado = await reqJson(env, jar, "/api/pagos", "POST", {
     documento_id: pres.data.id,
     metodo: "PAGO_MOVIL",
     moneda: "BS",
@@ -201,7 +201,17 @@ test("1. NC: bloqueo de PUT en borrador NC, concurrencia /devolver sin huérfano
     tasa: "100,00",
     referencia: "123456",
   });
-  assert.equal(abono.status, 200);
+  assert.equal(abonoBloqueado.status, 409);
+  assert.ok(String(abonoBloqueado.data.error || "").includes("presupuesto"));
+
+  // Retrocompatibilidad histórica: si existía un abono heredado previo de presupuesto, anular la factura convertida sigue bloqueado
+  await db
+    .prepare(
+      `INSERT INTO pagos (documento_id, modo, numero, metodo, moneda, monto_recibido, tasa_e8, monto_usd, saldo_despues_usd, referencia, fecha_pago, registrado_en, registrado_por, estado, reglas_json)
+       VALUES (?, 'PRACTICA', 9901, 'PAGO_MOVIL', 'BS', 100000, 10000000000, 1000, 3000, 'LEGACY1', ?, ?, 1, 'VIGENTE', '{}')`
+    )
+    .bind(pres.data.id, new Date().toISOString().slice(0, 10), new Date().toISOString())
+    .run();
   const conv = await reqJson(env, jar, `/api/documentos/${pres.data.id}/convertir`, "POST", {});
   assert.equal(conv.status, 200);
   const emFacConv = await reqJson(env, jar, `/api/documentos/${conv.data.id}/emitir`, "POST", {});

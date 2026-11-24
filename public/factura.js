@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261124v504";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261124v504";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261124v505";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261124v505";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -394,9 +394,9 @@ async function ver(estado, id) {
     : [["pdf", "📄 Descargar PDF", ""], ["compartir", "📤 Compartir PDF", "verde"],
       ["correo", "✉️ Enviar por correo al cliente", "contorno-azul"],
       ...(esAppSeniat ? [["clonar_seniat", "📋 Copiar resumen fiscal SENIAT", "contorno-azul"]] : []),
-      ...(D.estado === "EMITIDO" && !esNc && saldo_usd > 0 ? [["pagar", "💵 Registrar pago", "verde"]] : []),
+      ...(D.tipo === "FACTURA" && D.estado === "EMITIDO" && !esNc && saldo_usd > 0 ? [["pagar", "💵 Registrar pago", "verde"]] : []),
       ["whatsapp", "💬 Enviar por WhatsApp", ""],
-      ...(D.tipo === "PRESUPUESTO" && D.estado === "EMITIDO" ? [["convertir", "🧾 Convertir en factura", ""]] : []),
+      ...(D.tipo === "PRESUPUESTO" && D.estado === "EMITIDO" ? [["convertir", "🧾 Convertir en factura", "verde"]] : []),
       ...(!esNc && !esNd ? [["copiar", "📑 Copiar como borrador nuevo", "contorno-azul"]] : []),
       ...(tieneDisponibleDevolver && puede("anular") ? [["devolver", "↩️ Devolver (Nota de crédito SENIAT)", "morado"]] : []),
       ...(puedeEmitirNd ? [["nota_debito", "📈 Emitir Nota de débito (Recargo / Ajuste)", "contorno-azul"]] : []),
@@ -437,7 +437,7 @@ async function ver(estado, id) {
       ${esImprenta && D.modo === "REAL" ? `<button type="button" class="boton chico" id="reintentar-imprenta" style="margin-bottom:10px">🔄 Reintentar asignación con Imprenta Digital</button>` : ""}
       <form id="fiscal-form">${campo("numero", "N.º de Control definitivo", nroControlMostrar, "text", 'required maxlength="30" autocomplete="off"')}
         ${ERROR}<button class="boton chico" type="submit">GUARDAR N.º DE CONTROL</button></form></section>` : ""}
-    ${emitido && !esNc ? seccionPagos(D, pagos, notas_credito, notas_debito, pagado_usd, acreditado_nc_usd, saldo_usd) : ""}
+    ${emitido && !esNc && (D.tipo === "FACTURA" || pagos.length > 0) ? seccionPagos(D, pagos, notas_credito, notas_debito, pagado_usd, acreditado_nc_usd, saldo_usd) : ""}
     ${D.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(D.nota)}</p></section>` : ""}
     ${D.estado === "EMITIDO" && puede("anular") && bloqueoAnularFactura ? `<section class="tarjeta" id="aviso-proteccion-fiscal">
       <span class="etiqueta">🛡️ PROTECCIÓN FISCAL SENIAT (LIVA ART. 58 · SNAT/2011/0071 ARTS. 22–23)</span>

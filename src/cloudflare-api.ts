@@ -569,11 +569,16 @@ export type InfoDeploymentCloudflare = {
 export function diagnosticarErrorBuild(textoLog: string): { codigo: string; resumen: string; sugerencia: string } | null {
   const raw = String(textoLog || "");
   if (!raw.trim()) return null;
-  if (/lockfile had changes|lockfile is frozen/i.test(raw)) {
+  if (/lockfile had changes|lockfile is frozen|package\.json and package-lock\.json.*in sync|npm error code EUSAGE/i.test(raw)) {
+    const esNpm = /package-lock\.json|npm ci/i.test(raw);
     return {
       codigo: "LOCKFILE_DESFASADO",
-      resumen: "bun.lock no coincide con package.json en tu repositorio de GitHub.",
-      sugerencia: "Elimina bun.lock en GitHub (o regenera bun.lock) y vuelve a subir para que Cloudflare instale las dependencias actuales.",
+      resumen: esNpm
+        ? "package.json y package-lock.json no están sincronizados en tu repositorio de GitHub (npm ci falló)."
+        : "bun.lock no coincide con package.json en tu repositorio de GitHub.",
+      sugerencia: esNpm
+        ? "Asegúrate de usar el package.json de producción (facturaya-ve) o ejecuta `npm install` (o elimina package-lock.json en GitHub) y vuelve a subir a main."
+        : "Elimina bun.lock en GitHub (o regenera bun.lock) y vuelve a subir para que Cloudflare instale las dependencias actuales.",
     };
   }
   if (/Missing script:\s*["']?build["']?/i.test(raw)) {

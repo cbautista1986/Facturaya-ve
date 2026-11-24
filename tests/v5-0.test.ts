@@ -461,5 +461,10 @@ test("6. Detección inteligente de App instalada (oculta franja si ya está inst
       manifest.related_applications.some((r: any) => r.platform === "webapp" && String(r.url).endsWith("/manifest.webmanifest")),
     "manifest debe declarar related_applications webapp para detección nativa en navegador"
   );
+
+  // 8) Verificar diagnóstico en español para desfase npm ci / package-lock.json
+  const diagLock = diagnosticarErrorBuild("npm error code EUSAGE\nnpm error `npm ci` can only install packages when your package.json and package-lock.json or npm-shrinkwrap.json are in sync.");
+  assert.equal(diagLock?.codigo, "LOCKFILE_DESFASADO");
+  assert.ok(String(diagLock?.resumen || "").includes("package-lock.json"));
 });
 

@@ -15,7 +15,7 @@ El sistema estructura sus flujos de emisión, cobro, registro de compras y repor
 | **Art. 70 y Art. 72 del Reglamento de la Ley del IVA (RLIVA)** | Generación y exportación en PDF y CSV del **Libro de Compras** (mercancía de inventario, gastos operativos y servicios con crédito fiscal) y del **Libro de Ventas** (o *Relación de Ventas / Compras* para Contribuyente Formal). |
 | **Art. 128 de la Ley del Banco Central de Venezuela (BCV)** | Expresión bimoneda con monto legal obligatorio en Bolívares (`Bs.`) calculado a la tasa oficial del BCV (sincronizada o manual) congelada históricamente en cada documento y pago emitido. |
 | **Providencia SNAT/2022/000013 (IGTF 3%)** | Habilitado exclusivamente para **Sujetos Pasivos Especiales (SPE)**: cálculo, registro por método de pago en divisas, desglose en comprobantes y relación quincenal de IGTF (Forma 99032); oculto y bloqueado en servidor para Formales y Ordinarios. |
-| **Providencia SNAT/2015/0049** | Registro de comprobantes de retención de IVA (75% y 100%, aplicable a Ordinarios y Especiales) e imputación en el período correspondiente dentro del Libro de Ventas, incluyendo retenciones recibidas en el mes sobre facturas de períodos anteriores. |
+| **Providencia SNAT/2025/000054** | Registro de comprobantes de retención de IVA (75% y 100%, aplicable a Ordinarios y Especiales — G.O. N.º 43.171, que derogó la SNAT/2015/0049), control de cierre quincenal (Art. 11) e imputación en el período correspondiente dentro del Libro de Ventas. |
 | **Decreto 1.808** | Registro y relación de comprobantes de retención de ISLR (alícuotas configurables: 1%, 2%, 3%, 5%). |
 
 ---

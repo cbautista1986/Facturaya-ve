@@ -253,7 +253,7 @@ documentos.get("/:id", async (c) => {
     : { results: [] as { orden: number; devuelto_milli: number }[] };
   const mapaDev = new Map(rengsDev.map((x) => [x.orden, x.devuelto_milli]));
   const lineasConDev = r.lineas.map((l) => ({ ...l, devuelto_milli: mapaDev.get(l.orden) ?? 0 }));
-  const perfilActual = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
+  const perfilActual = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, logo_base64, tipo_contribuyente FROM perfil_emisor WHERE id = 1`).first<Fila>();
   if (perfilActual) {
     let emisorPrevio: Fila = {};
     try { emisorPrevio = JSON.parse(r.doc.emisor_json || "{}"); } catch {}
@@ -272,10 +272,13 @@ documentos.get("/:id", async (c) => {
   const pagadoEfectivo = results.filter((p) => p.estado === "VIGENTE").reduce((s, p) => s + p.monto_usd, 0);
   const acreditadoNc = notasCredito.filter((n) => n.estado === "EMITIDO").reduce((s, n) => s + (n.total_usd ?? 0), 0);
   const pagadoTotal = pagadoEfectivo + acreditadoNc;
+  const hoyCcs = fechaCaracas();
   const evalAnul = evaluarAnulacionDocumento(r.doc, {
     pagosVigentes: results.filter((p) => p.estado === "VIGENTE").length,
     notasVigentes: notasCredito.filter((n) => n.estado === "EMITIDO").length + notasDebito.filter((n) => n.estado === "EMITIDO").length,
-    mesActualCaracas: fechaCaracas().slice(0, 7),
+    mesActualCaracas: hoyCcs.slice(0, 7),
+    fechaActualCaracas: hoyCcs,
+    tipoContribuyente: perfilActual?.tipo_contribuyente ?? null,
   });
   return c.json({
     ok: true, documento: r.doc, lineas: lineasConDev, impuestos: r.impuestos,
@@ -849,10 +852,14 @@ documentos.post("/:id/anular", async (c) => {
   const conPagos = await db.prepare(`SELECT COUNT(*) AS n FROM pagos WHERE (documento_id = ? OR (? IS NOT NULL AND documento_id = ?)) AND estado = 'VIGENTE'`)
     .bind(id, doc.presupuesto_id ?? null, doc.presupuesto_id ?? null).first<{ n: number }>();
   const conNc = await db.prepare(`SELECT COUNT(*) AS n FROM documentos WHERE factura_afectada_id = ? AND (es_nota_credito = 1 OR COALESCE(es_nota_debito, 0) = 1) AND estado = 'EMITIDO'`).bind(id).first<{ n: number }>();
+  const hoyCcs = fechaCaracas();
+  const tipoContrib = await leerTipoContribuyente(db);
   const evalAnul = evaluarAnulacionDocumento(doc, {
     pagosVigentes: conPagos?.n ?? 0,
     notasVigentes: conNc?.n ?? 0,
-    mesActualCaracas: fechaCaracas().slice(0, 7),
+    mesActualCaracas: hoyCcs.slice(0, 7),
+    fechaActualCaracas: hoyCcs,
+    tipoContribuyente: tipoContrib,
   });
   if (!evalAnul.permitida) {
     return falla(c, 409, evalAnul.motivo || "Este documento no puede anularse directamente.");

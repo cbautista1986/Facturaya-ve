@@ -1,4 +1,4 @@
-// Reglas fiscales puras SENIAT (Providencias SNAT/2011/0071, SNAT/2022/000013, SNAT/2024/000102 y SNAT/2015/0049).
+// Reglas fiscales puras SENIAT (LIVA Arts. 36, 50 y 58 · Providencias SNAT/2011/0071, SNAT/2022/000013, SNAT/2024/000102 y SNAT/2025/000054).
 // Módulo sin dependencias externas para compartir la misma lógica verificable entre rutas y pruebas unitarias.
 
 export interface DocFiscalAnulacion {
@@ -15,7 +15,9 @@ export interface DocFiscalAnulacion {
 export interface ContextoAnulacionDoc {
   pagosVigentes: number;
   notasVigentes: number;
-  mesActualCaracas: string; // formato AAAA-MM
+  mesActualCaracas?: string; // formato AAAA-MM (compatibilidad)
+  fechaActualCaracas?: string; // formato AAAA-MM-DD (preferido para quincenas SPE)
+  tipoContribuyente?: string | null; // FORMAL | ORDINARIO | ESPECIAL
 }
 
 export interface ResultadoAnulacionDoc {
@@ -25,6 +27,7 @@ export interface ResultadoAnulacionDoc {
     | "TIENE_PAGOS_VIGENTES"
     | "TIENE_NOTAS_VIGENTES"
     | "MES_FISCAL_CERRADO"
+    | "QUINCENA_FISCAL_CERRADA"
     | "NOTA_CON_CONTROL_IMPRENTA"
     | null;
   motivo: string | null;
@@ -40,8 +43,42 @@ export interface PagoFiscalAnulacion {
 
 export interface ResultadoAnulacionPago {
   permitida: boolean;
-  codigo: "PAGO_NO_VIGENTE" | "DOC_ANULADO" | "RETENCION_MES_CERRADO" | null;
+  codigo: "PAGO_NO_VIGENTE" | "DOC_ANULADO" | "RETENCION_MES_CERRADO" | "RETENCION_QUINCENA_CERRADA" | null;
   motivo: string | null;
+}
+
+export function quincenaDeFecha(fechaIso: string | null | undefined): string | null {
+  const s = String(fechaIso ?? "").trim().slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const dia = Number(m[3]);
+  if (!Number.isInteger(dia) || dia < 1 || dia > 31) return null;
+  return `${m[1]}-${m[2]}-Q${dia <= 15 ? 1 : 2}`;
+}
+
+export function esPeriodoFiscalCerrado(
+  fechaRegistro: string | null | undefined,
+  fechaActualCaracas: string | null | undefined,
+  modalidad: "MENSUAL" | "QUINCENAL"
+): { cerrado: boolean; porQuincena: boolean } {
+  const reg = String(fechaRegistro ?? "").trim();
+  const act = String(fechaActualCaracas ?? "").trim();
+  const mesReg = reg.slice(0, 7);
+  const mesAct = act.slice(0, 7);
+  if (!mesReg || !mesAct || !/^\d{4}-\d{2}$/.test(mesReg) || !/^\d{4}-\d{2}$/.test(mesAct)) {
+    return { cerrado: false, porQuincena: false };
+  }
+  if (mesReg !== mesAct) {
+    return { cerrado: true, porQuincena: false };
+  }
+  if (modalidad === "QUINCENAL") {
+    const qReg = quincenaDeFecha(reg);
+    const qAct = quincenaDeFecha(act);
+    if (qReg && qAct && qReg !== qAct) {
+      return { cerrado: true, porQuincena: true };
+    }
+  }
+  return { cerrado: false, porQuincena: false };
 }
 
 export function formatearControlFiscal(
@@ -99,7 +136,7 @@ export function evaluarAnulacionDocumento(
         permitida: false,
         codigo: "TIENE_PAGOS_VIGENTES",
         motivo:
-          "Según la normativa SENIAT (Art. 25 Providencia SNAT/2011/0071), esta factura tiene pagos registrados y no puede anularse directamente: debes emitir una Nota de Crédito («↩️ Devolver»).",
+          "Según la normativa SENIAT (LIVA Art. 58 · Providencia SNAT/2011/0071 Arts. 22 y 23), esta factura tiene pagos registrados y no puede anularse directamente: debes emitir una Nota de Crédito («↩️ Devolver»).",
         sugerirNotaCredito: true,
       };
     }
@@ -125,21 +162,34 @@ export function evaluarAnulacionDocumento(
       permitida: false,
       codigo: "TIENE_NOTAS_VIGENTES",
       motivo:
-        "Esta factura ya tiene Notas de Crédito o Débito emitidas: según la normativa SENIAT no se puede anular directamente.",
+        "Esta factura ya tiene Notas de Crédito o Débito emitidas: según la normativa SENIAT (LIVA Art. 58 · SNAT/2011/0071) no se puede anular directamente.",
       sugerirNotaCredito: false,
     };
   }
 
   if (doc.tipo === "FACTURA") {
-    const mesDoc = String(doc.fecha_emision ?? "").slice(0, 7);
-    if (mesDoc && ctx.mesActualCaracas && mesDoc !== ctx.mesActualCaracas) {
+    const fechaRef = ctx.fechaActualCaracas || ctx.mesActualCaracas || "";
+    const modalidadPeriodo = String(ctx.tipoContribuyente ?? "").toUpperCase() === "ESPECIAL" ? "QUINCENAL" : "MENSUAL";
+    const periodo = esPeriodoFiscalCerrado(doc.fecha_emision, fechaRef, modalidadPeriodo);
+    if (periodo.cerrado) {
+      if (periodo.porQuincena) {
+        return {
+          permitida: false,
+          codigo: "QUINCENA_FISCAL_CERRADA",
+          motivo:
+            esNc || esNd
+              ? "Según la normativa SENIAT para Contribuyentes Especiales (declaración quincenal), una Nota de Crédito o Débito de un período fiscal anterior (quincena cerrada) no puede anularse directamente."
+              : "Según la normativa SENIAT para Contribuyentes Especiales (LIVA Art. 58 · declaración quincenal), una factura de un período fiscal anterior (quincena cerrada) no puede anularse directamente: debes emitir una Nota de Crédito («↩️ Devolver»).",
+          sugerirNotaCredito: esFacturaBase,
+        };
+      }
       return {
         permitida: false,
         codigo: "MES_FISCAL_CERRADO",
         motivo:
           esNc || esNd
-            ? "Según la normativa SENIAT, una Nota de Crédito o Débito de un período fiscal anterior no puede anularse directamente porque altera el Libro de Ventas cerrado."
-            : "Según la normativa SENIAT, una factura de un período fiscal anterior no puede anularse directamente porque altera el Libro de Ventas cerrado: debes emitir una Nota de Crédito («↩️ Devolver»).",
+            ? "Según la normativa SENIAT (LIVA Arts. 50 y 58), una Nota de Crédito o Débito de un período fiscal anterior no puede anularse directamente porque altera el Libro de Ventas cerrado."
+            : "Según la normativa SENIAT (LIVA Arts. 50 y 58 · Providencia SNAT/2011/0071 Arts. 22 y 23), una factura de un período fiscal anterior no puede anularse directamente porque altera el Libro de Ventas cerrado: debes emitir una Nota de Crédito («↩️ Devolver»).",
         sugerirNotaCredito: esFacturaBase,
       };
     }
@@ -161,7 +211,7 @@ export function evaluarAnulacionDocumento(
 export function evaluarAnulacionPago(
   pago: PagoFiscalAnulacion,
   doc: Pick<DocFiscalAnulacion, "tipo" | "estado" | "modo"> | null | undefined,
-  mesActualCaracas: string
+  fechaOMesActualCaracas: string
 ): ResultadoAnulacionPago {
   if (pago.estado !== "VIGENTE") {
     return {
@@ -177,23 +227,33 @@ export function evaluarAnulacionPago(
       motivo: "El documento asociado ya está anulado; este comprobante de pago no puede anularse.",
     };
   }
-  const esRetencion = Boolean(pago.es_retencion_iva) || Boolean(pago.es_retencion_islr);
-  const mesPago = String(pago.fecha_pago ?? "").slice(0, 7);
+  const esRetIva = Boolean(pago.es_retencion_iva);
+  const esRetIslr = Boolean(pago.es_retencion_islr);
   if (
-    esRetencion &&
+    (esRetIva || esRetIslr) &&
     doc &&
     doc.tipo === "FACTURA" &&
-    String(doc.modo ?? "").toUpperCase() === "REAL" &&
-    mesPago &&
-    mesActualCaracas &&
-    mesPago !== mesActualCaracas
+    String(doc.modo ?? "").toUpperCase() === "REAL"
   ) {
-    return {
-      permitida: false,
-      codigo: "RETENCION_MES_CERRADO",
-      motivo:
-        "Según la normativa SENIAT, una retención de IVA o ISLR de un período fiscal anterior no puede anularse porque altera las declaraciones y libros ya cerrados.",
-    };
+    // Retenciones de IVA se declaran y enteran quincenalmente (Providencia SNAT/2025/000054 Art. 11); ISLR es mensual (Decreto 1.808).
+    const periodo = esPeriodoFiscalCerrado(pago.fecha_pago, fechaOMesActualCaracas, esRetIva ? "QUINCENAL" : "MENSUAL");
+    if (periodo.cerrado) {
+      if (esRetIva && periodo.porQuincena) {
+        return {
+          permitida: false,
+          codigo: "RETENCION_QUINCENA_CERRADA",
+          motivo:
+            "Según la Providencia SENIAT SNAT/2025/000054 (Art. 11), una retención de IVA de una quincena ya cerrada (período fiscal anterior) no puede anularse directamente porque su enteramiento quincenal ya cerró.",
+        };
+      }
+      return {
+        permitida: false,
+        codigo: "RETENCION_MES_CERRADO",
+        motivo: esRetIva
+          ? "Según la Providencia SENIAT SNAT/2025/000054 (Art. 11), una retención de IVA de un período fiscal anterior no puede anularse porque altera las declaraciones y libros ya cerrados."
+          : "Según la normativa SENIAT (Decreto 1.808), una retención de ISLR de un período fiscal anterior no puede anularse porque altera las declaraciones y libros ya cerrados.",
+      };
+    }
   }
   return { permitida: true, codigo: null, motivo: null };
 }

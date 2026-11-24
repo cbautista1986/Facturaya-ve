@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261123v503";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261123v503";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261124v504";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261124v504";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -378,7 +378,7 @@ async function ver(estado, id) {
   const bloqueoAnularFactura = anulServer && anulServer.permitida === false
     ? anulServer.motivo
     : D.tipo === "FACTURA"
-      ? (tienePagosVigentes ? (esNd ? "Esta Nota de Débito tiene pagos registrados y no puede anularse directamente." : "Según la normativa SENIAT (Art. 25 Providencia SNAT/2011/0071), esta factura tiene pagos registrados y no puede anularse directamente: debes emitir una Nota de Crédito («↩️ Devolver»).")
+      ? (tienePagosVigentes ? (esNd ? "Esta Nota de Débito tiene pagos registrados y no puede anularse directamente." : "Según la normativa SENIAT (LIVA Art. 58 · Providencia SNAT/2011/0071 Arts. 22 y 23), esta factura tiene pagos registrados y no puede anularse directamente: debes emitir una Nota de Crédito («↩️ Devolver»).")
         : !esNc && !esNd && tieneNcVigentes ? "Esta factura ya tiene Notas de Crédito aplicadas; no puede anularse directamente."
         : !esNc && !esNd && tieneNdVigentes ? "Esta factura ya tiene Notas de Débito asociadas; no puede anularse directamente."
         : mesCerrado ? (esNc || esNd
@@ -440,7 +440,7 @@ async function ver(estado, id) {
     ${emitido && !esNc ? seccionPagos(D, pagos, notas_credito, notas_debito, pagado_usd, acreditado_nc_usd, saldo_usd) : ""}
     ${D.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(D.nota)}</p></section>` : ""}
     ${D.estado === "EMITIDO" && puede("anular") && bloqueoAnularFactura ? `<section class="tarjeta" id="aviso-proteccion-fiscal">
-      <span class="etiqueta">🛡️ PROTECCIÓN FISCAL SENIAT (ART. 25 SNAT/2011/0071)</span>
+      <span class="etiqueta">🛡️ PROTECCIÓN FISCAL SENIAT (LIVA ART. 58 · SNAT/2011/0071 ARTS. 22–23)</span>
       <p class="suave" style="margin:6px 0 0">${esc(bloqueoAnularFactura)}</p>
     </section>` : ""}
     <p class="error" id="error" role="alert" hidden></p>
@@ -452,7 +452,7 @@ async function ver(estado, id) {
       ${ERROR}<button class="boton verde" type="submit">ENVIAR CORREO CON PDF ➔</button>
     </form>
     <form id="devolver-form" class="tarjeta" hidden>
-      <h2>↩️ Emitir Nota de Crédito (Art. 25 SNAT/2011/0071)</h2>
+      <h2>↩️ Emitir Nota de Crédito (LIVA Art. 58 · SNAT/2011/0071)</h2>
       <p class="pista">Ajusta parcial o totalmente la Factura ${esc(numeroDoc(D))} y reingresa las existencias al inventario.</p>
       <div class="dos-botones">
         <button type="button" class="boton chico" id="dev-todo">Devolución total</button>
@@ -476,7 +476,7 @@ async function ver(estado, id) {
       ${ERROR}<button class="boton morado" type="submit">EMITIR NOTA DE CRÉDITO</button>
     </form>
     <form id="nd-form" class="tarjeta" hidden>
-      <h2>📈 Emitir Nota de Débito (Art. 25 SNAT/2011/0071)</h2>
+      <h2>📈 Emitir Nota de Débito (LIVA Art. 58 · SNAT/2011/0071)</h2>
       <p class="pista">Registra un recargo, interés moratorio, flete o ajuste adicional sobre la Factura ${esc(numeroDoc(D))}.</p>
       ${campo("motivo_nd", "Motivo de la Nota de Débito (mínimo 5 letras)", "", "text", 'required minlength="5" maxlength="200" placeholder="Ej: Recargo por flete adicional / ajuste de precio"')}
       ${campo("descripcion_nd", "Descripción del renglón / concepto", "", "text", 'required maxlength="200" placeholder="Ej: Servicio de flete adicional"')}

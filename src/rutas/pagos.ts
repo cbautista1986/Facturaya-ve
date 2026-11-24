@@ -200,7 +200,7 @@ pagos.post("/", async (c) => {
       return falla(
         c,
         400,
-        `Según la Providencia SENIAT SNAT/2015/0049, la retención de IVA debe corresponder al 75% (Bs. ${(ret75Bs / 100).toLocaleString("es-VE", { minimumFractionDigits: 2 })}) o al 100% (Bs. ${(ret100Bs / 100).toLocaleString("es-VE", { minimumFractionDigits: 2 })}) del IVA neto facturado.`
+        `Según la Providencia SENIAT SNAT/2025/000054, la retención de IVA debe corresponder al 75% (Bs. ${(ret75Bs / 100).toLocaleString("es-VE", { minimumFractionDigits: 2 })}) o al 100% (Bs. ${(ret100Bs / 100).toLocaleString("es-VE", { minimumFractionDigits: 2 })}) del IVA neto facturado.`
       );
     }
   }
@@ -293,7 +293,7 @@ pagos.get("/:id", async (c) => {
       logo_base64: logoResuelto,
     });
   }
-  const evalAnul = evaluarAnulacionPago(p, d, fechaCaracas().slice(0, 7));
+  const evalAnul = evaluarAnulacionPago(p, d, fechaCaracas());
   return c.json({
     ok: true,
     pago: p,
@@ -391,7 +391,7 @@ pagos.post("/:id/anular", async (c) => {
     .first<Fila>();
   if (!p) return falla(c, 404, "Pago no encontrado.");
   const d = await db.prepare(`SELECT tipo, estado, modo FROM documentos WHERE id = ?`).bind(p.documento_id).first<Fila>();
-  const evalAnul = evaluarAnulacionPago(p, d, fechaCaracas().slice(0, 7));
+  const evalAnul = evaluarAnulacionPago(p, d, fechaCaracas());
   if (!evalAnul.permitida) return falla(c, 409, evalAnul.motivo || "No se puede anular este pago.");
   const r = await db.prepare(
     `UPDATE pagos SET estado = 'ANULADO', anulado_en = ?, anulado_por = ?, motivo_anulacion = ? WHERE id = ? AND estado = 'VIGENTE'`

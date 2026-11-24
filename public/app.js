@@ -5,8 +5,8 @@ import { tarjetaMedio, enlazarMedio } from "./medio.js";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261123v503";
-import { vistaPagos } from "./pagos.js?v=20261123v503";
+import { vistaFactura } from "./factura.js?v=20261124v504";
+import { vistaPagos } from "./pagos.js?v=20261124v504";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
@@ -446,7 +446,7 @@ function vistaLogin() {
             <span class="bento-num">03. Libros contables y retenciones</span>
             <h3>Listos para declarar en PDF y Excel</h3>
             <p>Genera Libro de Ventas, Libro de Compras (mercancía, gastos operativos y servicios), Resumen de IVA, Retenciones IVA (75% / 100%), Retenciones ISLR y Cierre Diario Z.</p>
-            <p class="bento-ley">Sustento legal: Art. 70 y 72 RLIVA · Providencia SNAT/2015/0049 · Decreto 1.808.</p>
+            <p class="bento-ley">Sustento legal: Art. 70 y 72 RLIVA · Providencia SNAT/2025/000054 · Decreto 1.808.</p>
           </article>
           <article class="bento-card bento-wide" id="equipos">
             <span class="bento-num">04. Inventario, gastos y control por roles</span>
@@ -485,7 +485,7 @@ function vistaLogin() {
             <p>Estructura oficial del Libro de Compras (crédito fiscal de mercancía, gastos y servicios) y Libro de Ventas.</p>
           </div>
           <div class="legal-item">
-            <strong>SNAT/2015/0049 · Decreto 1.808</strong>
+            <strong>SNAT/2025/000054 · Decreto 1.808</strong>
             <p>Registro y control de comprobantes de Retención de IVA (75% y 100%) y Retenciones de ISLR.</p>
           </div>
         </div>

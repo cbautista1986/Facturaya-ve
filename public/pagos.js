@@ -2,7 +2,7 @@
 // El saldo siempre lo calcula el servidor (total - pagos vigentes); aquí solo se muestra. Los Bs se convierten con la tasa del día del pago.
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, telefono, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCentavos, bsAUsd, usdABs } from "./dinero.js";
-import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js?v=20261123v503";
+import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js?v=20261124v504";
 
 const fechaDoc = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
 const hoyCaracas = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Caracas" }).format(new Date());
@@ -231,7 +231,7 @@ async function formPago(estado, docId) {
         <label class="opcion"><input type="radio" name="moneda" value="BS"> 🇻🇪 Bolívares (Bs.${esEspecial ? " · Sin IGTF" : ""})</label></fieldset>
       <p class="pista" id="pista-igtf-pago"></p>
       <div id="caja-retencion" class="tarjeta" hidden>
-        <span class="etiqueta">🧾 RETENCIÓN DE IVA SENIAT (SNAT/2015/0049 · SNAT/2025/000054)</span>
+        <span class="etiqueta">🧾 RETENCIÓN DE IVA SENIAT (SNAT/2025/000054)</span>
         <p class="suave">IVA facturado: <b>Bs. ${bs(iva100Bs / 100)}</b> (${usd(D.iva_usd ?? 0)}). Elige el porcentaje retenido por el Contribuyente Especial:</p>
         <div class="dos-botones">
           <button type="button" class="boton chico" id="btn-ret-75">75% IVA (Bs. ${bs(iva75Bs / 100)})</button>

@@ -6,10 +6,12 @@ import { createRequire } from "node:module";
 import app from "../src/index";
 import { crearBaseDatosD1 } from "./d1";
 import {
+  esPeriodoFiscalCerrado,
   evaluarAnulacionDocumento,
   evaluarAnulacionPago,
   formatearControlFiscal,
   puedeInvocarImprentaDigital,
+  quincenaDeFecha,
   validarIgtfNotaCredito,
 } from "../src/reglas-fiscales";
 
@@ -103,7 +105,40 @@ test("1. Reglas fiscales puras: formateo control, anulación SENIAT, IGTF NC y g
   assert.equal(rPagada.codigo, "TIENE_PAGOS_VIGENTES");
   assert.equal(rPagada.sugerirNotaCredito, true);
   assert.ok(rPagada.motivo?.includes("pagos registrados"));
+  assert.ok(rPagada.motivo?.includes("LIVA Art. 58"));
   assert.ok(!rPagada.motivo?.toLowerCase().includes("anula primero sus pagos"));
+
+  // Quincenas y cierre de período: Formal/Ordinario = mensual, Especial (SPE) = quincenal (1-15 / 16-fin)
+  assert.equal(quincenaDeFecha("2026-11-15"), "2026-11-Q1");
+  assert.equal(quincenaDeFecha("2026-11-16"), "2026-11-Q2");
+  assert.deepEqual(esPeriodoFiscalCerrado("2026-11-10", "2026-11-24", "MENSUAL"), { cerrado: false, porQuincena: false });
+  assert.deepEqual(esPeriodoFiscalCerrado("2026-11-10", "2026-11-24", "QUINCENAL"), { cerrado: true, porQuincena: true });
+  assert.deepEqual(esPeriodoFiscalCerrado("2026-11-16", "2026-11-24", "QUINCENAL"), { cerrado: false, porQuincena: false });
+
+  // Factura impaga 1.ª quincena vista en 2.ª quincena del mismo mes:
+  // - ORDINARIO / FORMAL -> permitida (mismo mes)
+  const rOrdMismoMes = evaluarAnulacionDocumento(
+    { tipo: "FACTURA", estado: "EMITIDO", fecha_emision: "2026-11-10", medio: "APP_SENIAT" },
+    { pagosVigentes: 0, notasVigentes: 0, fechaActualCaracas: "2026-11-24", tipoContribuyente: "ORDINARIO" }
+  );
+  assert.equal(rOrdMismoMes.permitida, true);
+
+  // - ESPECIAL (SPE) -> bloqueada por quincena cerrada y sugiere Nota de Crédito
+  const rSpeQuincena = evaluarAnulacionDocumento(
+    { tipo: "FACTURA", estado: "EMITIDO", fecha_emision: "2026-11-10", medio: "APP_SENIAT" },
+    { pagosVigentes: 0, notasVigentes: 0, fechaActualCaracas: "2026-11-24", tipoContribuyente: "ESPECIAL" }
+  );
+  assert.equal(rSpeQuincena.permitida, false);
+  assert.equal(rSpeQuincena.codigo, "QUINCENA_FISCAL_CERRADA");
+  assert.equal(rSpeQuincena.sugerirNotaCredito, true);
+  assert.ok(rSpeQuincena.motivo?.includes("quincena cerrada"));
+
+  // - ESPECIAL (SPE) dentro de la misma 2.ª quincena -> permitida
+  const rSpeMismaQ = evaluarAnulacionDocumento(
+    { tipo: "FACTURA", estado: "EMITIDO", fecha_emision: "2026-11-18", medio: "APP_SENIAT" },
+    { pagosVigentes: 0, notasVigentes: 0, fechaActualCaracas: "2026-11-24", tipoContribuyente: "ESPECIAL" }
+  );
+  assert.equal(rSpeMismaQ.permitida, true);
 
   // Factura impaga mismo mes -> permitida
   const rImpaga = evaluarAnulacionDocumento(
@@ -120,20 +155,39 @@ test("1. Reglas fiscales puras: formateo control, anulación SENIAT, IGTF NC y g
   assert.equal(rNcImp.permitida, false);
   assert.equal(rNcImp.codigo, "NOTA_CON_CONTROL_IMPRENTA");
 
-  // Retención IVA de mes cerrado en modo REAL -> bloqueada
+  // Retención IVA de mes cerrado en modo REAL -> bloqueada (SNAT/2025/000054)
   const rRetCerrada = evaluarAnulacionPago(
     { estado: "VIGENTE", fecha_pago: "2025-01-15", es_retencion_iva: 1 },
     { tipo: "FACTURA", estado: "EMITIDO", modo: "REAL" },
-    "2026-11"
+    "2026-11-24"
   );
   assert.equal(rRetCerrada.permitida, false);
   assert.equal(rRetCerrada.codigo, "RETENCION_MES_CERRADO");
+  assert.ok(rRetCerrada.motivo?.includes("SNAT/2025/000054"));
+
+  // Retención IVA de 1.ª quincena vista en 2.ª quincena del mismo mes -> bloqueada (SNAT/2025/000054 Art. 11)
+  const rRetIvaQ = evaluarAnulacionPago(
+    { estado: "VIGENTE", fecha_pago: "2026-11-10", es_retencion_iva: 1 },
+    { tipo: "FACTURA", estado: "EMITIDO", modo: "REAL" },
+    "2026-11-24"
+  );
+  assert.equal(rRetIvaQ.permitida, false);
+  assert.equal(rRetIvaQ.codigo, "RETENCION_QUINCENA_CERRADA");
+  assert.ok(rRetIvaQ.motivo?.includes("SNAT/2025/000054"));
+
+  // Retención ISLR de 1.ª quincena vista en 2.ª quincena del mismo mes -> permitida (ISLR es mensual, Decreto 1.808)
+  const rRetIslrMismoMes = evaluarAnulacionPago(
+    { estado: "VIGENTE", fecha_pago: "2026-11-10", es_retencion_islr: 1 },
+    { tipo: "FACTURA", estado: "EMITIDO", modo: "REAL" },
+    "2026-11-24"
+  );
+  assert.equal(rRetIslrMismoMes.permitida, true);
 
   // Pago normal sobre documento ya anulado -> bloqueado
   const rDocAnul = evaluarAnulacionPago(
     { estado: "VIGENTE", fecha_pago: "2026-11-23", es_retencion_iva: 0 },
     { tipo: "FACTURA", estado: "ANULADO", modo: "REAL" },
-    "2026-11"
+    "2026-11-24"
   );
   assert.equal(rDocAnul.permitida, false);
   assert.equal(rDocAnul.codigo, "DOC_ANULADO");

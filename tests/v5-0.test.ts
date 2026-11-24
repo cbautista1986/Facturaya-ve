@@ -13,7 +13,9 @@ import {
   horaCaracas,
 } from "../src/mantenimiento";
 import {
+  consultarEstadoCloudflare,
   diagnosticarErrorBuild,
+  eliminarBaseD1EnCloudflare,
   guardarConfigCloudflare,
   relanzarBuildCloudflare,
   sincronizarBindingsD1Cloudflare,
@@ -408,6 +410,40 @@ test("5. Cloudflare API v5.0.0: Fix branch en relanzarBuildCloudflare, Auto-Bind
   assert.ok(tomlRes.toml.includes('binding = "DB_1"'));
   assert.ok(tomlRes.toml.includes('"0 6 * * *"'));
   assert.ok(tomlRes.toml.includes('"0 12,17,22 * * *"'));
+
+  // 5) Protección crítica de facturaya_demo_db (DB_DEMO): jamás aparece como huérfana ni se puede borrar
+  let deleteLlamado = false;
+  const mockEstadoD1: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const method = (init?.method || "GET").toUpperCase();
+    if (method === "DELETE") {
+      deleteLlamado = true;
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    if (url.includes("/d1/database?per_page=100")) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          result: [
+            { uuid: "1c555fec-951d-48f9-bbb4-fc54bf6c2e84", name: "facturacion_ve_db", file_size: 520000, num_tables: 20 },
+            { uuid: "e9d338be-05e8-4922-8b7c-33d14e8da116", name: "facturaya_demo_db", file_size: 16384, num_tables: 0 },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    return new Response(JSON.stringify({ success: true, result: [] }), { status: 200 });
+  };
+  const estadoCf = await consultarEstadoCloudflare(db, env, mockEstadoD1);
+  const bdDemo = estadoCf.bases_d1.find((b) => b.name === "facturaya_demo_db");
+  assert.ok(bdDemo, "Debe listar facturaya_demo_db");
+  assert.equal(bdDemo.es_demo, true);
+  assert.ok(String(bdDemo.asignada_a || "").includes("DB_DEMO"), "DB_DEMO jamás debe clasificarse como huérfana");
+
+  const intentoBorrarDemo = await eliminarBaseD1EnCloudflare(db, env, "e9d338be-05e8-4922-8b7c-33d14e8da116", mockEstadoD1);
+  assert.equal(intentoBorrarDemo.ok, false);
+  assert.equal(deleteLlamado, false, "Jamás debe disparar DELETE HTTP contra facturaya_demo_db");
+  assert.ok(String(intentoBorrarDemo.error || "").includes("DB_DEMO"));
 });
 
 test("6. Detección inteligente de App instalada (oculta franja si ya está instalada y solo aparece cuando realmente se puede instalar)", async () => {

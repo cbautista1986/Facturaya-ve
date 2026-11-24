@@ -131,11 +131,13 @@ textarea:focus { outline: 3px solid rgba(26, 115, 232, .35); border-color: var(-
 .aviso-practica, .aviso-control { background: #FFF4E0; color: #7A4B00; border-color: var(--ambar); }
 .aviso-anulado { background: #FDECEA; color: #A5160E; border-color: var(--rojo); font-weight: 600; }
 @media (prefers-color-scheme: dark) { .aviso-practica, .aviso-control { background: #3A2A10; color: #FFD9A0; } .aviso-anulado { background: #3B1714; color: #FFB4AB; } }
-.insignia.verde { background: #D7F0DD; color: #14602B; } .insignia.azul { background: #DCE8FD; color: #0B4BB5; }
+.insignia.verde { background: #D7F0DD; color: #14602B; } .insignia.azul { background: #DCE8FD; color: #0B4BB5; } .insignia.morado { background: #EFE3FF; color: #5B21B6; }
+@media (prefers-color-scheme: dark) { .insignia.morado { background: #3B245C; color: #E2C6FF; } }
 .insignia.rojo { background: #FBDAD7; color: #A5160E; } .insignia.gris { background: var(--borde); }
-.reng { margin: 10px 0; padding: 12px; border: 1px solid var(--borde); border-radius: 18px; }
+.reng { margin: 10px 0; padding: 12px; border: 1px solid var(--borde); border-radius: 18px; max-width: 100%; overflow-wrap: anywhere; }
+.reng code { overflow-wrap: anywhere; word-break: break-word; }
 .reng.activo { border: 2px solid var(--azul); }
-.reng-cab { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; font-weight: 600; }
+.reng-cab { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; margin-bottom: 6px; font-weight: 600; }
 .reng-cab h2 { margin: 0; }
 .lista-errores { margin: 6px 0; padding-left: 18px; color: var(--rojo); font-size: 13px; }
 .x { min-width: 40px; min-height: 40px; border: 0; background: none; color: var(--rojo); font-size: 18px; cursor: pointer; }

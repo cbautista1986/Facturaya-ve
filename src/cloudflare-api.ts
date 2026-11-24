@@ -5,11 +5,17 @@
 import { cifrarSecreto, descifrarSecreto } from "./cifrado";
 
 export const NOMBRE_BD_PRINCIPAL = "facturacion_ve_db";
+export const NOMBRE_BD_DEMO = "facturaya_demo_db";
+export const UUID_BD_DEMO_DEFECTO = "e9d338be-05e8-4922-8b7c-33d14e8da116";
 export const CUOTA_D1_GRATIS = 10;
 export const CUOTA_D1_PRO_5USD = 50_000;
 
 export function obtenerUuidBdPrincipal(env?: Record<string, unknown>): string {
   return String(env?.PRINCIPAL_D1_UUID ?? "").trim();
+}
+
+export function obtenerUuidBdDemo(env?: Record<string, unknown>): string {
+  return String(env?.DEMO_D1_UUID ?? UUID_BD_DEMO_DEFECTO).trim();
 }
 
 export type ConfigCloudflare = {
@@ -29,6 +35,7 @@ export type InfoBaseD1Remota = {
   num_tables: number;
   version: string;
   es_principal: boolean;
+  es_demo?: boolean;
   asignada_a: string | null;
 };
 
@@ -200,14 +207,16 @@ export async function consultarEstadoCloudflare(
       pagina++;
     }
     if (!errorD1) {
+      const uuidDemo = obtenerUuidBdDemo(env);
       basesD1 = rawBases.map((b) => {
         const uuid = String(b.uuid ?? "");
         const name = String(b.name ?? "");
         const esPrincipal = (Boolean(uuidPrincipal) && uuid === uuidPrincipal) || name.toLowerCase() === NOMBRE_BD_PRINCIPAL;
+        const esDemo = !esPrincipal && ((Boolean(uuidDemo) && uuid === uuidDemo) || name.toLowerCase() === NOMBRE_BD_DEMO);
         const asignada =
           porUuid.get(uuid) ||
           porNombre.get(name.toLowerCase()) ||
-          (esPrincipal ? "principal · Negocio Principal" : null);
+          (esPrincipal ? "principal · Negocio Principal" : esDemo ? "DB_DEMO · Entorno Demo oficial (Sistema)" : null);
         return {
           uuid,
           name,
@@ -216,6 +225,7 @@ export async function consultarEstadoCloudflare(
           num_tables: Number(b.num_tables ?? 0),
           version: String(b.version ?? "production"),
           es_principal: esPrincipal,
+          es_demo: esDemo,
           asignada_a: asignada,
         };
       });
@@ -374,12 +384,16 @@ export async function eliminarBaseD1EnCloudflare(
   const uuid = String(uuidBd ?? "").trim();
   if (!uuid) return { ok: false, error: "Falta el UUID de la base de datos D1." };
   const uuidPrincipalEnv = obtenerUuidBdPrincipal(env);
+  const uuidDemoEnv = obtenerUuidBdDemo(env);
   const filaPrincipal = await rawDb
     .prepare(`SELECT d1_uuid FROM _mt_inquilinos WHERE codigo = 'principal'`)
     .first<{ d1_uuid?: string | null }>()
     .catch(() => null);
   if ((uuidPrincipalEnv && uuid === uuidPrincipalEnv) || (filaPrincipal?.d1_uuid && uuid === filaPrincipal.d1_uuid)) {
     return { ok: false, error: "Protección crítica: la base de datos principal (facturacion_ve_db) jamás puede ser eliminada." };
+  }
+  if (uuidDemoEnv && uuid === uuidDemoEnv) {
+    return { ok: false, error: "Protección crítica: la base de datos oficial del Entorno Demo (facturaya_demo_db / DB_DEMO) es del sistema y no puede eliminarse." };
   }
   const cfg = await leerConfigCloudflare(rawDb, env);
   if (!cfg.configurado) {

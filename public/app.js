@@ -5,8 +5,8 @@ import { tarjetaMedio, enlazarMedio } from "./medio.js";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261124v505";
-import { vistaPagos } from "./pagos.js?v=20261124v505";
+import { vistaFactura } from "./factura.js?v=20261124v506";
+import { vistaPagos } from "./pagos.js?v=20261124v506";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
@@ -1657,11 +1657,12 @@ async function vistaInquilinos(subvista = "") {
       const pintarBasesD1 = () => {
         const q = busqCf.trim().toLowerCase();
         const filt = todasBases.filter((db) => {
-          const esAsig = !!(db.es_principal || db.asignada_a);
+          const esDemoDb = !!db.es_demo || String(db.name || "").toLowerCase() === "facturaya_demo_db";
+          const esAsig = !!(db.es_principal || esDemoDb || db.asignada_a);
           if (filtroCf === "ASIGNADAS" && !esAsig) return false;
           if (filtroCf === "HUERFANAS" && esAsig) return false;
           if (!q) return true;
-          return `${db.name} ${db.uuid} ${db.asignada_a || ""}`.toLowerCase().includes(q);
+          return `${db.name} ${db.uuid} ${db.asignada_a || ""} ${esDemoDb ? "demo db_demo sistema" : ""}`.toLowerCase().includes(q);
         });
         const totalPags = Math.max(1, Math.ceil(filt.length / POR_PAG_CF));
         if (pagCf >= totalPags) pagCf = totalPags - 1;
@@ -1672,18 +1673,21 @@ async function vistaInquilinos(subvista = "") {
         listaBox.innerHTML = vis.map((db) => {
           const kb = db.file_size ? `${(db.file_size / 1024).toFixed(1)} KB` : "0 KB";
           const esPrin = !!db.es_principal;
+          const esDemoDb = !esPrin && (!!db.es_demo || String(db.name || "").toLowerCase() === "facturaya_demo_db");
           const asignacion = esPrin
             ? "👑 Principal (Tu negocio)"
-            : db.asignada_a
-              ? `🏢 ${db.asignada_a}`
-              : "🟢 Huérfana / Sin cliente asignado";
+            : esDemoDb
+              ? "🧪 Demo oficial (DB_DEMO)"
+              : db.asignada_a
+                ? `🏢 ${db.asignada_a}`
+                : "🟢 Huérfana / Sin cliente asignado";
           return `<div class="reng">
             <div class="reng-cab">
               <strong>🗄️ ${esc(db.name)} <small class="suave">(${esc(kb)})</small></strong>
-              <span class="insignia ${esPrin ? "azul" : db.asignada_a ? "verde" : "gris"}">${esc(asignacion)}</span>
+              <span class="insignia ${esPrin ? "azul" : esDemoDb ? "morado" : db.asignada_a ? "verde" : "gris"}">${esc(asignacion)}</span>
             </div>
             <small class="suave">UUID: <code>${esc(db.uuid)}</code></small>
-            ${!esPrin && !db.asignada_a
+            ${!esPrin && !esDemoDb && !db.asignada_a
               ? `<button type="button" class="boton chico contorno" data-cf-abrir-del="${esc(db.uuid)}">🗑️ Borrar esta D1 suelta en Cloudflare</button>
                  <form class="tarjeta" id="cf-del-${esc(db.uuid)}" data-cf-del-form="${esc(db.uuid)}" data-cf-del-nom="${esc(db.name)}" hidden style="margin-top:6px;border:1px solid #d93025">
                    <small class="suave">Confirma tu contraseña de Súper Admin para borrar <b>${esc(db.name)}</b> de Cloudflare:</small>

@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261124v506";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261124v506";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261124v510";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261124v510";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -351,7 +351,8 @@ const seccionPagos = (D, pagos, notasCredito, notasDebito, pagado, acreditadoNc,
 
 async function ver(estado, id) {
   const datos = await api(`documentos/${encodeURIComponent(id)}`);
-  const { documento: D, lineas, impuestos, pagos = [], notas_credito = [], notas_debito = [], factura_afectada: FA = null, pagado_usd = 0, acreditado_nc_usd = 0, saldo_usd = null } = datos;
+  const { documento: D, lineas, impuestos, pagos = [], notas_credito = [], notas_debito = [], factura_afectada: FA = null, imprenta_envio: impEnv = null, pagado_usd = 0, acreditado_nc_usd = 0, saldo_usd = null } = datos;
+  const pdfOficialCg = impEnv?.pdf_url && /^https:\/\/[a-z0-9]/i.test(String(impEnv.pdf_url).trim()) ? String(impEnv.pdf_url).trim() : "";
   const [estTxt, estColor] = ESTADOS[D.estado], emitido = D.estado !== "BORRADOR", esNc = !!D.es_nota_credito, esNd = !!D.es_nota_debito, reglas = JSON.parse(D.parametros_json || "{}");
   const tipoContrib = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
   const esFormal = tipoContrib === "FORMAL";
@@ -419,6 +420,9 @@ async function ver(estado, id) {
       ${emitido ? `<div class="tot"><span>Fecha de emisión</span><b>${fechaDoc(D.fecha_emision)}</b></div>` : ""}
       ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>${esc(nroControlMostrar)}</b></div>
         <div class="tot"><span>Modalidad digital</span><b>${esImprenta ? "🌐 Imprenta Digital (SNAT/2024/000102)" : "📱 Sistema Digital SENIAT (SNAT/2024/000102)"}</b></div>` : ""}
+      ${impEnv ? `<div class="tot"><span>Estado Imprenta (${esc(impEnv.proveedor || "CG")})</span><b><span class="insignia ${impEnv.estado === "ENVIADO_OK" ? "verde" : impEnv.estado === "ANULADO_OK" ? "gris" : "rojo"}">${impEnv.estado === "ENVIADO_OK" ? "✅ Retornado OK" : impEnv.estado === "ANULADO_OK" ? "⛔ Anulado en CG" : "⏳ Pendiente"}</span></b></div>` : ""}
+      ${pdfOficialCg ? `<div style="margin-top:8px"><a class="boton chico morado" href="${esc(pdfOficialCg)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ Ver PDF oficial firmado (${esc(impEnv?.proveedor || "CG Imprenta")})</a></div>` : ""}
+      ${impEnv?.ultimo_error && !D.control_fiscal ? `<p class="error" style="margin:6px 0 0">Último error imprenta: ${esc(impEnv.ultimo_error)}</p>` : ""}
       ${emitido ? `<div class="tot"><span>Tasa BCV (Art. 128 Ley BCV)</span><b>Bs. ${bs(D.tasa_e8 / 1e8)}</b></div>` : ""}
     </section>
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span>${lineas.map((l) => `<div class="reng-ver"><div><b>${esc(l.descripcion)}</b><br><small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.precio_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : "Exento"}${l.devuelto_milli > 0 ? ` · ↩️ Devuelto: ${cantidadTexto(l.devuelto_milli)}` : ""}</small></div><b>${usd(l.monto_usd)}</b></div>`).join("")}</section>

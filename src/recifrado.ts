@@ -3,7 +3,7 @@
 // y cifra los que estuvieran en claro. Es idempotente, no destructivo (UPDATE condicionado al valor leído) y no hace nada sin MASTER_KEY.
 import { cargarLlavesLegadas, cifrarSecreto, descifrarSecreto, estaCifrado, llaveMaestraConfigurada } from "./cifrado";
 
-export const CLAVES_SECRETAS = ["cf_api_token", "correo_clave", "imprenta_clave"] as const;
+export const CLAVES_SECRETAS = ["cf_api_token", "correo_clave", "imprenta_clave", "imprenta_cg_jwt"] as const;
 const PREFIJO_MK = "enc:v2:mk:";
 
 // Una base queda en esta lista cuando ya no tiene pendientes (solo vive mientras viva el isolate; la consulta es de 3 filas).

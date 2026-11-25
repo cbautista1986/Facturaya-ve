@@ -139,6 +139,27 @@ textarea:focus { outline: 3px solid rgba(26, 115, 232, .35); border-color: var(-
 .reng.activo { border: 2px solid var(--azul); }
 .reng-cab { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 10px; margin-bottom: 6px; font-weight: 600; }
 .reng-cab h2 { margin: 0; }
+/* Visor de Plan y Consumo de Imprenta Digital (CG La Imprenta Digital) */
+.imp-visor { background: var(--superficie); border: 1px solid var(--borde); border-radius: 18px; padding: 14px; margin: 10px 0; max-width: 100%; overflow-wrap: anywhere; }
+.imp-inicio { cursor: pointer; margin: 0 0 14px; }
+.imp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+@media (min-width: 680px) { .imp-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.imp-stat { background: var(--fondo); border: 1px solid var(--borde); border-radius: 14px; padding: 8px 10px; min-width: 0; }
+.imp-stat small { display: block; font-size: 11px; color: var(--suave); text-transform: uppercase; letter-spacing: .02em; }
+.imp-stat strong { display: block; font-size: 18px; line-height: 1.25; margin-top: 2px; }
+.imp-sub { font-size: 12px; font-weight: 500; color: var(--suave); white-space: nowrap; }
+.imp-acciones { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 10px; }
+.imp-acciones .boton { width: 100%; justify-content: center; white-space: nowrap; }
+@media (min-width: 680px) { .imp-acciones { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.imp-num-verde { color: var(--verde); }
+.imp-num-ambar { color: var(--ambar); }
+.imp-num-rojo { color: var(--rojo); }
+.imp-barra { width: 100%; height: 10px; border-radius: 999px; background: var(--borde); overflow: hidden; margin-top: 6px; }
+.imp-barra-fill { height: 100%; border-radius: 999px; transition: width .25s ease; }
+.imp-barra-fill.verde { background: var(--verde); }
+.imp-barra-fill.ambar { background: var(--ambar); }
+.imp-barra-fill.rojo { background: var(--rojo); }
+.imp-barra-fill.gris { background: var(--suave); }
 .lista-errores { margin: 6px 0; padding-left: 18px; color: var(--rojo); font-size: 13px; }
 .x { min-width: 40px; min-height: 40px; border: 0; background: none; color: var(--rojo); font-size: 18px; cursor: pointer; }
 .reng-fila { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 8px; margin: 8px 0 4px; }

@@ -235,6 +235,8 @@ export async function limpiarBaseDemo(rawDb: D1Database, envObj: Record<string, 
 
   if (dbDemo) {
     const ordenTablas = [
+      "imprenta_envios",
+      "imprenta_plan_recargas",
       "correo_envios",
       "pagos",
       "movimientos_stock",

@@ -55,6 +55,7 @@ const REGLAS: Regla[] = [
   [P, /^\/api\/sistema\/correo$/, ["super"]],                            // API Key de correo propia retirada para clientes (solo Correo de Plataforma)
   [G, /^\/api\/sistema\/correo$/, ["admin"]],                            // Estado del Correo de Plataforma y Reply-To del negocio
   [P, /^\/api\/sistema\/correo\/probar$/, ["admin"]],                    // Enviar correo de prueba usando el Correo de Plataforma
+  [G, /^\/api\/imprenta\/visor$/, []],                                   // visor de consumo de Imprenta Digital (solo lectura, sin secretos)
   [TODOS, /^\/api\/sistema\/(medio|imprenta)(\/|$)/, ["admin"]],         // Imprenta Digital y Modalidad: Dueño del negocio (ADMIN) y Súper Admin
   [P, /^\/api\/sistema\/tasa-bcv\/sincronizar$/, ["admin", "tasa"]],     // sincronizar tasa BCV oficial (Dueño, Súper Admin o Supervisor)
   [TODOS, /^\/api\/usuarios(\/|$)/, ["admin"]],

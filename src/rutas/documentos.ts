@@ -8,7 +8,7 @@ import { enviarCorreo } from "../correo";
 import { costoPromedio, guardaSaldo, movimiento, saldos, valorSalida } from "../stock";
 import { veCostos } from "../permisos";
 import { sha256 } from "../seguridad";
-import { solicitarControlImprentaDigital } from "./sistema";
+import { anularFacturaImprentaDigital, solicitarControlImprentaDigital } from "./sistema";
 import { EMAIL, PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
 import { leerTipoContribuyente, normalizarTipoContribuyente, reglasRegimen } from "../regimen";
 import { evaluarAnulacionDocumento, puedeInvocarImprentaDigital, validarIgtfNotaCredito } from "../reglas-fiscales";
@@ -280,9 +280,18 @@ documentos.get("/:id", async (c) => {
     fechaActualCaracas: hoyCcs,
     tipoContribuyente: perfilActual?.tipo_contribuyente ?? null,
   });
+  const imprentaEnvio = await db
+    .prepare(
+      `SELECT proveedor, proveedor_tipo, ambiente, numero_documento, numero_serie, control_fiscal, pdf_url, estado, intentos, ultimo_error, enviado_en, retornado_en, anulado_en
+       FROM imprenta_envios WHERE documento_id = ?`
+    )
+    .bind(id)
+    .first<Fila>()
+    .catch(() => null);
   return c.json({
     ok: true, documento: r.doc, lineas: lineasConDev, impuestos: r.impuestos,
     pagos: results, notas_credito: notasCredito, notas_debito: notasDebito, factura_afectada: facturaAfectada,
+    imprenta_envio: imprentaEnvio,
     pagado_usd: pagadoTotal, acreditado_nc_usd: acreditadoNc,
     saldo_usd: r.doc.estado === "BORRADOR" || r.doc.es_nota_credito ? null : Math.max((r.doc.total_usd ?? 0) - pagadoTotal, 0),
     anulacion: {
@@ -447,6 +456,7 @@ documentos.post("/:id/emitir", async (c) => {
   }
   const f = await db.prepare(`SELECT numero, control_interno FROM documentos WHERE id = ?`).bind(id).first<Fila>();
   let controlFiscalAsignado: string | null = null;
+  let imprentaPdfUrl: string | null = null;
   if (esFactura && puedeInvocarImprentaDigital(perfil?.medio_facturacion, doc.modo) && f?.numero) {
     const resImp = await solicitarControlImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
       documento_id: id,
@@ -457,6 +467,10 @@ documentos.post("/:id/emitir", async (c) => {
       fecha_emision: fecha,
       cliente_rif: cli.rif_cedula,
       cliente_nombre: cli.nombre_apellido,
+      cliente_email: cli.email ?? null,
+      cliente_direccion: cli.direccion ?? null,
+      cliente_telefono: cli.whatsapp ?? null,
+      nota: doc.nota ?? null,
       subtotal_bs: calc.subtotal_bs,
       iva_bs: calc.iva_bs,
       igtf_bs: calc.igtf_bs ?? 0,
@@ -469,11 +483,18 @@ documentos.post("/:id/emitir", async (c) => {
     });
     if (resImp.ok && resImp.control_fiscal) {
       controlFiscalAsignado = resImp.control_fiscal;
+      imprentaPdfUrl = resImp.pdf_url ?? null;
       await auditar(c, u.id, "FISCAL_IMPRENTA_AUTO", `${id} IMPRENTA_DIGITAL ${controlFiscalAsignado}`);
     }
   }
   await auditar(c, u.id, "DOC_EMITIR", `${doc.tipo} ${doc.modo} n.º ${f?.numero}`);
-  return c.json({ ok: true, numero: f?.numero, control_interno: f?.control_interno, ...(controlFiscalAsignado ? { control_fiscal: controlFiscalAsignado } : {}) });
+  return c.json({
+    ok: true,
+    numero: f?.numero,
+    control_interno: f?.control_interno,
+    ...(controlFiscalAsignado ? { control_fiscal: controlFiscalAsignado } : {}),
+    ...(imprentaPdfUrl ? { imprenta_pdf_url: imprentaPdfUrl } : {}),
+  });
 });
 
 // ---------------------------------------------------------------- devolución (Nota de Crédito según ley venezolana SENIAT)
@@ -652,7 +673,12 @@ documentos.post("/:id/devolver", async (c) => {
   }
   const emitida = await db.prepare(`SELECT numero, control_interno FROM documentos WHERE id = ?`).bind(ncId).first<{ numero: number; control_interno: number }>();
   let controlFiscalNc: string | null = null;
+  let imprentaPdfNc: string | null = null;
   if (puedeInvocarImprentaDigital(perfil?.medio_facturacion, F.modo) && emitida?.numero) {
+    const devueltoPrevTotal = [...previas].reduce((s, p) => s + Number(p.devuelto_milli ?? 0), 0);
+    const totalOrigMilli = rengsOrigen.reduce((s, l) => s + Number(l.cantidad_milli ?? 0), 0);
+    const totalNcMilli = lineasNc.reduce((s, l) => s + Number(l.cantidad_milli ?? 0), 0);
+    const esNcTotal = devueltoPrevTotal === 0 && totalNcMilli === totalOrigMilli && lineasNc.length === rengsOrigen.length;
     const resImp = await solicitarControlImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
       documento_id: ncId,
       tipo_documento: "NOTA_CREDITO",
@@ -662,6 +688,11 @@ documentos.post("/:id/devolver", async (c) => {
       fecha_emision: fecha,
       cliente_rif: F.cliente_rif,
       cliente_nombre: F.cliente_nombre,
+      cliente_email: F.cliente_email ?? null,
+      cliente_direccion: F.cliente_direccion ?? null,
+      cliente_telefono: F.cliente_whatsapp ?? null,
+      motivo_nc: motivo,
+      es_nc_total: esNcTotal,
       subtotal_bs: calc.subtotal_bs,
       iva_bs: calc.iva_bs,
       igtf_bs: calc.igtf_bs ?? 0,
@@ -673,10 +704,19 @@ documentos.post("/:id/devolver", async (c) => {
       tasa_e8: tasa,
       factura_afectada_numero: F.numero,
     });
-    if (resImp.ok && resImp.control_fiscal) controlFiscalNc = resImp.control_fiscal;
+    if (resImp.ok && resImp.control_fiscal) {
+      controlFiscalNc = resImp.control_fiscal;
+      imprentaPdfNc = resImp.pdf_url ?? null;
+    }
   }
   await auditar(c, u.id, "NOTA_CREDITO_EMITIR", `NC ${emitida?.numero} -> Factura ${F.numero}: ${motivo}`);
-  return c.json({ ok: true, id: ncId, numero: emitida?.numero, ...(controlFiscalNc ? { control_fiscal: controlFiscalNc } : {}) });
+  return c.json({
+    ok: true,
+    id: ncId,
+    numero: emitida?.numero,
+    ...(controlFiscalNc ? { control_fiscal: controlFiscalNc } : {}),
+    ...(imprentaPdfNc ? { imprenta_pdf_url: imprentaPdfNc } : {}),
+  });
 });
 
 // ---------------------------------------------------------------- Nota de Débito (Recargo / Ajuste positivo Art. 72 RLIVA y SNAT/2011/0071)
@@ -827,6 +867,10 @@ documentos.post("/:id/nota-debito", async (c) => {
       cliente_nombre: F.cliente_nombre,
       subtotal_bs: calc.subtotal_bs,
       iva_bs: calc.iva_bs,
+      cliente_email: F.cliente_email ?? null,
+      cliente_direccion: F.cliente_direccion ?? null,
+      cliente_telefono: F.cliente_whatsapp ?? null,
+      motivo_nc: motivo,
       igtf_bs: calc.igtf_bs ?? 0,
       total_bs: calc.total_bs,
       subtotal_usd: calc.subtotal_usd,
@@ -846,7 +890,7 @@ documentos.post("/:id/nota-debito", async (c) => {
 documentos.post("/:id/anular", async (c) => {
   const id = idParam(c), cuerpo = await leerJson(c), motivo = texto(cuerpo.motivo, 200), u = c.get("usuario"), db = c.env.DB;
   if (motivo.length < 5) return falla(c, 400, "Escribe el motivo de la anulación (mínimo 5 letras).");
-  const doc = await db.prepare(`SELECT id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, presupuesto_id, modo, estado, fecha_emision, medio, control_fiscal FROM documentos WHERE id = ?`).bind(id).first<Fila>();
+  const doc = await db.prepare(`SELECT id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, presupuesto_id, modo, estado, numero, fecha_emision, medio, control_fiscal FROM documentos WHERE id = ?`).bind(id).first<Fila>();
   if (!doc) return falla(c, 404, "Documento no encontrado.");
 
   const conPagos = await db.prepare(`SELECT COUNT(*) AS n FROM pagos WHERE (documento_id = ? OR (? IS NOT NULL AND documento_id = ?)) AND estado = 'VIGENTE'`)
@@ -910,8 +954,26 @@ documentos.post("/:id/anular", async (c) => {
       WHERE id IN (SELECT producto_id FROM movimientos_stock WHERE documento_id = ? AND tipo = 'DEVOLUCION_VENTA')`).bind(id),
   ]);
   if (!rr[0].meta.changes) return falla(c, 409, "Solo se puede anular un documento emitido (no un borrador, ni uno ya anulado o facturado).");
-  await auditar(c, u.id, "DOC_ANULAR", `${id}: ${motivo}`);
-  return c.json({ ok: true });
+  let imprentaAnulacion: { ok: boolean; error?: string } | null = null;
+  if (
+    doc.tipo === "FACTURA" &&
+    !doc.es_nota_credito &&
+    !doc.es_nota_debito &&
+    puedeInvocarImprentaDigital(doc.medio, doc.modo) &&
+    doc.control_fiscal &&
+    doc.numero
+  ) {
+    const resAnul = await anularFacturaImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
+      documento_id: id,
+      numero_documento: Number(doc.numero),
+      control_fiscal: String(doc.control_fiscal),
+    });
+    if (!resAnul.omitido) {
+      imprentaAnulacion = { ok: resAnul.ok, ...(resAnul.error ? { error: resAnul.error } : {}) };
+    }
+  }
+  await auditar(c, u.id, "DOC_ANULAR", `${id}: ${motivo}${imprentaAnulacion ? ` [CG:${imprentaAnulacion.ok ? "OK" : "PEND"}]` : ""}`);
+  return c.json({ ok: true, ...(imprentaAnulacion ? { imprenta_anulacion: imprentaAnulacion } : {}) });
 });
 
 async function clonar(c: Ctx, origenId: number, tipo: "FACTURA" | "PRESUPUESTO", presupuestoId: number | null) {
@@ -963,7 +1025,8 @@ documentos.post("/:id/fiscal", async (c) => {
   const d = await db
     .prepare(
       `SELECT id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, modo, estado, medio, control_fiscal,
-              numero, control_interno, fecha_emision, cliente_rif, cliente_nombre,
+              numero, control_interno, fecha_emision, cliente_rif, cliente_nombre, cliente_email, cliente_direccion, cliente_whatsapp,
+              nota, motivo_nc,
               subtotal_bs, iva_bs, COALESCE(igtf_bs, 0) AS igtf_bs, total_bs,
               subtotal_usd, iva_usd, COALESCE(igtf_usd, 0) AS igtf_usd, total_usd, tasa_e8, factura_afectada_id
        FROM documentos WHERE id = ?`
@@ -981,9 +1044,11 @@ documentos.post("/:id/fiscal", async (c) => {
       return falla(c, 409, "La Imprenta Digital en vivo solo se invoca en documentos fiscales reales (modo REAL). En modo práctica registra un número de control de prueba.");
     }
     let facAfectadaNum: number | null = null;
+    let esNcTotalRetry = false;
     if (d.factura_afectada_id) {
-      const fa = await db.prepare(`SELECT numero FROM documentos WHERE id = ?`).bind(d.factura_afectada_id).first<{ numero: number }>().catch(() => null);
+      const fa = await db.prepare(`SELECT numero, total_usd FROM documentos WHERE id = ?`).bind(d.factura_afectada_id).first<{ numero: number; total_usd: number }>().catch(() => null);
       facAfectadaNum = fa?.numero ?? null;
+      if (d.es_nota_credito && fa && Number(d.total_usd) === Number(fa.total_usd)) esNcTotalRetry = true;
     }
     const resImp = await solicitarControlImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
       documento_id: id,
@@ -994,6 +1059,12 @@ documentos.post("/:id/fiscal", async (c) => {
       fecha_emision: String(d.fecha_emision ?? fechaCaracas()),
       cliente_rif: String(d.cliente_rif ?? ""),
       cliente_nombre: String(d.cliente_nombre ?? ""),
+      cliente_email: d.cliente_email ?? null,
+      cliente_direccion: d.cliente_direccion ?? null,
+      cliente_telefono: d.cliente_whatsapp ?? null,
+      nota: d.nota ?? null,
+      motivo_nc: d.motivo_nc ?? null,
+      es_nc_total: esNcTotalRetry,
       subtotal_bs: Number(d.subtotal_bs ?? 0),
       iva_bs: Number(d.iva_bs ?? 0),
       igtf_bs: Number(d.igtf_bs ?? 0),
@@ -1009,7 +1080,7 @@ documentos.post("/:id/fiscal", async (c) => {
       return falla(c, 502, `No se pudo obtener el número de control de la Imprenta Digital (${resImp.error || "sin respuesta"}). Revisa la conexión o reintenta.`);
     }
     await auditar(c, u.id, "FISCAL_IMPRENTA_REINTENTO", `${id} IMPRENTA_DIGITAL ${resImp.control_fiscal}`);
-    return c.json({ ok: true, control_fiscal: resImp.control_fiscal, idempotency_key: resImp.idempotency_key });
+    return c.json({ ok: true, control_fiscal: resImp.control_fiscal, ...(resImp.pdf_url ? { pdf_url: resImp.pdf_url } : {}), idempotency_key: resImp.idempotency_key });
   }
 
   if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(numeroManual)) return falla(c, 400, "Escribe el número de control (ejemplo: 00-00000001).");

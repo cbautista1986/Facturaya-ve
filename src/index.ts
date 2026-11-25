@@ -42,6 +42,7 @@ import informes from "./rutas/informes";
 import inquilinos from "./rutas/inquilinos";
 import demo from "./rutas/demo";
 import correos, { webhookCorreo } from "./rutas/correos";
+import { obtenerResumenImprenta } from "./imprenta-cg";
 import {
   CODIGO_DEMO,
   MENSAJE_DEMO_EXPIRADO,
@@ -1146,6 +1147,15 @@ app.post("/api/sistema/tasa-bcv/sincronizar", async (c) => {
     fecha_valor: global.fecha_valor,
     actualizado_en: global.actualizado_en,
   });
+});
+
+// Visor de consumo de Imprenta Digital de solo lectura (sin secretos ni credenciales) para el cliente/equipo.
+app.get("/api/imprenta/visor", async (c) => {
+  if (!c.get("usuario")) return falla(c, 401, "Inicia sesión para consultar el visor de Imprenta Digital.");
+  const visor = await obtenerResumenImprenta(c.env.DB, c.env as unknown as Record<string, unknown>, fechaCaracas(), {
+    incluirHistorial: false,
+  });
+  return c.json({ ok: true, ...visor });
 });
 
 app.route("/api/inquilinos", inquilinos);

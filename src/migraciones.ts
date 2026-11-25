@@ -773,6 +773,50 @@ export const MIGRACIONES: Migracion[] = [
       `CREATE INDEX IF NOT EXISTS idx_correo_envios_msgid ON correo_envios(message_id)`,
     ],
   },
+  // 0021: Imprenta Digital CG v5.1 (Trazabilidad ida/vuelta por documento y recargas de plan):
+  // - Registra cada documento enviado/retornado por la Imprenta Digital (control_fiscal, pdf_url oficial, intentos, estado y anulación)
+  //   sin modificar los triggers inmutables de `documentos`.
+  // - Registra historial append-only de lotes/recargas contratados por el cliente con fecha pagada y vigencia.
+  {
+    id: "0021_imprenta_cg_v5_1",
+    sql: [
+      `CREATE TABLE IF NOT EXISTS imprenta_envios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        documento_id INTEGER NOT NULL UNIQUE,
+        proveedor TEXT NOT NULL DEFAULT '',
+        proveedor_tipo TEXT NOT NULL DEFAULT 'CG_IMPRENTA',
+        ambiente TEXT NOT NULL DEFAULT 'PRUEBAS',
+        tipo_documento TEXT NOT NULL DEFAULT 'FACTURA',
+        numero_documento TEXT NOT NULL DEFAULT '',
+        numero_serie TEXT NOT NULL DEFAULT 'A',
+        control_fiscal TEXT DEFAULT NULL,
+        pdf_url TEXT DEFAULT NULL,
+        estado TEXT NOT NULL DEFAULT 'PENDIENTE' CHECK (estado IN ('ENVIADO_OK', 'PENDIENTE', 'ERROR', 'ANULADO_OK')),
+        intentos INTEGER NOT NULL DEFAULT 1,
+        ultimo_error TEXT NOT NULL DEFAULT '',
+        idempotency_key TEXT NOT NULL DEFAULT '',
+        enviado_en TEXT NOT NULL DEFAULT (datetime('now')),
+        retornado_en TEXT DEFAULT NULL,
+        anulado_en TEXT DEFAULT NULL,
+        actualizado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_imprenta_envios_estado ON imprenta_envios(estado)`,
+      `CREATE INDEX IF NOT EXISTS idx_imprenta_envios_control ON imprenta_envios(control_fiscal)`,
+      `CREATE TABLE IF NOT EXISTS imprenta_plan_recargas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_nombre TEXT NOT NULL DEFAULT '',
+        cantidad_numeros INTEGER NOT NULL DEFAULT 0 CHECK (cantidad_numeros >= 0),
+        fecha_pago TEXT NOT NULL DEFAULT '',
+        fecha_vence TEXT DEFAULT NULL,
+        monto_usd_centavos INTEGER NOT NULL DEFAULT 0 CHECK (monto_usd_centavos >= 0),
+        referencia TEXT NOT NULL DEFAULT '',
+        nota TEXT NOT NULL DEFAULT '',
+        registrado_por INTEGER DEFAULT NULL,
+        creado_en TEXT NOT NULL DEFAULT (datetime('now'))
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_imprenta_recargas_fecha ON imprenta_plan_recargas(fecha_pago)`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

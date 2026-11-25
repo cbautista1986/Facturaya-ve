@@ -33,6 +33,8 @@ export const TABLAS_INQUILINO = [
   "medio_historial",
   "integraciones",
   "correo_envios",
+  "imprenta_envios",
+  "imprenta_plan_recargas",
 ] as const;
 
 export const TRIGGERS_CONOCIDOS_INQUILINO = [
@@ -82,6 +84,8 @@ export const OBJETOS_ESQUEMA_INQUILINO = [
   "idx_sesiones_expira",
   "idx_correo_envios_fecha",
   "idx_correo_envios_msgid",
+  "idx_imprenta_envios_estado",
+  "idx_imprenta_recargas_fecha",
 ] as const;
 
 const REGEX_OBJETOS = new RegExp(`\\b(${[...OBJETOS_ESQUEMA_INQUILINO].sort((a, b) => b.length - a.length).join("|")})\\b`, "g");

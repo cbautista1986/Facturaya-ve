@@ -1,12 +1,12 @@
 // Entrada de la aplicación: instalador, login, inicio, ajustes y panel Multi-Tenant Súper Admin.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, montarTurnstile, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
-import { tarjetaMedio, enlazarMedio } from "./medio.js";
+import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261124v510";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261124v506";
-import { vistaPagos } from "./pagos.js?v=20261124v506";
+import { vistaFactura } from "./factura.js?v=20261124v510";
+import { vistaPagos } from "./pagos.js?v=20261124v510";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
@@ -619,6 +619,7 @@ function vistaInicio() {
         : puede("informes_contador") ? `<section class="tarjeta ganancia" data-destino="#/informes" data-nombre="Libros SENIAT"><span class="etiqueta">${esFormal ? "📊 RELACIÓN DE VENTAS Y COMPRAS (FORMAL)" : "📊 LIBROS CONTABLES (ART. 70 Y 72 RLIVA)"}</span><strong>${esFormal ? "Relación de Ventas, Compras e ISLR" : "Ventas, Compras y Resumen IVA"}</strong>
         <small class="suave">Descarga en PDF o Excel (CSV).</small></section>` : ""}
     </div>
+    ${n.medio_facturacion === "IMPRENTA_DIGITAL" ? `<div id="inicio-visor-imprenta"></div>` : ""}
     <div class="rejilla">
       ${puede("caja") ? `<button class="accion azul" data-destino="#/factura" data-nombre="Factura" data-ayuda="Presupuestos, facturas, notas de crédito y débito"><span>🧾</span>Factura<small>Facturas y presupuestos</small></button>
       <button class="accion ambar" data-destino="#/clientes" data-nombre="Clientes" data-ayuda="Tus clientes, RIF y correo"><span>👥</span>Clientes<small>Tus clientes</small></button>
@@ -632,6 +633,16 @@ function vistaInicio() {
   $("#ajustes").addEventListener("click", () => (location.hash = "#/ajustes"));
   enlazarBotonesPwa(raiz, aviso);
   activar();
+  if (n.medio_facturacion === "IMPRENTA_DIGITAL") {
+    api("imprenta/visor").then((v) => {
+      const box = $("#inicio-visor-imprenta");
+      if (!box || !v?.resumen) return;
+      box.innerHTML = renderVisorImprentaHtml(v, { compacto: true });
+      box.querySelector("[data-destino]")?.addEventListener("click", () => {
+        if (puede("admin")) location.hash = "#/ajustes";
+      });
+    }).catch(() => {});
+  }
   if (puede("admin")) api("documentos/resumen").then((r) => {
     $("#gan-total").textContent = usd(r.total); $("#gan-det").textContent = `🟣 Servicios: ${usd(r.servicios)} · 🔵 Productos: ${usd(r.productos)} · Toca para ver Libros SENIAT`;
   }).catch(() => {});

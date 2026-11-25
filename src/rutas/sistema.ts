@@ -10,6 +10,25 @@ import { migrar } from "../migraciones";
 import { esSuperAdmin } from "../permisos";
 import { sha256, verificarClave } from "../seguridad";
 import { generarRespaldoNegocio, obtenerFirmaCoberturaReal } from "../salud-bd";
+import {
+  PROVEEDOR_CG,
+  PROVEEDOR_GENERICO,
+  anularFacturaCg,
+  conciliarDocumentosCg,
+  enviarDocumentoCg,
+  leerConfigImprentaCompleta,
+  normalizarHostCg,
+  numeroDocumentoCg,
+  obtenerResumenImprenta,
+  ocultarSecretoImprenta,
+  probarConexionCg,
+  registrarEnvioImprentaDb,
+  validarUrlImprentaSegura,
+  validarUrlPdfSegura,
+  type PayloadImprentaDocumento,
+  type ResultadoEnvioImprenta,
+  type TipoProveedorImprenta,
+} from "../imprenta-cg";
 
 const sistema = new Hono<Env>();
 sistema.use("*", requiereSesion, requiereAdmin);
@@ -56,60 +75,40 @@ sistema.post("/salir-en-vivo", async (c) => {
 // Solo el dueño lo cambia, con su contraseña y un motivo; queda en el historial.
 const MEDIOS = ["APP_SENIAT", "IMPRENTA_DIGITAL"];
 sistema.get("/medio", async (c) => {
-  const db = c.env.DB, p = await db.prepare(`SELECT medio_facturacion AS medio FROM perfil_emisor WHERE id = 1`).first<{ medio: string }>();
+  const db = c.env.DB, envObj = c.env as unknown as Record<string, unknown>;
+  const p = await db.prepare(`SELECT medio_facturacion AS medio FROM perfil_emisor WHERE id = 1`).first<{ medio: string }>();
   const { results } = await db.prepare(`SELECT h.medio_anterior, h.medio_nuevo, h.motivo, h.cambiado_en, u.nombre AS por FROM medio_historial h LEFT JOIN usuarios u ON u.id = h.cambiado_por ORDER BY h.id DESC LIMIT 10`).all();
-  return c.json({ ok: true, medio: p?.medio ?? "APP_SENIAT", historial: results, imprenta: await leerImprenta(db, c.env as unknown as Record<string, unknown>) });
+  const estadoImp = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
+  return c.json({
+    ok: true,
+    medio: p?.medio ?? "APP_SENIAT",
+    historial: results,
+    imprenta: await leerImprenta(db, envObj),
+    imprenta_estado: estadoImp,
+  });
 });
 
-// IMPRENTA DIGITAL: datos de conexión (proveedor, dirección de su API, usuario, clave, ambiente). La clave se guarda cifrada (AES-256-GCM), NO sale en los respaldos
-// y nunca se devuelve entera (solo los últimos 4 caracteres).
-const CLAVES_IMPRENTA = ["proveedor", "url", "usuario", "clave", "ambiente"] as const;
+// IMPRENTA DIGITAL: datos de conexión (proveedor_tipo, proveedor, dirección de su API, usuario, clave, ambiente, serie)
+// y plan contratado (nombre, cupo total, fecha pagada, vigencia, consumo previo). La clave y el JWT se guardan cifrados (AES-256-GCM),
+// NO salen en los respaldos y nunca se devuelven enteros (solo los últimos 4 caracteres).
 async function leerImprenta(db: D1Database, env?: Record<string, unknown>) {
-  const { results } = await db.prepare(`SELECT clave, valor FROM integraciones WHERE clave LIKE 'imprenta_%'`).all<{ clave: string; valor: string }>();
-  const m = Object.fromEntries(results.map((r) => [r.clave.replace("imprenta_", ""), r.valor]));
-  const claveClara = await descifrarSecreto(m.clave, env);
-  return { proveedor: m.proveedor ?? "", url: m.url ?? "", usuario: m.usuario ?? "", ambiente: m.ambiente ?? "PRUEBAS", clave_configurada: !!claveClara, clave_final: claveClara ? claveClara.slice(-4) : "" };
+  return ocultarSecretoImprenta(await leerConfigImprentaCompleta(db, env));
 }
 
-// Conector HTTP en vivo para Imprenta Digital Autorizada (SNAT/2026/00093 / SNAT/2024/000121).
-// Se invoca exclusivamente cuando medio_facturacion === 'IMPRENTA_DIGITAL' (APP_SENIAT no se toca).
+// Conector HTTP en vivo para Imprenta Digital Autorizada (SNAT/2024/000102 / SNAT/2026/00093 / CG SNAT/INTI/012).
+// Se invoca exclusivamente cuando medio_facturacion === 'IMPRENTA_DIGITAL' y modo === 'REAL' (APP_SENIAT no se toca).
 export async function solicitarControlImprentaDigital(
   db: D1Database,
   env: Record<string, unknown> | undefined,
-  payload: {
-    documento_id: number;
-    tipo_documento: "FACTURA" | "NOTA_CREDITO" | "NOTA_DEBITO";
-    modo?: string;
-    numero: number;
-    control_interno: number;
-    fecha_emision: string;
-    cliente_rif: string;
-    cliente_nombre: string;
-    subtotal_bs: number;
-    iva_bs: number;
-    igtf_bs: number;
-    total_bs: number;
-    subtotal_usd: number;
-    iva_usd: number;
-    igtf_usd: number;
-    total_usd: number;
-    tasa_e8: number;
-    factura_afectada_numero?: number | null;
-    emisor?: { rif: string; nombre_razon_social: string; direccion_fiscal?: string };
-    renglones?: Record<string, unknown>[];
-    impuestos?: Record<string, unknown>[];
-  }
-): Promise<{ ok: boolean; control_fiscal: string | null; proveedor?: string; error?: string; idempotency_key?: string }> {
+  payload: PayloadImprentaDocumento,
+  fetchFn: typeof fetch = fetch
+): Promise<ResultadoEnvioImprenta> {
   if (payload.modo && String(payload.modo).toUpperCase() !== "REAL") {
     return { ok: false, control_fiscal: null, error: "La Imprenta Digital solo se invoca en documentos fiscales reales (modo REAL)." };
   }
-  const { results } = await db
-    .prepare(`SELECT clave, valor FROM integraciones WHERE clave LIKE 'imprenta_%'`)
-    .all<{ clave: string; valor: string }>()
-    .catch(() => ({ results: [] as { clave: string; valor: string }[] }));
-  const m = Object.fromEntries(results.map((r) => [r.clave.replace("imprenta_", ""), r.valor]));
-  const url = String(m.url ?? "").trim();
-  const claveClara = await descifrarSecreto(m.clave, env);
+  const cfg = await leerConfigImprentaCompleta(db, env);
+  const url = String(cfg.url ?? "").trim();
+  const claveClara = cfg.clave_clara;
   if (!url || !claveClara) {
     return { ok: false, control_fiscal: null, error: "Imprenta Digital no configurada" };
   }
@@ -131,12 +130,12 @@ export async function solicitarControlImprentaDigital(
     (
       await db
         .prepare(
-          `SELECT orden, tipo, descripcion, cantidad_milli, precio_usd, alicuota_cent, monto_usd, monto_bs
+          `SELECT orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, alicuota_cent, monto_usd, monto_bs
            FROM documento_renglones WHERE documento_id = ? ORDER BY orden ASC`
         )
         .bind(payload.documento_id)
-        .all<Record<string, unknown>>()
-        .catch(() => ({ results: [] as Record<string, unknown>[] }))
+        .all<NonNullable<PayloadImprentaDocumento["renglones"]>[number]>()
+        .catch(() => ({ results: [] as NonNullable<PayloadImprentaDocumento["renglones"]> }))
     ).results;
   const impuestos =
     payload.impuestos ??
@@ -164,21 +163,39 @@ export async function solicitarControlImprentaDigital(
       .catch(() => {});
   };
 
+  // Ruta oficial CG La Imprenta Digital (API Gateway CG v14)
+  if (cfg.proveedor_tipo === PROVEEDOR_CG) {
+    const resCg = await enviarDocumentoCg(
+      db,
+      env,
+      cfg,
+      { ...payload, emisor, renglones, impuestos },
+      idempotencyKey,
+      fetchFn
+    );
+    if (!resCg.ok) {
+      await registrarPendiente(resCg.error || "Error con CG Imprenta Digital");
+    }
+    return resCg;
+  }
+
+  // Ruta genérica compatible con otros proveedores autorizados (webhook Bearer + JSON)
+  const numDocStr = numeroDocumentoCg(payload.numero);
   try {
-    const res = await fetch(url, {
+    const res = await fetchFn(url, {
       method: "POST",
       signal: AbortSignal.timeout(8_000),
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${claveClara}`,
         "Idempotency-Key": idempotencyKey,
-        "X-Imprenta-Usuario": String(m.usuario ?? ""),
-        "X-Imprenta-Ambiente": String(m.ambiente ?? "PRUEBAS"),
+        "X-Imprenta-Usuario": String(cfg.usuario ?? ""),
+        "X-Imprenta-Ambiente": String(cfg.ambiente ?? "PRUEBAS"),
       },
       body: JSON.stringify({
-        proveedor: m.proveedor ?? "",
-        ambiente: m.ambiente ?? "PRUEBAS",
-        usuario: m.usuario ?? "",
+        proveedor: cfg.proveedor ?? "",
+        ambiente: cfg.ambiente ?? "PRUEBAS",
+        usuario: cfg.usuario ?? "",
         idempotency_key: idempotencyKey,
         emisor,
         documento: {
@@ -192,12 +209,27 @@ export async function solicitarControlImprentaDigital(
     if (!res.ok) {
       const errMsg = `HTTP ${res.status}`;
       await registrarPendiente(errMsg);
-      return { ok: false, control_fiscal: null, proveedor: m.proveedor, error: errMsg, idempotency_key: idempotencyKey };
+      await registrarEnvioImprentaDb(db, {
+        documento_id: payload.documento_id,
+        proveedor: cfg.proveedor,
+        proveedor_tipo: PROVEEDOR_GENERICO,
+        ambiente: cfg.ambiente,
+        tipo_documento: payload.tipo_documento,
+        numero_documento: numDocStr,
+        numero_serie: cfg.serie,
+        control_fiscal: null,
+        pdf_url: null,
+        estado: "PENDIENTE",
+        ultimo_error: errMsg,
+        idempotency_key: idempotencyKey,
+      });
+      return { ok: false, control_fiscal: null, proveedor: cfg.proveedor, proveedor_tipo: PROVEEDOR_GENERICO, error: errMsg, idempotency_key: idempotencyKey };
     }
     const data = (await res.json().catch(() => ({}))) as Record<string, any>;
     const rawCtrl = String(
       data?.control_fiscal ??
         data?.numero_control ??
+        data?.control_number ??
         data?.control ??
         data?.resultado?.control_fiscal ??
         data?.resultado?.numero_control ??
@@ -205,10 +237,25 @@ export async function solicitarControlImprentaDigital(
     )
       .trim()
       .toUpperCase();
+    const pdfSeguro = validarUrlPdfSegura(data?.invoice_pdf ?? data?.pdf_url ?? data?.url_pdf ?? data?.resultado?.pdf_url ?? null);
     if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(rawCtrl)) {
       const errMsg = "Formato de número de control inválido";
       await registrarPendiente(errMsg);
-      return { ok: false, control_fiscal: null, proveedor: m.proveedor, error: errMsg, idempotency_key: idempotencyKey };
+      await registrarEnvioImprentaDb(db, {
+        documento_id: payload.documento_id,
+        proveedor: cfg.proveedor,
+        proveedor_tipo: PROVEEDOR_GENERICO,
+        ambiente: cfg.ambiente,
+        tipo_documento: payload.tipo_documento,
+        numero_documento: numDocStr,
+        numero_serie: cfg.serie,
+        control_fiscal: null,
+        pdf_url: null,
+        estado: "PENDIENTE",
+        ultimo_error: errMsg,
+        idempotency_key: idempotencyKey,
+      });
+      return { ok: false, control_fiscal: null, proveedor: cfg.proveedor, proveedor_tipo: PROVEEDOR_GENERICO, error: errMsg, idempotency_key: idempotencyKey };
     }
     await db.batch([
       db
@@ -216,14 +263,79 @@ export async function solicitarControlImprentaDigital(
         .bind(rawCtrl, payload.documento_id),
       db.prepare(`DELETE FROM integraciones WHERE clave = ?`).bind(`imprenta_pendiente_${payload.documento_id}`),
     ]);
-    return { ok: true, control_fiscal: rawCtrl, proveedor: m.proveedor, idempotency_key: idempotencyKey };
+    await registrarEnvioImprentaDb(db, {
+      documento_id: payload.documento_id,
+      proveedor: cfg.proveedor,
+      proveedor_tipo: PROVEEDOR_GENERICO,
+      ambiente: cfg.ambiente,
+      tipo_documento: payload.tipo_documento,
+      numero_documento: numDocStr,
+      numero_serie: cfg.serie,
+      control_fiscal: rawCtrl,
+      pdf_url: pdfSeguro,
+      estado: "ENVIADO_OK",
+      ultimo_error: "",
+      idempotency_key: idempotencyKey,
+      retornado_en: new Date().toISOString(),
+    });
+    return { ok: true, control_fiscal: rawCtrl, pdf_url: pdfSeguro, proveedor: cfg.proveedor, proveedor_tipo: PROVEEDOR_GENERICO, idempotency_key: idempotencyKey };
   } catch (err) {
     const errMsg = (err as Error).message || "Error de red o timeout con la Imprenta Digital";
     await registrarPendiente(errMsg);
-    return { ok: false, control_fiscal: null, proveedor: m.proveedor, error: errMsg, idempotency_key: idempotencyKey };
+    await registrarEnvioImprentaDb(db, {
+      documento_id: payload.documento_id,
+      proveedor: cfg.proveedor,
+      proveedor_tipo: PROVEEDOR_GENERICO,
+      ambiente: cfg.ambiente,
+      tipo_documento: payload.tipo_documento,
+      numero_documento: numDocStr,
+      numero_serie: cfg.serie,
+      control_fiscal: null,
+      pdf_url: null,
+      estado: "PENDIENTE",
+      ultimo_error: errMsg,
+      idempotency_key: idempotencyKey,
+    });
+    return { ok: false, control_fiscal: null, proveedor: cfg.proveedor, proveedor_tipo: PROVEEDOR_GENERICO, error: errMsg, idempotency_key: idempotencyKey };
   }
 }
+
+export async function anularFacturaImprentaDigital(
+  db: D1Database,
+  env: Record<string, unknown> | undefined,
+  datos: { documento_id: number; numero_documento: number | string; control_fiscal: string },
+  fetchFn: typeof fetch = fetch
+): Promise<{ ok: boolean; omitido?: boolean; pdf_url?: string | null; error?: string }> {
+  const cfg = await leerConfigImprentaCompleta(db, env);
+  if (!cfg.url || !cfg.clave_clara) return { ok: true, omitido: true };
+  if (cfg.proveedor_tipo === PROVEEDOR_CG) {
+    return anularFacturaCg(db, env, cfg, datos, fetchFn);
+  }
+  await registrarEnvioImprentaDb(db, {
+    documento_id: datos.documento_id,
+    proveedor: cfg.proveedor,
+    proveedor_tipo: PROVEEDOR_GENERICO,
+    ambiente: cfg.ambiente,
+    tipo_documento: "FACTURA",
+    numero_documento: typeof datos.numero_documento === "number" ? numeroDocumentoCg(datos.numero_documento) : String(datos.numero_documento),
+    numero_serie: cfg.serie,
+    control_fiscal: datos.control_fiscal,
+    pdf_url: null,
+    estado: "ANULADO_OK",
+    ultimo_error: "",
+    anulado_en: new Date().toISOString(),
+  });
+  return { ok: true, omitido: true };
+}
+
 sistema.get("/imprenta", async (c) => c.json({ ok: true, ...(await leerImprenta(c.env.DB, c.env as unknown as Record<string, unknown>)) }));
+
+sistema.get("/imprenta/estado", async (c) => {
+  const db = c.env.DB, envObj = c.env as unknown as Record<string, unknown>;
+  const estado = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
+  return c.json({ ok: true, ...estado });
+});
+
 sistema.post("/imprenta", async (c) => {
   const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
@@ -231,18 +343,204 @@ sistema.post("/imprenta", async (c) => {
   }
   const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
   if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
-  const v: Record<string, string> = { proveedor: texto(b.proveedor, 60), url: texto(b.url, 200), usuario: texto(b.usuario, 100), clave: texto(b.clave, 200), ambiente: texto(b.ambiente, 12) };
-  if (v.proveedor.length < 2) return falla(c, 400, "Escribe el nombre de tu imprenta digital.");
-  if (!/^https:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?(\/[^\s]*)?$/i.test(v.url)) return falla(c, 400, "La dirección de la API debe empezar por https:// (ejemplo: https://api.miimprenta.com/v1).");
-  if (!["PRUEBAS", "PRODUCCION"].includes(v.ambiente)) return falla(c, 400, "Elige el ambiente: pruebas o producción.");
+
+  const provTipoRaw = texto(b.proveedor_tipo, 20).toUpperCase();
+  const proveedorTxt = texto(b.proveedor, 60);
+  const urlRaw = texto(b.url, 200);
+  const provTipo: TipoProveedorImprenta =
+    provTipoRaw === PROVEEDOR_CG || (!provTipoRaw && /cg\s*imprenta|cgimprenta\.digital/i.test(`${proveedorTxt} ${urlRaw}`))
+      ? PROVEEDOR_CG
+      : PROVEEDOR_GENERICO;
+
+  const proveedor = proveedorTxt || (provTipo === PROVEEDOR_CG ? "CG La Imprenta Digital" : "");
+  if (proveedor.length < 2) return falla(c, 400, "Escribe el nombre de tu imprenta digital.");
+
+  const valUrl = validarUrlImprentaSegura(urlRaw);
+  if (!valUrl.ok) return falla(c, 400, valUrl.error);
+  const urlFinal = provTipo === PROVEEDOR_CG ? normalizarHostCg(valUrl.url) : valUrl.url;
+
+  const ambiente = texto(b.ambiente, 12).toUpperCase();
+  if (!["PRUEBAS", "PRODUCCION"].includes(ambiente)) return falla(c, 400, "Elige el ambiente: pruebas o producción.");
+
+  const usuarioApi = texto(b.usuario, 100);
+  if (provTipo === PROVEEDOR_CG && !usuarioApi) {
+    return falla(c, 400, "Indica el usuario (correo) de tu cuenta API en CG La Imprenta Digital.");
+  }
+  const serie = (texto(b.serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
+
+  const claveNueva = texto(b.clave, 200);
   const previa = (await db.prepare(`SELECT valor FROM integraciones WHERE clave = 'imprenta_clave'`).first<{ valor: string }>())?.valor;
-  if (!v.clave && !previa) return falla(c, 400, "Escribe la clave (token) de la API de tu imprenta.");
-  if (v.clave) v.clave = await cifrarSecreto(v.clave, envObj);
-  const ahora = new Date().toISOString(), pasos = CLAVES_IMPRENTA.filter((k) => k !== "clave" || v.clave).map((k) =>
-    db.prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES (?, ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`).bind(`imprenta_${k}`, v[k], ahora));
+  if (!claveNueva && !previa) return falla(c, 400, "Escribe la clave (contraseña API o token) de tu imprenta.");
+
+  // Datos opcionales del Plan contratado y Fecha pagada
+  const tienePlanEnBody =
+    b.plan_cupo_total !== undefined ||
+    b.plan_nombre !== undefined ||
+    b.plan_fecha_pago !== undefined ||
+    b.plan_fecha_vence !== undefined ||
+    b.plan_consumo_previo !== undefined ||
+    b.plan_nota !== undefined;
+
+  const planNombre = texto(b.plan_nombre, 80);
+  const planCupo = b.plan_cupo_total !== undefined && b.plan_cupo_total !== "" ? Math.trunc(Number(b.plan_cupo_total)) : null;
+  if (planCupo !== null && (!Number.isFinite(planCupo) || planCupo < 0 || planCupo > 10_000_000)) {
+    return falla(c, 400, "El cupo contratado debe ser un número entero mayor o igual a 0.");
+  }
+  const planPrevio = b.plan_consumo_previo !== undefined && b.plan_consumo_previo !== "" ? Math.trunc(Number(b.plan_consumo_previo)) : null;
+  if (planPrevio !== null && (!Number.isFinite(planPrevio) || planPrevio < 0 || planPrevio > 10_000_000)) {
+    return falla(c, 400, "El consumo previo debe ser un número entero mayor o igual a 0.");
+  }
+  const planFechaPago = texto(b.plan_fecha_pago, 10);
+  if (planFechaPago && !/^\d{4}-\d{2}-\d{2}$/.test(planFechaPago)) {
+    return falla(c, 400, "La fecha pagada del plan debe tener formato AAAA-MM-DD.");
+  }
+  const planFechaVence = texto(b.plan_fecha_vence, 10);
+  if (planFechaVence && !/^\d{4}-\d{2}-\d{2}$/.test(planFechaVence)) {
+    return falla(c, 400, "La fecha de vigencia/renovación debe tener formato AAAA-MM-DD.");
+  }
+  const planNota = texto(b.plan_nota, 200);
+
+  const ahoraIso = new Date().toISOString();
+  const pares: [string, string][] = [
+    ["imprenta_proveedor_tipo", provTipo],
+    ["imprenta_proveedor", proveedor],
+    ["imprenta_url", urlFinal],
+    ["imprenta_usuario", usuarioApi],
+    ["imprenta_ambiente", ambiente],
+    ["imprenta_serie", serie],
+  ];
+  if (claveNueva) {
+    pares.push(["imprenta_clave", await cifrarSecreto(claveNueva, envObj)]);
+  }
+  if (tienePlanEnBody) {
+    if (b.plan_nombre !== undefined) pares.push(["imprenta_plan_nombre", planNombre]);
+    if (planCupo !== null) pares.push(["imprenta_plan_cupo_total", String(planCupo)]);
+    if (b.plan_fecha_pago !== undefined) pares.push(["imprenta_plan_fecha_pago", planFechaPago]);
+    if (b.plan_fecha_vence !== undefined) pares.push(["imprenta_plan_fecha_vence", planFechaVence]);
+    if (planPrevio !== null) pares.push(["imprenta_plan_consumo_previo", String(planPrevio)]);
+    if (b.plan_nota !== undefined) pares.push(["imprenta_plan_nota", planNota]);
+  }
+
+  const pasos: D1PreparedStatement[] = pares.map(([k, val]) =>
+    db
+      .prepare(
+        `INSERT INTO integraciones (clave, valor, actualizado_en) VALUES (?, ?, ?)
+         ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`
+      )
+      .bind(k, val, ahoraIso)
+  );
+  // Al cambiar credenciales/URL invalidamos el JWT cacheado para forzar re-autenticación limpia
+  pasos.push(
+    db.prepare(`DELETE FROM integraciones WHERE clave IN ('imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host')`)
+  );
   await db.batch(pasos);
-  await auditar(c, yo.id, "IMPRENTA_CONFIG", `${v.proveedor} ${v.ambiente}${v.clave ? " (clave nueva)" : ""}`);
-  return c.json({ ok: true, ...(await leerImprenta(db, envObj)) });
+
+  // Si es la primera vez que se registra un cupo > 0, dejar constancia en el historial de recargas
+  if (planCupo !== null && planCupo > 0) {
+    const yaRec = await db.prepare(`SELECT COUNT(*) AS n FROM imprenta_plan_recargas`).first<{ n: number }>().catch(() => ({ n: 1 }));
+    if ((yaRec?.n ?? 0) === 0) {
+      await db
+        .prepare(
+          `INSERT INTO imprenta_plan_recargas (plan_nombre, cantidad_numeros, fecha_pago, fecha_vence, monto_usd_centavos, referencia, nota, registrado_por, creado_en)
+           VALUES (?, ?, ?, ?, 0, 'PLAN-INICIAL', ?, ?, ?)`
+        )
+        .bind(planNombre || `Lote ${planCupo} números`, planCupo, planFechaPago || fechaCaracas(), planFechaVence || null, planNota, yo.id, ahoraIso)
+        .run()
+        .catch(() => {});
+    }
+  }
+
+  await auditar(c, yo.id, "IMPRENTA_CONFIG", `${provTipo}:${proveedor} ${ambiente} serie=${serie}${planCupo !== null ? ` cupo=${planCupo}` : ""}${claveNueva ? " (clave nueva)" : ""}`);
+  const estado = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
+  return c.json({ ok: true, ...(await leerImprenta(db, envObj)), imprenta_estado: estado });
+});
+
+sistema.post("/imprenta/recarga", async (c) => {
+  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
+    return falla(c, 400, "Marca la casilla de confirmación para registrar la recarga de lote.");
+  }
+  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
+  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
+
+  const cantidad = Math.trunc(Number(b.cantidad_numeros));
+  if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > 10_000_000) {
+    return falla(c, 400, "Indica la cantidad de números de control comprados (mínimo 1).");
+  }
+  const planNombre = texto(b.plan_nombre, 80) || `Recarga +${cantidad} números`;
+  const fechaPago = texto(b.fecha_pago, 10) || fechaCaracas();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaPago)) return falla(c, 400, "La fecha pagada debe tener formato AAAA-MM-DD.");
+  const fechaVence = texto(b.fecha_vence, 10);
+  if (fechaVence && !/^\d{4}-\d{2}-\d{2}$/.test(fechaVence)) return falla(c, 400, "La fecha de vigencia debe tener formato AAAA-MM-DD.");
+  const referencia = texto(b.referencia, 60);
+  const nota = texto(b.nota, 200);
+  const montoCent = Math.max(0, Math.round(Number(b.monto_usd_centavos ?? 0) || 0));
+
+  const cfgActual = await leerConfigImprentaCompleta(db, envObj);
+  const nuevoCupo = cfgActual.plan_cupo_total + cantidad;
+  const ahoraIso = new Date().toISOString();
+
+  const pasos: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `INSERT INTO imprenta_plan_recargas (plan_nombre, cantidad_numeros, fecha_pago, fecha_vence, monto_usd_centavos, referencia, nota, registrado_por, creado_en)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(planNombre, cantidad, fechaPago, fechaVence || null, montoCent, referencia, nota, yo.id, ahoraIso),
+    db
+      .prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('imprenta_plan_cupo_total', ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`)
+      .bind(String(nuevoCupo), ahoraIso),
+    db
+      .prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('imprenta_plan_nombre', ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`)
+      .bind(planNombre, ahoraIso),
+    db
+      .prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('imprenta_plan_fecha_pago', ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`)
+      .bind(fechaPago, ahoraIso),
+  ];
+  if (fechaVence) {
+    pasos.push(
+      db
+        .prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('imprenta_plan_fecha_vence', ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`)
+        .bind(fechaVence, ahoraIso)
+    );
+  }
+  await db.batch(pasos);
+  await auditar(c, yo.id, "IMPRENTA_RECARGA", `+${cantidad} (total=${nuevoCupo}) plan=${planNombre} pago=${fechaPago}`);
+  const estado = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
+  return c.json({ ok: true, nuevo_cupo: nuevoCupo, imprenta_estado: estado });
+});
+
+sistema.post("/imprenta/probar", async (c) => {
+  const db = c.env.DB, envObj = c.env as unknown as Record<string, unknown>;
+  const cfg = await leerConfigImprentaCompleta(db, envObj);
+  if (!cfg.url || !cfg.clave_clara) {
+    return falla(c, 400, "Guarda primero las credenciales de tu Imprenta Digital antes de probar la conexión.");
+  }
+  if (cfg.proveedor_tipo !== PROVEEDOR_CG) {
+    return c.json({ ok: true, mensaje: `Proveedor genérico (${cfg.proveedor}) configurado en ${cfg.ambiente}. La validación en vivo está disponible para CG La Imprenta Digital.` });
+  }
+  const res = await probarConexionCg(db, envObj, cfg);
+  if (!res.ok) return falla(c, 502, res.error || "No se pudo validar la conexión con CG Imprenta Digital.");
+  await auditar(c, c.get("usuario").id, "IMPRENTA_PROBAR", `CG OK (${cfg.ambiente})`);
+  return c.json({ ...res, ok: true });
+});
+
+sistema.post("/imprenta/conciliar", async (c) => {
+  const db = c.env.DB, b = await leerJson(c), envObj = c.env as unknown as Record<string, unknown>;
+  const cfg = await leerConfigImprentaCompleta(db, envObj);
+  if (!cfg.url || !cfg.clave_clara) {
+    return falla(c, 400, "Configura primero tu API de CG Imprenta Digital.");
+  }
+  if (cfg.proveedor_tipo !== PROVEEDOR_CG) {
+    return falla(c, 400, "La conciliación automática contra servidores remotos está disponible para CG La Imprenta Digital.");
+  }
+  const fechaInicio = texto(b.fechaInicio, 10);
+  const fechaFin = texto(b.fechaFin, 10);
+  const res = await conciliarDocumentosCg(db, envObj, cfg, { fechaInicio, fechaFin });
+  if (!res.ok) return falla(c, 502, res.error || "No se pudo conciliar con CG Imprenta Digital.");
+  await auditar(c, c.get("usuario").id, "IMPRENTA_CONCILIAR", `CG=${res.total_cg} local=${res.total_local} recuperados=${res.recuperados}`);
+  const estado = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
+  return c.json({ ok: true, conciliacion: res, imprenta_estado: estado });
 });
 
 // SERVICIO DE CORREO ELECTRÓNICO (Resend / Brevo) para enviar facturas a clientes y recuperación jerárquica de claves.
@@ -418,6 +716,7 @@ sistema.post("/reiniciar-fabrica", async (c) => {
   const ordenTablas = [
     "pagos", "movimientos_stock", "compra_impuestos", "compras", "compras_vieja",
     "documento_impuestos", "documento_renglones", "documentos", "catalogo", "clientes", "proveedores",
+    "imprenta_envios", "imprenta_plan_recargas", "correo_envios",
     "medio_historial", "metodos_cobro", "integraciones", "parametros_fiscales", "contadores", "ajustes",
     "verificaciones", "auditoria", "intentos_login", "sesiones", "usuarios", "emisor_logos", "perfil_emisor", "_migraciones",
   ];

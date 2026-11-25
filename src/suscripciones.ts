@@ -598,15 +598,19 @@ export async function emitirYEnviarCobroSaas(
   const ctlInt = Number(emitida?.control_interno || numFac);
 
   let controlFiscal: string | null = null;
-  if (emisorMedio === "IMPRENTA_DIGITAL" && numFac > 0) {
+  if (emisorMedio === "IMPRENTA_DIGITAL" && modo === "REAL" && numFac > 0) {
     const resImp = await solicitarControlImprentaDigital(rawDb, envObj, {
       documento_id: docId,
       tipo_documento: "FACTURA",
+      modo,
       numero: numFac,
       control_interno: ctlInt,
       fecha_emision: hoy,
       cliente_rif: aRifSeniat(inq.rif || ""),
       cliente_nombre: inq.nombre_negocio,
+      cliente_email: inq.email_dueno || null,
+      cliente_direccion: inq.direccion || null,
+      cliente_telefono: inq.telefono || null,
       subtotal_bs: calculo.subtotal_bs_cent,
       iva_bs: calculo.iva_bs_cent,
       igtf_bs: 0,

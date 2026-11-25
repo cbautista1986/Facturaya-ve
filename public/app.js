@@ -1,12 +1,12 @@
 // Entrada de la aplicación: instalador, login, inicio, ajustes y panel Multi-Tenant Súper Admin.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, montarTurnstile, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
-import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261124v510";
+import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261125v512";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261124v510";
-import { vistaPagos } from "./pagos.js?v=20261124v510";
+import { vistaFactura } from "./factura.js?v=20261125v512";
+import { vistaPagos } from "./pagos.js?v=20261125v512";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
@@ -1004,19 +1004,32 @@ async function vistaInquilinos(subvista = "") {
 
           <div id="caja-alta-imprenta" hidden style="margin-top:10px;padding:10px;border:1px solid #dadce0;border-radius:10px">
             <strong>🌐 API de Imprenta Digital del Cliente (opcional ahora; editable luego en Ajustes)</strong>
-            ${campo("imprenta_proveedor", "Proveedor Autorizado", "", "text", 'placeholder="Ej: The Factory HKA / Unidigital"')}
-            ${campo("imprenta_url", "URL de la API (https://…)", "", "url", 'placeholder="https://api.imprenta.com/v1"')}
+            <label for="imprenta_proveedor_tipo">Conector / Imprenta Digital</label>
+            <select id="imprenta_proveedor_tipo" name="imprenta_proveedor_tipo">
+              <option value="CG_IMPRENTA" selected>🏛️ CG La Imprenta Digital (Oficial · SNAT/INTI/012)</option>
+              <option value="GENERICO">🌐 Otro proveedor autorizado (API genérica)</option>
+            </select>
+            ${campo("imprenta_proveedor", "Nombre del proveedor", "CG La Imprenta Digital", "text", 'placeholder="Ej: CG La Imprenta Digital"')}
+            ${campo("imprenta_url", "URL base de la API (https://…)", "", "url", 'placeholder="https://calidad.cgimprenta.digital/ o URL Producción CG"')}
             <div class="dos-botones">
-              <div>${campo("imprenta_usuario", "Usuario o RIF en la Imprenta", "", "text", 'placeholder="Usuario / RIF"')}</div>
+              <div>${campo("imprenta_usuario", "Correo / Usuario API", "", "text", 'placeholder="usuario@empresa.com"')}</div>
               <div>
                 <label for="imprenta_ambiente">Ambiente</label>
                 <select id="imprenta_ambiente" name="imprenta_ambiente">
-                  <option value="PRUEBAS">Pruebas (Sandbox)</option>
-                  <option value="PRODUCCION">Producción</option>
+                  <option value="PRUEBAS">🧪 Calidad / Pruebas</option>
+                  <option value="PRODUCCION">🟢 Producción</option>
                 </select>
               </div>
             </div>
-            ${campo("imprenta_clave", "🔑 Token / API Key de Imprenta Digital (se cifra con AES-256-GCM)", "", "password", 'autocomplete="off" placeholder="Dejar en blanco si se configurará después"')}
+            <div class="dos-botones">
+              <div>${campo("imprenta_serie", "Serie CG (ej: A)", "A", "text", 'maxlength="5" placeholder="A"')}</div>
+              <div>${campo("imprenta_plan_cupo_total", "Cupo contratado (opc.)", "", "number", 'min="0" max="10000000" step="1" placeholder="Ej: 100 o 500"')}</div>
+            </div>
+            <div class="dos-botones">
+              <div>${campo("imprenta_plan_nombre", "Plan contratado (opc.)", "", "text", 'maxlength="80" placeholder="Ej: Emprende I (100 núm.)"')}</div>
+              <div>${campo("imprenta_plan_fecha_pago", "📅 Fecha pagada (opc.)", "", "date")}</div>
+            </div>
+            ${campo("imprenta_clave", "🔑 Contraseña API / Token de Imprenta Digital (se cifra con AES-256-GCM)", "", "password", 'autocomplete="off" placeholder="Dejar en blanco si se configurará después"')}
           </div>
 
           <p class="pista" style="margin-top:10px">✉️ <b>Correo de Plataforma incluido:</b> este cliente enviará facturas, recibos y cierres mensuales automáticamente con el correo central de FacturaYa Venezuela (con <i>Reply-To</i> al correo del negocio).</p>

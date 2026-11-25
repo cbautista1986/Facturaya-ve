@@ -74,7 +74,7 @@ export type PayloadImprentaDocumento = {
   total_usd: number;
   tasa_e8: number;
   factura_afectada_numero?: number | null;
-  emisor?: { rif: string; nombre_razon_social: string; direccion_fiscal?: string };
+  emisor?: { rif: string; nombre_razon_social: string; direccion_fiscal?: string; email?: string | null };
   renglones?: {
     orden?: number;
     catalogo_id?: number | null;
@@ -162,8 +162,12 @@ export function validarUrlImprentaSegura(urlRaw: string): { ok: true; url: strin
 
 export function normalizarHostCg(urlRaw: string): string {
   const parsed = new URL(urlRaw.trim());
-  // Si el usuario pegó la ruta completa (/api/Invoice/...), recortamos al host raíz
-  let path = parsed.pathname.replace(/\/api\/invoice\/.*$/i, "/").replace(/\/auth\/login\/?$/i, "/");
+  // Si el usuario pegó una ruta interna (/api/Invoice/..., /api/..., /auth/login, /doc/...), recortamos al host/base raíz
+  let path = parsed.pathname
+    .replace(/\/api\/invoice\/.*$/i, "/")
+    .replace(/\/api\/?$/i, "/")
+    .replace(/\/auth\/login\/?$/i, "/")
+    .replace(/\/doc\/.*$/i, "/");
   if (!path.endsWith("/")) path += "/";
   return `${parsed.origin}${path}`;
 }
@@ -249,11 +253,28 @@ function limpiarTextoCg(v: unknown, max: number, defecto = ""): string {
   return (s || defecto).slice(0, max);
 }
 
+export function normalizarCorreoCg(correoCliente: unknown, correoEmisor?: unknown): string {
+  const rx = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
+  const cli = String(correoCliente ?? "").trim().toLowerCase();
+  if (cli && cli.length <= 120 && rx.test(cli)) return cli;
+  const emi = String(correoEmisor ?? "").trim().toLowerCase();
+  if (emi && emi.length <= 120 && rx.test(emi)) return emi;
+  return "sin-correo@facturayave.com";
+}
+
+export function normalizarTelefonoCg(telRaw: unknown): string {
+  const limpio = String(telRaw ?? "").trim().replace(/[^0-9+]/g, "");
+  const digitos = limpio.replace(/\D/g, "");
+  if (digitos.length >= 7) return limpio.slice(0, 20);
+  return "00000000000";
+}
+
 // ---------------------------------------------------------------- Constructores de payloads exactos (API Gateway CG v14)
 
 export function construirPayloadFacturaCg(
   payload: PayloadImprentaDocumento,
-  serie = "A"
+  serie = "A",
+  opts?: { incluirDescripcion?: boolean }
 ): Record<string, unknown> {
   const numStr = numeroDocumentoCg(payload.numero);
   const serieLimpia = limpiarTextoCg(serie, 5, "A").toUpperCase();
@@ -273,24 +294,27 @@ export function construirPayloadFacturaCg(
     };
   });
 
+  // Según doc oficial CG v14, `descripcionFactura` es opcional y falla con HTTP 400 si el comercio tiene Coletilla / Mensaje Fijo activo.
+  // Solo la incluimos si el usuario escribió una nota explícita (y nunca si se reintenta por conflicto de Coletilla).
+  const notaLimpia = opts?.incluirDescripcion === false ? "" : limpiarTextoCg(payload.nota, 200);
+  const facturaObj: Record<string, unknown> = {
+    numeroFactura: numStr,
+    ...(notaLimpia ? { descripcionFactura: notaLimpia } : {}),
+    documentoIdentidadCliente: limpiarDocumentoIdentidadCg(payload.cliente_rif),
+    nombreRazonSocialCliente: limpiarTextoCg(payload.cliente_nombre, 120, "Cliente"),
+    correoCliente: normalizarCorreoCg(payload.cliente_email, payload.emisor?.email),
+    direccionCliente: limpiarTextoCg(payload.cliente_direccion, 200, "Venezuela"),
+    telefonoCliente: normalizarTelefonoCg(payload.cliente_telefono),
+    tasa_del_dia: formatearTasaCg(payload.tasa_e8),
+    fecha_tasa: formatearFechaDdMmYyyy(payload.fecha_emision),
+    mostrar_formas_de_pago: 0,
+    productos,
+  };
+
   return {
     numeroSerie: serieLimpia,
     cantidadFactura: 1,
-    facturas: [
-      {
-        numeroFactura: numStr,
-        descripcionFactura: limpiarTextoCg(payload.nota, 200, `Factura ${numStr}`),
-        documentoIdentidadCliente: limpiarDocumentoIdentidadCg(payload.cliente_rif),
-        nombreRazonSocialCliente: limpiarTextoCg(payload.cliente_nombre, 120, "Cliente"),
-        correoCliente: limpiarTextoCg(payload.cliente_email, 120, "sin-correo@facturayave.com"),
-        direccionCliente: limpiarTextoCg(payload.cliente_direccion, 200, "Venezuela"),
-        telefonoCliente: limpiarTextoCg(payload.cliente_telefono, 30, "00000000000").replace(/[^0-9+]/g, "") || "00000000000",
-        tasa_del_dia: formatearTasaCg(payload.tasa_e8),
-        fecha_tasa: formatearFechaDdMmYyyy(payload.fecha_emision),
-        mostrar_formas_de_pago: 0,
-        productos,
-      },
-    ],
+    facturas: [facturaObj],
   };
 }
 
@@ -298,7 +322,8 @@ export function construirPayloadNcTotalCg(payload: PayloadImprentaDocumento): Re
   return {
     numeroFactura: numeroDocumentoCg(Number(payload.factura_afectada_numero ?? 0)),
     numeroNotaCredito: numeroDocumentoCg(payload.numero),
-    descripcion: limpiarTextoCg(payload.motivo_nc || payload.nota, 200, "Devolución total de factura"),
+    // CG v14 impone estrictamente un máximo de 50 caracteres en `descripcion` para NC/ND
+    descripcion: limpiarTextoCg(payload.motivo_nc || payload.nota, 50, "Devolución total de factura"),
   };
 }
 
@@ -307,7 +332,7 @@ export function construirPayloadNcParcialCg(payload: PayloadImprentaDocumento): 
   return {
     numeroFactura: numeroDocumentoCg(Number(payload.factura_afectada_numero ?? 0)),
     numeroNotaCredito: numeroDocumentoCg(payload.numero),
-    descripcion: limpiarTextoCg(payload.motivo_nc || payload.nota, 200, "Devolución parcial de mercancía"),
+    descripcion: limpiarTextoCg(payload.motivo_nc || payload.nota, 50, "Devolución parcial de mercancía"),
     productos: rengs.map((r, i) => ({
       codigo: codigoProductoCg(r.catalogo_id, r.orden ?? i + 1),
       descripcion: limpiarTextoCg(r.descripcion, 120, `Renglón ${i + 1}`),
@@ -334,7 +359,7 @@ export function construirPayloadNdCg(payload: PayloadImprentaDocumento): Record<
   return {
     numeroFactura: numeroDocumentoCg(Number(payload.factura_afectada_numero ?? 0)),
     numeroNotaDebito: numeroDocumentoCg(payload.numero),
-    descripcion: limpiarTextoCg(payload.motivo_nc || payload.nota, 200, "Nota de débito / ajuste"),
+    descripcion: limpiarTextoCg(payload.motivo_nc || payload.nota, 50, "Nota de débito / ajuste"),
     tasa_del_dia: formatearTasaCg(payload.tasa_e8),
     fecha_tasa: formatearFechaDdMmYyyy(payload.fecha_emision),
     productos_nuevos: productosNuevos,
@@ -351,15 +376,57 @@ export function construirPayloadAnulacionCg(numeroFactura: number | string, cont
 
 // ---------------------------------------------------------------- Parseo robusto de respuestas CG
 
+export function extraerListaDocumentosCg(data: Record<string, any> | null | undefined): Record<string, any>[] {
+  if (!data || typeof data !== "object") return [];
+  const raw = Array.isArray(data.invoices)
+    ? data.invoices
+    : Array.isArray(data.data)
+      ? data.data
+      : Array.isArray(data.facturas)
+        ? data.facturas
+        : [];
+  const planos: Record<string, any>[] = [];
+  const aplanar = (arr: unknown[]) => {
+    for (const el of arr) {
+      if (Array.isArray(el)) aplanar(el);
+      else if (el && typeof el === "object") planos.push(el as Record<string, any>);
+    }
+  };
+  aplanar(raw);
+  return planos;
+}
+
+export function normalizarTipoDocumentoCg(docRaw: unknown): "FACTURA" | "NOTA_CREDITO" | "NOTA_DEBITO" | "OTRO" {
+  const s = String(docRaw ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toUpperCase();
+  if (!s || s.includes("FACTURA")) return "FACTURA";
+  if (s.includes("CREDITO") || s === "NC" || s === "NOTA_CREDITO") return "NOTA_CREDITO";
+  if (s.includes("DEBITO") || s === "ND" || s === "NOTA_DEBITO") return "NOTA_DEBITO";
+  return "OTRO";
+}
+
+export function claveNumeroCg(numRaw: unknown): string {
+  const s = String(numRaw ?? "").trim().toUpperCase();
+  if (!s) return "";
+  if (/^\d+$/.test(s)) return String(Number(s));
+  return s;
+}
+
 export function extraerRespuestaCg(
   data: Record<string, any> | null | undefined,
-  _tipo?: string
+  _tipo?: string,
+  httpStatus?: number
 ): {
   ok: boolean;
   control_fiscal: string | null;
   pdf_url: string | null;
   error?: string;
   sin_cupo?: boolean;
+  duplicada?: boolean;
+  coletilla_conflicto?: boolean;
 } {
   if (!data || typeof data !== "object") {
     return { ok: false, control_fiscal: null, pdf_url: null, error: "Respuesta vacía de CG Imprenta Digital." };
@@ -392,14 +459,22 @@ export function extraerRespuestaCg(
 
   const rawPdf =
     primero?.invoice_pdf ??
+    primero?.credit_note_pdf ??
+    primero?.debit_note_pdf ??
     primero?.pdf_factura ??
     primero?.pdf_nota_credito ??
     primero?.pdf_nota_debito ??
+    primero?.details?.pdf_factura ??
     primero?.pdf_url ??
     primero?.url_pdf ??
     primero?.pdf ??
     data.invoice_pdf ??
+    data.credit_note_pdf ??
+    data.debit_note_pdf ??
+    data.details?.pdf_factura ??
     data.pdf_factura ??
+    data.pdf_nota_credito ??
+    data.pdf_nota_debito ??
     data.pdf_url ??
     data.url_pdf ??
     data.pdf ??
@@ -411,22 +486,52 @@ export function extraerRespuestaCg(
     return { ok: true, control_fiscal: rawCtrl, pdf_url: pdfSeguro };
   }
 
+  const baseMsg = String(data.message ?? data.error ?? "").trim();
+  const invErrTxt = invErrors.length
+    ? invErrors
+        .map((e: any) =>
+          typeof e === "string"
+            ? e.trim()
+            : e?.error || e?.message || e?.errors?.join?.("; ") || JSON.stringify(e)
+        )
+        .filter(Boolean)
+        .join(" | ")
+    : "";
+  const dataErrTxt = Array.isArray(data.errors)
+    ? data.errors
+        .map((e: any) => (typeof e === "string" ? e.trim() : e?.message || JSON.stringify(e)))
+        .filter(Boolean)
+        .join(" | ")
+    : "";
+  const detalleErr = invErrTxt || dataErrTxt;
+
   const msgErr =
-    (invErrors.length
-      ? invErrors
-          .map((e: any) =>
-            typeof e === "string"
-              ? e
-              : e?.error || e?.message || e?.errors?.join?.("; ") || JSON.stringify(e)
-          )
-          .join(" | ")
-      : "") ||
-    (Array.isArray(data.errors) ? data.errors.map((e: any) => (typeof e === "string" ? e : e?.message || JSON.stringify(e))).join(" | ") : "") ||
-    String(data.message ?? data.error ?? "").trim() ||
-    "CG Imprenta Digital no devolvió un número de control válido.";
+    (baseMsg && detalleErr
+      ? baseMsg.includes(detalleErr)
+        ? baseMsg
+        : `${baseMsg} (${detalleErr})`
+      : baseMsg || detalleErr) || "CG Imprenta Digital no devolvió un número de control válido.";
 
   const sinCupo = /no posee m[aá]s n[uú]meros de control|sin n[uú]meros de control|agotad[oa]/i.test(msgErr);
-  return { ok: false, control_fiscal: null, pdf_url: null, error: msgErr.slice(0, 300), sin_cupo: sinCupo };
+  const coletillaConflicto = /coletilla|mensaje fijo|fixed_message/i.test(msgErr);
+  const soloNumerosEnInvErrors =
+    invErrors.length > 0 && invErrors.every((e: any) => typeof e === "string" && /^\d+$/.test(e.trim()));
+  const duplicada =
+    !sinCupo &&
+    !coletillaConflicto &&
+    (httpStatus === 409 ||
+      /ya registrad|ya est[aá] en uso|duplicad|already registered/i.test(msgErr) ||
+      soloNumerosEnInvErrors);
+
+  return {
+    ok: false,
+    control_fiscal: null,
+    pdf_url: null,
+    error: msgErr.slice(0, 300),
+    sin_cupo: sinCupo,
+    duplicada,
+    coletilla_conflicto: coletillaConflicto,
+  };
 }
 
 // ---------------------------------------------------------------- Cálculo puro del Contador / Visor de Plan
@@ -785,17 +890,23 @@ async function obtenerOCachearTokenCg(
   fetchFn: typeof fetch = fetch
 ): Promise<{ ok: true; token: string } | { ok: false; error: string }> {
   const ahoraMs = Date.now();
+  const hostNorm = normalizarHostCg(cfg.url);
+  const userNorm = cfg.usuario.trim().toLowerCase();
   if (!forzarRenovar) {
     const rows = (
       await db
-        .prepare(`SELECT clave, valor FROM integraciones WHERE clave IN ('imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host')`)
+        .prepare(`SELECT clave, valor FROM integraciones WHERE clave IN ('imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host', 'imprenta_cg_jwt_user')`)
         .all<{ clave: string; valor: string }>()
         .catch(() => ({ results: [] }))
     ).results;
     const m = Object.fromEntries(rows.map((r) => [r.clave, r.valor]));
     const expMs = Number(m.imprenta_cg_jwt_exp || 0);
-    const hostNorm = normalizarHostCg(cfg.url);
-    if (m.imprenta_cg_jwt && m.imprenta_cg_jwt_host === hostNorm && expMs > ahoraMs + 60_000) {
+    if (
+      m.imprenta_cg_jwt &&
+      m.imprenta_cg_jwt_host === hostNorm &&
+      (!m.imprenta_cg_jwt_user || m.imprenta_cg_jwt_user === userNorm) &&
+      expMs > ahoraMs + 60_000
+    ) {
       const tok = await descifrarSecreto(m.imprenta_cg_jwt, env);
       if (tok) return { ok: true, token: tok };
     }
@@ -804,10 +915,9 @@ async function obtenerOCachearTokenCg(
   const nuevo = await obtenerTokenCg(cfg.url, cfg.usuario, cfg.clave_clara, fetchFn);
   if (!nuevo.ok) return nuevo;
 
-  // Guardar JWT cifrado con TTL de 50 minutos (CG emite tokens de 60 minutos)
+  // Guardar JWT cifrado con TTL de 50 minutos (CG emite tokens de 60 minutos), aislado por host + usuario API
   const ahoraIso = new Date().toISOString();
   const expMs = String(ahoraMs + 50 * 60_000);
-  const hostNorm = normalizarHostCg(cfg.url);
   const jwtCifrado = await cifrarSecreto(nuevo.token, env).catch(() => "");
   if (jwtCifrado) {
     await db
@@ -821,6 +931,9 @@ async function obtenerOCachearTokenCg(
         db
           .prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('imprenta_cg_jwt_host', ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`)
           .bind(hostNorm, ahoraIso),
+        db
+          .prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('imprenta_cg_jwt_user', ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`)
+          .bind(userNorm, ahoraIso),
       ])
       .catch(() => {});
   }
@@ -896,6 +1009,71 @@ export async function probarConexionCg(
   };
 }
 
+async function buscarDocumentoRemotoCg(
+  db: D1Database,
+  env: Record<string, unknown> | undefined,
+  cfg: ConfigImprentaConSecreto,
+  tipoDocumento: "FACTURA" | "NOTA_CREDITO" | "NOTA_DEBITO",
+  numero: number,
+  fetchFn: typeof fetch = fetch
+): Promise<{ control_fiscal: string; pdf_url: string | null; estado: string } | null> {
+  const numBuscado = claveNumeroCg(numero);
+  const numPadded = numeroDocumentoCg(numero);
+
+  const buscarEnLista = (items: Record<string, any>[]) => {
+    for (const item of items) {
+      const tipoItem = normalizarTipoDocumentoCg(item.document ?? item.tipo_documento ?? item.tipo ?? "FACTURA");
+      if (tipoItem !== tipoDocumento) continue;
+      const numRaw = String(item.invoice_number ?? item.numeroFactura ?? item.numero_documento ?? item.numero ?? "").trim();
+      if (claveNumeroCg(numRaw) !== numBuscado) continue;
+      const ctrlRaw = String(item.control_number ?? item.numero_control ?? item.numeroControl ?? "").trim().toUpperCase();
+      if (!ctrlRaw || !/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(ctrlRaw)) continue;
+      const pdfSeguro = validarUrlPdfSegura(
+        item.invoice_pdf ?? item.credit_note_pdf ?? item.debit_note_pdf ?? item.pdf_factura ?? item.pdf ?? item.url_pdf ?? null
+      );
+      return {
+        control_fiscal: ctrlRaw,
+        pdf_url: pdfSeguro,
+        estado: String(item.status ?? item.estado ?? "EMITIDA").trim(),
+      };
+    }
+    return null;
+  };
+
+  // 1) Consulta filtrada directa por numeroDocumento (rápida)
+  const resFiltro = await peticionAutenticadaCg(
+    db,
+    env,
+    cfg,
+    `api/Invoice/get_list_invoices?${new URLSearchParams({ numeroDocumento: numPadded, limite: "50", pagina: "1" }).toString()}`,
+    { method: "GET", timeoutMs: 12_000 },
+    fetchFn
+  );
+  if (resFiltro.ok && !resFiltro.error) {
+    const hit = buscarEnLista(extraerListaDocumentosCg(resFiltro.data));
+    if (hit) return hit;
+  }
+
+  // 2) Respaldo paginado sin filtro (por si CG guardó otro largo de ceros a la izquierda)
+  for (let pagina = 1; pagina <= 3; pagina++) {
+    const resPag = await peticionAutenticadaCg(
+      db,
+      env,
+      cfg,
+      `api/Invoice/get_list_invoices?${new URLSearchParams({ limite: "100", pagina: String(pagina) }).toString()}`,
+      { method: "GET", timeoutMs: 12_000 },
+      fetchFn
+    );
+    if (!resPag.ok || resPag.error) break;
+    const lista = extraerListaDocumentosCg(resPag.data);
+    const hit = buscarEnLista(lista);
+    if (hit) return hit;
+    if (lista.length < 100) break;
+  }
+
+  return null;
+}
+
 export async function enviarDocumentoCg(
   db: D1Database,
   env: Record<string, unknown> | undefined,
@@ -923,7 +1101,7 @@ export async function enviarDocumentoCg(
     body = construirPayloadNdCg(payload);
   }
 
-  const res = await peticionAutenticadaCg(db, env, cfg, ruta, { method: "POST", body, timeoutMs: 15_000 }, fetchFn);
+  let res = await peticionAutenticadaCg(db, env, cfg, ruta, { method: "POST", body, timeoutMs: 15_000 }, fetchFn);
   const numDocStr = numeroDocumentoCg(payload.numero);
 
   if (res.error) {
@@ -952,7 +1130,32 @@ export async function enviarDocumentoCg(
     };
   }
 
-  const parsed = extraerRespuestaCg(res.data, payload.tipo_documento);
+  let parsed = extraerRespuestaCg(res.data, payload.tipo_documento, res.status);
+
+  // Si la empresa tiene Coletilla / Mensaje Fijo en CG y enviamos `descripcionFactura`, reintentar automáticamente sin ese campo
+  if ((!res.ok || !parsed.ok) && parsed.coletilla_conflicto && payload.tipo_documento === "FACTURA") {
+    const bodySinDesc = construirPayloadFacturaCg(payload, cfg.serie, { incluirDescripcion: false });
+    const resRetry = await peticionAutenticadaCg(db, env, cfg, ruta, { method: "POST", body: bodySinDesc, timeoutMs: 15_000 }, fetchFn);
+    if (!resRetry.error) {
+      res = resRetry;
+      parsed = extraerRespuestaCg(res.data, payload.tipo_documento, res.status);
+    }
+  }
+
+  // Si CG indica que el documento ya estaba registrado (ej. `invoice_errors: ["000005"]` / HTTP 409),
+  // consultamos `get_list_invoices` de inmediato para recuperar automáticamente el control_number y el PDF oficial.
+  if ((!res.ok || !parsed.ok || !parsed.control_fiscal) && parsed.duplicada) {
+    const remoto = await buscarDocumentoRemotoCg(db, env, cfg, payload.tipo_documento, payload.numero, fetchFn);
+    if (remoto?.control_fiscal) {
+      parsed = {
+        ok: true,
+        control_fiscal: remoto.control_fiscal,
+        pdf_url: remoto.pdf_url,
+      };
+      res = { ...res, ok: true };
+    }
+  }
+
   if (!res.ok || !parsed.ok || !parsed.control_fiscal) {
     const errMsg = parsed.error || `CG respondió HTTP ${res.status}`;
     await registrarEnvioImprentaDb(db, {
@@ -1027,7 +1230,9 @@ export async function anularFacturaCg(
     const errMsg = res.error || res.data?.message || `CG respondió HTTP ${res.status} al anular.`;
     return { ok: false, error: String(errMsg).slice(0, 300) };
   }
-  const pdfSeguro = validarUrlPdfSegura(res.data?.pdf_factura ?? res.data?.pdf ?? res.data?.data?.pdf_factura ?? null);
+  const pdfSeguro = validarUrlPdfSegura(
+    res.data?.details?.pdf_factura ?? res.data?.pdf_factura ?? res.data?.pdf ?? res.data?.data?.pdf_factura ?? null
+  );
   const ahoraIso = new Date().toISOString();
   await registrarEnvioImprentaDb(db, {
     documento_id: datos.documento_id,
@@ -1058,7 +1263,7 @@ export async function conciliarDocumentosCg(
   total_local?: number;
   diferencia?: number;
   recuperados?: number;
-  muestra?: { numero: string; control: string; estado: string; pdf_url: string | null }[];
+  muestra?: { tipo: string; numero: string; control: string; estado: string; pdf_url: string | null }[];
   error?: string;
 }> {
   const todosRemotos: Record<string, any>[] = [];
@@ -1078,38 +1283,40 @@ export async function conciliarDocumentosCg(
       { method: "GET", timeoutMs: 12_000 },
       fetchFn
     );
+    // CG v14 devuelve HTTP 404 ("No se encontraron datos") cuando la consulta o página no tiene documentos
+    if (res.status === 404 && !res.error) {
+      break;
+    }
     if (!res.ok || res.error) {
       if (pagina === 1) {
         return { ok: false, error: res.error || res.data?.message || `No se pudo consultar get_list_invoices (HTTP ${res.status}).` };
       }
       break;
     }
-    const lista: Record<string, any>[] = Array.isArray(res.data?.invoices)
-      ? res.data.invoices
-      : Array.isArray(res.data?.data)
-        ? res.data.data
-        : Array.isArray(res.data?.facturas)
-          ? res.data.facturas
-          : [];
+    // CG v14 devuelve `invoices: [ [ { ... } ] ]` (arreglo bidimensional); aplanamos siempre con extraerListaDocumentosCg
+    const lista = extraerListaDocumentosCg(res.data);
     todosRemotos.push(...lista);
     if (lista.length < 100) break;
     pagina++;
   }
 
-  // Mapa por número de factura (normalizado sin ceros a la izquierda) para recuperar documentos locales pendientes
-  const mapaRemoto = new Map<string, { control: string; pdf_url: string | null; estado: string; numero: string }>();
+  // Mapa compuesto por (tipo, numero normalizado sin ceros a la izquierda) para recuperar Facturas, NC y ND pendientes
+  const mapaRemoto = new Map<string, { tipo: string; control: string; pdf_url: string | null; estado: string; numero: string }>();
   for (const item of todosRemotos) {
+    const tipoItem = normalizarTipoDocumentoCg(item.document ?? item.tipo_documento ?? item.tipo ?? "FACTURA");
     const numRaw = String(item.invoice_number ?? item.numeroFactura ?? item.numero_documento ?? item.numero ?? "").trim();
     const ctrlRaw = String(item.control_number ?? item.numero_control ?? item.numeroControl ?? "").trim().toUpperCase();
-    const pdfSeguro = validarUrlPdfSegura(item.invoice_pdf ?? item.pdf_factura ?? item.pdf ?? item.url_pdf ?? null);
+    const pdfSeguro = validarUrlPdfSegura(
+      item.invoice_pdf ?? item.credit_note_pdf ?? item.debit_note_pdf ?? item.pdf_factura ?? item.pdf ?? item.url_pdf ?? null
+    );
     const estadoRaw = String(item.status ?? item.estado ?? "EMITIDA").trim();
     if (numRaw && ctrlRaw) {
-      const claveNum = String(Number(numRaw) || numRaw);
-      mapaRemoto.set(claveNum, { control: ctrlRaw, pdf_url: pdfSeguro, estado: estadoRaw, numero: numRaw });
+      const claveNum = claveNumeroCg(numRaw);
+      mapaRemoto.set(`${tipoItem}:${claveNum}`, { tipo: tipoItem, control: ctrlRaw, pdf_url: pdfSeguro, estado: estadoRaw, numero: numRaw });
     }
   }
 
-  // Intentar recuperar documentos locales REALES de IMPRENTA_DIGITAL que quedaron sin control_fiscal
+  // Intentar recuperar documentos locales REALES de IMPRENTA_DIGITAL que quedaron sin control_fiscal (Facturas, NC y ND)
   const pendientesLocales = (
     await db
       .prepare(
@@ -1124,8 +1331,8 @@ export async function conciliarDocumentosCg(
 
   let recuperados = 0;
   for (const d of pendientesLocales) {
-    if (d.es_nota_credito || d.es_nota_debito) continue;
-    const hit = mapaRemoto.get(String(d.numero));
+    const tipoLocal = d.es_nota_credito ? "NOTA_CREDITO" : d.es_nota_debito ? "NOTA_DEBITO" : "FACTURA";
+    const hit = mapaRemoto.get(`${tipoLocal}:${claveNumeroCg(d.numero)}`);
     if (hit && /^[0-9A-Z][0-9A-Z-]{0,29}$/.test(hit.control)) {
       const rUpd = await db
         .prepare(`UPDATE documentos SET control_fiscal = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`)
@@ -1140,7 +1347,7 @@ export async function conciliarDocumentosCg(
           proveedor: cfg.proveedor || "CG La Imprenta Digital",
           proveedor_tipo: PROVEEDOR_CG,
           ambiente: cfg.ambiente,
-          tipo_documento: "FACTURA",
+          tipo_documento: tipoLocal,
           numero_documento: numeroDocumentoCg(d.numero),
           numero_serie: cfg.serie,
           control_fiscal: hit.control,

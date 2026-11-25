@@ -116,13 +116,14 @@ export async function solicitarControlImprentaDigital(
   let emisor = payload.emisor;
   if (!emisor) {
     const p = await db
-      .prepare(`SELECT rif, nombre_razon_social, direccion_fiscal FROM perfil_emisor WHERE id = 1`)
-      .first<{ rif: string; nombre_razon_social: string; direccion_fiscal: string }>()
+      .prepare(`SELECT rif, nombre_razon_social, direccion_fiscal, email FROM perfil_emisor WHERE id = 1`)
+      .first<{ rif: string; nombre_razon_social: string; direccion_fiscal: string; email?: string | null }>()
       .catch(() => null);
     emisor = {
       rif: String(p?.rif ?? ""),
       nombre_razon_social: String(p?.nombre_razon_social ?? ""),
       direccion_fiscal: String(p?.direccion_fiscal ?? ""),
+      email: p?.email ?? null,
     };
   }
   const renglones =
@@ -431,7 +432,7 @@ sistema.post("/imprenta", async (c) => {
   );
   // Al cambiar credenciales/URL invalidamos el JWT cacheado para forzar re-autenticación limpia
   pasos.push(
-    db.prepare(`DELETE FROM integraciones WHERE clave IN ('imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host')`)
+    db.prepare(`DELETE FROM integraciones WHERE clave IN ('imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host', 'imprenta_cg_jwt_user')`)
   );
   await db.batch(pasos);
 

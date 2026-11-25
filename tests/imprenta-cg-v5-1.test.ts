@@ -5,19 +5,24 @@ import { crearBaseDatosD1 } from "./d1";
 import {
   alicuotaATipoImpuestoCg,
   calcularResumenPlanImprenta,
+  claveNumeroCg,
   codigoProductoCg,
   construirPayloadAnulacionCg,
   construirPayloadFacturaCg,
   construirPayloadNcParcialCg,
   construirPayloadNcTotalCg,
   construirPayloadNdCg,
+  extraerListaDocumentosCg,
   extraerRespuestaCg,
   formatearCantidadMilliCg,
   formatearCentavosCg,
   formatearFechaDdMmYyyy,
   formatearTasaCg,
   limpiarDocumentoIdentidadCg,
+  normalizarCorreoCg,
   normalizarHostCg,
+  normalizarTelefonoCg,
+  normalizarTipoDocumentoCg,
   numeroDocumentoCg,
   validarUrlImprentaSegura,
   validarUrlPdfSegura,
@@ -243,6 +248,115 @@ test("1. CG v14 puro: validación SSRF, URLs PDF, formateadores enteros y payloa
   });
   assert.equal(sinCupo.ok, false);
   assert.equal(sinCupo.sin_cupo, true);
+
+  // CG v14 reales: nested invoices[0], normalización de tipos, 50-char NC/ND, credit_note_pdf, debit_note_pdf, duplicada y Coletilla
+  const listaPlana = extraerListaDocumentosCg({
+    success: true,
+    invoices: [
+      [
+        { document: "FACTURA", invoice_number: "000005", control_number: "00-00000456", invoice_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/5" },
+        { document: "NOTA DE CREDITO", invoice_number: "000001", control_number: "00-00000457", credit_note_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/nc1" },
+      ],
+    ],
+  });
+  assert.equal(listaPlana.length, 2);
+  assert.equal(listaPlana[0].invoice_number, "000005");
+  assert.equal(normalizarTipoDocumentoCg("FACTURA"), "FACTURA");
+  assert.equal(normalizarTipoDocumentoCg("NOTA DE CREDITO"), "NOTA_CREDITO");
+  assert.equal(normalizarTipoDocumentoCg("Nota de Débito"), "NOTA_DEBITO");
+  assert.equal(normalizarTipoDocumentoCg("ORDEN DE ENTREGA"), "OTRO");
+  assert.equal(claveNumeroCg("000005"), "5");
+  assert.equal(claveNumeroCg("00000005"), "5");
+
+  // Factura sin nota omite `descripcionFactura` para no chocar con Coletilla/Mensaje Fijo en CG
+  const facSinNota = construirPayloadFacturaCg(
+    {
+      documento_id: 20,
+      tipo_documento: "FACTURA",
+      numero: 8,
+      control_interno: 8,
+      fecha_emision: "2026-11-25",
+      cliente_rif: "J-30111222-3",
+      cliente_nombre: "CLIENTE SIN NOTA",
+      nota: "",
+      subtotal_bs: 10000,
+      iva_bs: 1600,
+      igtf_bs: 0,
+      total_bs: 11600,
+      subtotal_usd: 200,
+      iva_usd: 32,
+      igtf_usd: 0,
+      total_usd: 232,
+      tasa_e8: 50_00000000,
+      renglones: [{ orden: 1, descripcion: "Consulta", cantidad_milli: 1000, precio_usd: 200, alicuota_cent: 1600 }],
+    },
+    "A"
+  );
+  assert.equal("descripcionFactura" in (facSinNota.facturas as any[])[0], false);
+
+  // Límite estricto de 50 caracteres en NC/ND según validación CG v14
+  const motivoLargo = "Devolución por mercancía con empaque averiado durante el transporte interurbano hacia el cliente";
+  const ncLarga = construirPayloadNcTotalCg({
+    documento_id: 21,
+    tipo_documento: "NOTA_CREDITO",
+    numero: 3,
+    control_interno: 11,
+    fecha_emision: "2026-11-25",
+    cliente_rif: "J-30111222-3",
+    cliente_nombre: "CLIENTE",
+    factura_afectada_numero: 8,
+    motivo_nc: motivoLargo,
+    subtotal_bs: 0,
+    iva_bs: 0,
+    igtf_bs: 0,
+    total_bs: 0,
+    subtotal_usd: 0,
+    iva_usd: 0,
+    igtf_usd: 0,
+    total_usd: 0,
+    tasa_e8: 50_00000000,
+  });
+  assert.ok(String(ncLarga.descripcion).length <= 50);
+
+  // Respuesta real de factura duplicada en CG (`invoice_errors: ["000005"]`)
+  const dupRes = extraerRespuestaCg({
+    success: true,
+    message: "Error: facturas ya registradas.",
+    invoice_errors: ["000005"],
+    invoice_list_success: [],
+  });
+  assert.equal(dupRes.ok, false);
+  assert.equal(dupRes.duplicada, true);
+  assert.match(String(dupRes.error), /facturas ya registradas.*000005/i);
+
+  // Respuestas reales NC (`credit_note_pdf`) y ND (`debit_note_pdf`) a nivel raíz
+  const ncPdfRes = extraerRespuestaCg({
+    success: true,
+    control_number: "00-00002001",
+    credit_note_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/nc-2001",
+  });
+  assert.equal(ncPdfRes.ok, true);
+  assert.equal(ncPdfRes.pdf_url, "https://calidad.cgimprenta.digital/readonly/export_pdf/nc-2001");
+
+  const ndPdfRes = extraerRespuestaCg({
+    success: true,
+    control_number: "00-00002002",
+    debit_note_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/nd-2002",
+  });
+  assert.equal(ndPdfRes.ok, true);
+  assert.equal(ndPdfRes.pdf_url, "https://calidad.cgimprenta.digital/readonly/export_pdf/nd-2002");
+
+  // Conflicto de Coletilla / Mensaje Fijo
+  const colRes = extraerRespuestaCg(
+    {
+      success: false,
+      message: "No se puede procesar la factura N° 000005 con Descripción de Factura, ya que la empresa tiene una Coletilla / Mensaje Fijo activo.",
+    },
+    "FACTURA",
+    400
+  );
+  assert.equal(colRes.ok, false);
+  assert.equal(colRes.coletilla_conflicto, true);
 });
 
 // =========================================================================
@@ -443,9 +557,9 @@ test("3. Flujo E2E CG La Imprenta Digital: config cifrada, emitir/NC/ND/anular, 
       const ctrl = `00-0000${seqCtrl}`;
       return new Response(
         JSON.stringify({
-          credit_note_list_success: [
-            { control_number: ctrl, pdf_nota_credito: `https://calidad.cgimprenta.digital/pdf/nc-${ctrl}.pdf` },
-          ],
+          success: true,
+          control_number: ctrl,
+          credit_note_pdf: `https://calidad.cgimprenta.digital/readonly/export_pdf/nc-${ctrl}`,
         }),
         { status: 200 }
       );
@@ -456,9 +570,9 @@ test("3. Flujo E2E CG La Imprenta Digital: config cifrada, emitir/NC/ND/anular, 
       const ctrl = `00-0000${seqCtrl}`;
       return new Response(
         JSON.stringify({
-          debit_note_list_success: [
-            { control_number: ctrl, pdf_nota_debito: `https://calidad.cgimprenta.digital/pdf/nd-${ctrl}.pdf` },
-          ],
+          success: true,
+          control_number: ctrl,
+          debit_note_pdf: `https://calidad.cgimprenta.digital/readonly/export_pdf/nd-${ctrl}`,
         }),
         { status: 200 }
       );
@@ -468,14 +582,18 @@ test("3. Flujo E2E CG La Imprenta Digital: config cifrada, emitir/NC/ND/anular, 
       return new Response(
         JSON.stringify({
           success: true,
-          pdf_factura: `https://calidad.cgimprenta.digital/pdf/anulada-${body.numero_control}.pdf`,
+          message: "Factura anulada exitosamente.",
+          details: {
+            pdf_factura: `https://calidad.cgimprenta.digital/readonly/export_pdf/anulada-${body.numero_control}`,
+          },
         }),
         { status: 200 }
       );
     }
 
     if (url.includes("/api/Invoice/get_list_invoices")) {
-      return new Response(JSON.stringify({ invoices: remotosCg }), { status: 200 });
+      // Formato real oficial CG v14: arreglo bidimensional `invoices: [ [ ... ] ]`
+      return new Response(JSON.stringify({ success: true, invoices: [remotosCg] }), { status: 200 });
     }
 
     return new Response(JSON.stringify({ error: "Ruta mock no contemplada" }), { status: 404 });
@@ -666,6 +784,381 @@ test("3. Flujo E2E CG La Imprenta Digital: config cifrada, emitir/NC/ND/anular, 
       confirmo: true,
     });
     assert.equal(cajBloq2.status, 403);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+// =========================================================================
+// 4. Regresiones reales CG Calidad v14: duplicada auto-recuperada, Coletilla auto-retry y 404 vacío
+// =========================================================================
+test("4. Regresiones CG Calidad v14: auto-recuperación de factura duplicada, reintento sin descripcionFactura por Coletilla y 404 vacío en conciliación", async () => {
+  const db = crearBaseDatosD1(":memory:");
+  const env: Record<string, unknown> = { DB: db, MASTER_KEY: "llave-maestra-cg-test-v511", SUPER_ADMIN_EMAIL: "admin@cgv511.ve" };
+  const jarAdmin: Record<string, string> = {};
+
+  const inst = await reqJson(env, jarAdmin, "/api/instalar", "POST", {
+    nombre: "LABORATORIO CLINICO PRUEBA C.A.",
+    rif: "J-40123999-0",
+    direccion: "Av. Bolívar, Valencia",
+    telefono: "0414-5559999",
+    email: "admin@cgv511.ve",
+    clave: CLAVE_TEST,
+    tipo_contribuyente: "ORDINARIO",
+    medio_facturacion: "IMPRENTA_DIGITAL",
+  });
+  assert.equal(inst.status, 200);
+  await db.prepare(`UPDATE perfil_emisor SET tasa_bcv = '50.00', tasa_bcv_fecha = ? WHERE id = 1`).bind(new Date().toISOString()).run();
+  await db.prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`).run();
+
+  const cfgSave = await reqJson(env, jarAdmin, "/api/sistema/imprenta", "POST", {
+    proveedor_tipo: "CG_IMPRENTA",
+    proveedor: "CG La Imprenta Digital",
+    url: "https://calidad.cgimprenta.digital/",
+    usuario: "usuario-calidad-sintetico@prueba.invalid",
+    clave: "clave-calidad-sintetica-2026",
+    ambiente: "PRUEBAS",
+    serie: "A",
+    plan_nombre: "Emprende I (100 números)",
+    plan_cupo_total: 100,
+    plan_fecha_pago: "2026-11-24",
+    plan_fecha_vence: "2027-11-24",
+    password: CLAVE_TEST,
+    confirmo: true,
+  });
+  assert.equal(cfgSave.status, 200);
+
+  const cli = await reqJson(env, jarAdmin, "/api/clientes", "POST", {
+    rif_cedula: "J-41111222-3",
+    nombre_apellido: "LABORATORIO AVILAB",
+    direccion: "Caracas",
+    email: "contacto@avilab.test",
+    telefono: "0414-1112222",
+  });
+  assert.equal(cli.status, 200);
+
+  let remotos: any[] = [];
+  let intentosAddFac2 = 0;
+
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+
+    if (url.endsWith("/api/Invoice/create_token_authenticator")) {
+      return new Response(JSON.stringify({ success: true, token: "jwt-v511-sintetico" }), { status: 200 });
+    }
+
+    if (url.includes("/api/Invoice/get_list_invoices")) {
+      // Cuando no hay documentos, CG v14 responde HTTP 404 ("No se encontraron datos")
+      if (remotos.length === 0) {
+        return new Response(JSON.stringify({ status: false, message: "No se encontraron datos" }), { status: 404 });
+      }
+      return new Response(JSON.stringify({ success: true, invoices: [remotos] }), { status: 200 });
+    }
+
+    if (url.endsWith("/api/Invoice/add_list_invoice")) {
+      const f = body.facturas[0];
+      // Factura 000001: ya existe en servidor CG -> responde con `invoice_errors: ["000001"]`
+      if (f.numeroFactura === "000001") {
+        remotos = [
+          {
+            document: "FACTURA",
+            invoice_number: "000001",
+            control_number: "00-00009001",
+            status: "Emitida",
+            invoice_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/9001",
+          },
+        ];
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message: "Error: facturas ya registradas.",
+            invoice_errors: ["000001"],
+            invoice_list_success: [],
+          }),
+          { status: 200 }
+        );
+      }
+
+      // Factura 000002: tiene nota -> primer intento trae descripcionFactura y choca con Coletilla fija en CG
+      if (f.numeroFactura === "000002") {
+        intentosAddFac2++;
+        if (f.descripcionFactura) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              message: "No se puede procesar la factura N° 000002 con Descripción de Factura, ya que la empresa tiene una Coletilla / Mensaje Fijo activo.",
+            }),
+            { status: 400 }
+          );
+        }
+        const pdf2 = "https://calidad.cgimprenta.digital/readonly/export_pdf/9002";
+        remotos.push({
+          document: "FACTURA",
+          invoice_number: "000002",
+          control_number: "00-00009002",
+          status: "Emitida",
+          invoice_pdf: pdf2,
+        });
+        return new Response(
+          JSON.stringify({
+            success: true,
+            invoice_list_success: [{ invoice_number: "000002", control_number: "00-00009002", invoice_pdf: pdf2 }],
+          }),
+          { status: 200 }
+        );
+      }
+    }
+
+    return new Response(JSON.stringify({ error: "Ruta no esperada" }), { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    // Escenario C: Conciliar cuando el servidor CG aún tiene 0 facturas (HTTP 404) -> debe responder 200 OK con 0
+    const concVacia = await reqJson(env, jarAdmin, "/api/sistema/imprenta/conciliar", "POST", {});
+    assert.equal(concVacia.status, 200, `Conciliar vacío no debe fallar con 404: ${JSON.stringify(concVacia.data)}`);
+    assert.equal(concVacia.data.conciliacion.total_cg, 0);
+
+    // Escenario A: Emitir Factura #1 -> CG devuelve `invoice_errors: ["000001"]` -> FacturaYa auto-recupera vía get_list_invoices
+    const f1 = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Análisis de sangre", cantidad: "1", precio_usd: "15,00", alicuota_iva: 0 }],
+    });
+    const em1 = await reqJson(env, jarAdmin, `/api/documentos/${f1.data.id}/emitir`, "POST", {});
+    assert.equal(em1.status, 200);
+    assert.equal(em1.data.control_fiscal, "00-00009001");
+    assert.equal(em1.data.imprenta_pdf_url, "https://calidad.cgimprenta.digital/readonly/export_pdf/9001");
+
+    const det1 = await reqJson(env, jarAdmin, `/api/documentos/${f1.data.id}`);
+    assert.equal(det1.data.documento.control_fiscal, "00-00009001");
+    assert.equal(det1.data.imprenta_envio.estado, "ENVIADO_OK");
+
+    // Escenario B: Emitir Factura #2 CON nota -> primer intento choca con Coletilla y reintenta automáticamente sin `descripcionFactura`
+    const f2 = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      nota: "Garantía 30 días",
+      lineas: [{ tipo: "SERVICIO", descripcion: "Perfil bioquímico", cantidad: "1", precio_usd: "20,00", alicuota_iva: 0 }],
+    });
+    const em2 = await reqJson(env, jarAdmin, `/api/documentos/${f2.data.id}/emitir`, "POST", {});
+    assert.equal(em2.status, 200);
+    assert.equal(intentosAddFac2, 2, "Debe reintentar automáticamente sin descripcionFactura tras error de Coletilla");
+    assert.equal(em2.data.control_fiscal, "00-00009002");
+
+    // Verificar conciliación final con 2 documentos en el arreglo bidimensional `invoices: [[...]]`
+    const concFinal = await reqJson(env, jarAdmin, "/api/sistema/imprenta/conciliar", "POST", {});
+    assert.equal(concFinal.status, 200);
+    assert.equal(concFinal.data.conciliacion.total_cg, 2);
+    assert.equal(concFinal.data.conciliacion.total_local, 2);
+    assert.equal(concFinal.data.conciliacion.diferencia, 0);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+// =========================================================================
+// 5. Compatibilidad universal Multi-Tenant / Cualquier API de CG (cero hardcodeo por usuario)
+// =========================================================================
+test("5. Compatibilidad universal CG: cualquier host/serie/usuario, saneamiento de correo/teléfono y aislamiento de JWT por usuario", async () => {
+  // Normalización universal de cualquier host CG (Producción, Calidad, /doc/, /api/, subruta custom)
+  assert.equal(normalizarHostCg("https://produccion.cgimprenta.digital"), "https://produccion.cgimprenta.digital/");
+  assert.equal(normalizarHostCg("https://calidad.cgimprenta.digital/doc/endpoints/factura.html"), "https://calidad.cgimprenta.digital/");
+  assert.equal(normalizarHostCg("https://gateway.miempresa.ve/cg/api/Invoice/add_list_invoice"), "https://gateway.miempresa.ve/cg/");
+  assert.equal(normalizarHostCg("https://cgimprenta.digital/api"), "https://cgimprenta.digital/");
+
+  // Saneamiento de correo y teléfono para cualquier cliente sin provocar HTTP 400
+  assert.equal(normalizarCorreoCg("cliente@empresa.ve", "emisor@negocio.ve"), "cliente@empresa.ve");
+  assert.equal(normalizarCorreoCg("no tiene", "emisor@negocio.ve"), "emisor@negocio.ve");
+  assert.equal(normalizarCorreoCg("N/A", ""), "sin-correo@facturayave.com");
+  assert.equal(normalizarTelefonoCg("+58 414-123.45.67"), "+584141234567");
+  assert.equal(normalizarTelefonoCg("N/A"), "00000000000");
+
+  // Dos empresas (dos BD aisladas) con distintos hosts CG, distintas series ("A" y "B2") y distintos usuarios API
+  const dbA = crearBaseDatosD1(":memory:");
+  const dbB = crearBaseDatosD1(":memory:");
+  const envA: Record<string, unknown> = { DB: dbA, MASTER_KEY: "llave-universal-a", SUPER_ADMIN_EMAIL: "dueno-a@tenant-a.test" };
+  const envB: Record<string, unknown> = { DB: dbB, MASTER_KEY: "llave-universal-b", SUPER_ADMIN_EMAIL: "dueno-b@tenant-b.test" };
+  const jarA: Record<string, string> = {};
+  const jarB: Record<string, string> = {};
+
+  for (const [envX, jarX, nom, rif, email] of [
+    [envA, jarA, "FARMACIA EL SOL C.A.", "J-30100100-1", "dueno-a@tenant-a.test"],
+    [envB, jarB, "FERRETERIA LA LUNA C.A.", "J-40200200-2", "dueno-b@tenant-b.test"],
+  ] as const) {
+    const inst = await reqJson(envX, jarX, "/api/instalar", "POST", {
+      nombre: nom,
+      rif,
+      direccion: "Venezuela",
+      telefono: "0414-0001122",
+      email,
+      clave: CLAVE_TEST,
+      tipo_contribuyente: "ORDINARIO",
+      medio_facturacion: "IMPRENTA_DIGITAL",
+    });
+    assert.equal(inst.status, 200);
+    await (envX.DB as D1Database)
+      .prepare(`UPDATE perfil_emisor SET tasa_bcv = '50.00', tasa_bcv_fecha = ? WHERE id = 1`)
+      .bind(new Date().toISOString())
+      .run();
+    await (envX.DB as D1Database).prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`).run();
+  }
+
+  // Configurar Tenant A en Calidad serie "A" y Tenant B en Producción custom serie "B2"
+  assert.equal(
+    (
+      await reqJson(envA, jarA, "/api/sistema/imprenta", "POST", {
+        proveedor_tipo: "CG_IMPRENTA",
+        url: "https://calidad.cgimprenta.digital/doc/endpoints/factura.html",
+        usuario: "api-tenant-a@cg.invalid",
+        clave: "secret-tenant-a",
+        ambiente: "PRUEBAS",
+        serie: "A",
+        plan_cupo_total: 100,
+        password: CLAVE_TEST,
+        confirmo: true,
+      })
+    ).status,
+    200
+  );
+  assert.equal(
+    (
+      await reqJson(envB, jarB, "/api/sistema/imprenta", "POST", {
+        proveedor_tipo: "CG_IMPRENTA",
+        url: "https://produccion.cgimprenta.digital/api/Invoice/add_list_invoice",
+        usuario: "api-tenant-b@cg.invalid",
+        clave: "secret-tenant-b",
+        ambiente: "PRODUCCION",
+        serie: "B2",
+        plan_cupo_total: 5000,
+        password: CLAVE_TEST,
+        confirmo: true,
+      })
+    ).status,
+    200
+  );
+
+  const authLog: { host: string; user: string }[] = [];
+  const invoiceLog: { host: string; serie: string; correo: string; tel: string; auth: string | null }[] = [];
+  let ctrlSeq = 0;
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = new URL(String(input));
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+    const auth = new Headers(init?.headers).get("Authorization");
+
+    if (u.pathname.endsWith("/api/Invoice/create_token_authenticator")) {
+      authLog.push({ host: u.origin, user: body.userName });
+      return new Response(JSON.stringify({ success: true, token: `tok-${u.hostname}-${body.userName}` }), { status: 200 });
+    }
+    if (u.pathname.endsWith("/api/Invoice/add_list_invoice")) {
+      const f0 = body.facturas[0];
+      invoiceLog.push({
+        host: u.origin,
+        serie: body.numeroSerie,
+        correo: f0.correoCliente,
+        tel: f0.telefonoCliente,
+        auth,
+      });
+      ctrlSeq += 1;
+      const ctrl = `${body.numeroSerie}-${String(ctrlSeq).padStart(6, "0")}`;
+      return new Response(
+        JSON.stringify({
+          success: true,
+          invoice_list_success: [
+            {
+              invoice_number: f0.numeroFactura,
+              control_number: ctrl,
+              invoice_pdf: `${u.origin}/readonly/export_pdf/${ctrl}`,
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    // Emitir factura en Tenant A (con cliente sin correo y teléfono heredado "N/A" -> cae al correo del emisor A y teléfono válido)
+    const cliA = await reqJson(envA, jarA, "/api/clientes", "POST", {
+      rif_cedula: "V-12345678",
+      nombre_apellido: "PEDRO PEREZ",
+      direccion: "Caracas, Venezuela",
+      email: "",
+      whatsapp: "",
+    });
+    assert.equal(cliA.status, 200, `cliA falló: ${JSON.stringify(cliA.data)}`);
+    // Simular dato heredado de respaldo/importación con teléfono inválido "N/A"
+    await dbA.prepare(`UPDATE clientes SET whatsapp = 'N/A' WHERE id = ?`).bind(cliA.data.id).run();
+    const docA = await reqJson(envA, jarA, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cliA.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Consulta", cantidad: "1", precio_usd: "10,00", alicuota_iva: 0 }],
+    });
+    assert.equal(docA.status, 200, `docA falló: ${JSON.stringify(docA.data)}`);
+    const emA = await reqJson(envA, jarA, `/api/documentos/${docA.data.id}/emitir`, "POST", {});
+    assert.equal(emA.status, 200, `emA falló: ${JSON.stringify(emA.data)}`);
+    assert.equal(emA.data.control_fiscal, "A-000001");
+
+    // Emitir factura en Tenant B (host Producción + serie B2 + correo propio del cliente)
+    const cliB = await reqJson(envB, jarB, "/api/clientes", "POST", {
+      rif_cedula: "J-50111222-3",
+      nombre_apellido: "CONSTRUCTORA B C.A.",
+      direccion: "Valencia, Carabobo",
+      email: "pagos@constructora-b.ve",
+      whatsapp: "0424-9876543",
+    });
+    assert.equal(cliB.status, 200, `cliB falló: ${JSON.stringify(cliB.data)}`);
+    const docB = await reqJson(envB, jarB, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cliB.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Materiales", cantidad: "1", precio_usd: "25,00", alicuota_iva: 16 }],
+    });
+    assert.equal(docB.status, 200, `docB falló: ${JSON.stringify(docB.data)}`);
+    const emB = await reqJson(envB, jarB, `/api/documentos/${docB.data.id}/emitir`, "POST", {});
+    assert.equal(emB.status, 200, `emB falló: ${JSON.stringify(emB.data)}`);
+    assert.equal(emB.data.control_fiscal, "B2-000002");
+
+    assert.equal(invoiceLog.length, 2);
+    assert.equal(invoiceLog[0].host, "https://calidad.cgimprenta.digital");
+    assert.equal(invoiceLog[0].serie, "A");
+    assert.equal(invoiceLog[0].correo, "dueno-a@tenant-a.test");
+    assert.equal(invoiceLog[0].tel, "00000000000");
+    assert.equal(invoiceLog[0].auth, "Bearer tok-calidad.cgimprenta.digital-api-tenant-a@cg.invalid");
+
+    assert.equal(invoiceLog[1].host, "https://produccion.cgimprenta.digital");
+    assert.equal(invoiceLog[1].serie, "B2");
+    assert.equal(invoiceLog[1].correo, "pagos@constructora-b.ve");
+    assert.equal(invoiceLog[1].tel, "584249876543");
+    assert.equal(invoiceLog[1].auth, "Bearer tok-produccion.cgimprenta.digital-api-tenant-b@cg.invalid");
+
+    // Cambiar de usuario API en el MISMO host (Tenant A) -> debe renovar JWT automáticamente y no reusar el del usuario anterior
+    assert.equal(
+      (
+        await reqJson(envA, jarA, "/api/sistema/imprenta", "POST", {
+          proveedor_tipo: "CG_IMPRENTA",
+          url: "https://calidad.cgimprenta.digital/",
+          usuario: "nuevo-api-tenant-a@cg.invalid",
+          clave: "nuevo-secret-tenant-a",
+          ambiente: "PRUEBAS",
+          serie: "A",
+          password: CLAVE_TEST,
+          confirmo: true,
+        })
+      ).status,
+      200
+    );
+    const docA2 = await reqJson(envA, jarA, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cliA.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Control", cantidad: "1", precio_usd: "12,00", alicuota_iva: 0 }],
+    });
+    const emA2 = await reqJson(envA, jarA, `/api/documentos/${docA2.data.id}/emitir`, "POST", {});
+    assert.equal(emA2.status, 200);
+    assert.equal(invoiceLog[2].auth, "Bearer tok-calidad.cgimprenta.digital-nuevo-api-tenant-a@cg.invalid");
+    assert.equal(authLog.length, 3);
   } finally {
     globalThis.fetch = fetchOriginal;
   }

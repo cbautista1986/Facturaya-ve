@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261124v510";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261124v510";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261125v512";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261125v512";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -367,6 +367,8 @@ async function ver(estado, id) {
   const esAppSeniat = D.tipo === "FACTURA" && emitido && medioEfectivo === "APP_SENIAT";
   const esImprenta = D.tipo === "FACTURA" && emitido && medioEfectivo === "IMPRENTA_DIGITAL";
   const nroControlMostrar = D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`;
+  const imprentaPendiente = esImprenta && D.modo === "REAL" && !D.control_fiscal;
+  const nroControlEtiqueta = imprentaPendiente ? `⏳ Pendiente de Imprenta (Int. ${nroControlMostrar})` : nroControlMostrar;
   const pideFiscal = D.tipo === "FACTURA" && D.estado === "EMITIDO" && !D.control_fiscal;
   const tieneDisponibleDevolver = D.tipo === "FACTURA" && !esNc && !esNd && D.estado === "EMITIDO" && lineas.some((l) => l.cantidad_milli - (l.devuelto_milli ?? 0) > 0);
   const puedeEmitirNd = D.tipo === "FACTURA" && !esNc && !esNd && D.estado === "EMITIDO" && puede("anular");
@@ -418,7 +420,7 @@ async function ver(estado, id) {
       ${cliente ? `<div class="tot"><span>RIF / C.I.</span><b>${esc(cliente.rif)}</b></div>` : ""}
       ${cliente?.email ? `<div class="tot"><span>Correo</span><b>${esc(cliente.email)}</b></div>` : ""}
       ${emitido ? `<div class="tot"><span>Fecha de emisión</span><b>${fechaDoc(D.fecha_emision)}</b></div>` : ""}
-      ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>${esc(nroControlMostrar)}</b></div>
+      ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>${esc(nroControlEtiqueta)}</b></div>
         <div class="tot"><span>Modalidad digital</span><b>${esImprenta ? "🌐 Imprenta Digital (SNAT/2024/000102)" : "📱 Sistema Digital SENIAT (SNAT/2024/000102)"}</b></div>` : ""}
       ${impEnv ? `<div class="tot"><span>Estado Imprenta (${esc(impEnv.proveedor || "CG")})</span><b><span class="insignia ${impEnv.estado === "ENVIADO_OK" ? "verde" : impEnv.estado === "ANULADO_OK" ? "gris" : "rojo"}">${impEnv.estado === "ENVIADO_OK" ? "✅ Retornado OK" : impEnv.estado === "ANULADO_OK" ? "⛔ Anulado en CG" : "⏳ Pendiente"}</span></b></div>` : ""}
       ${pdfOficialCg ? `<div style="margin-top:8px"><a class="boton chico morado" href="${esc(pdfOficialCg)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ Ver PDF oficial firmado (${esc(impEnv?.proveedor || "CG Imprenta")})</a></div>` : ""}
@@ -438,7 +440,7 @@ async function ver(estado, id) {
       <p class="suave">${esAppSeniat
         ? `Control interno asignado: <b>${esc(nroControlMostrar)}</b>. Usa este documento como control interno inmediato y copia el resumen fiscal en la App del SENIAT; cuando el SENIAT te emita el comprobante oficial, registra aquí el N.º de Control definitivo:`
         : `Correlativo interno: <b>${esc(nroControlMostrar)}</b>. Aún no se ha registrado el N.º de Control definitivo de la Imprenta Digital.`}</p>
-      ${esImprenta && D.modo === "REAL" ? `<button type="button" class="boton chico" id="reintentar-imprenta" style="margin-bottom:10px">🔄 Reintentar asignación con Imprenta Digital</button>` : ""}
+      ${esImprenta && D.modo === "REAL" ? `<button type="button" class="boton chico" id="reintentar-imprenta" style="margin-bottom:10px">🔄 Reintentar / Recuperar N.º de Control en CG</button>` : ""}
       <form id="fiscal-form">${campo("numero", "N.º de Control definitivo", nroControlMostrar, "text", 'required maxlength="30" autocomplete="off"')}
         ${ERROR}<button class="boton chico" type="submit">GUARDAR N.º DE CONTROL</button></form></section>` : ""}
     ${emitido && !esNc && (D.tipo === "FACTURA" || pagos.length > 0) ? seccionPagos(D, pagos, notas_credito, notas_debito, pagado_usd, acreditado_nc_usd, saldo_usd) : ""}

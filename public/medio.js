@@ -192,7 +192,8 @@ export async function enlazarMedio(alCambiar) {
           <option value="PRODUCCION" ${imprenta.ambiente === "PRODUCCION" ? "selected" : ""}>🟢 Producción (Fiscal en vivo)</option>
         </select>
         ${campo("imp_proveedor", "Nombre del proveedor", imprenta.proveedor || (esCg ? "CG La Imprenta Digital" : ""), "text", 'required maxlength="60" autocomplete="off" placeholder="Ej: CG La Imprenta Digital"')}
-        ${campo("imp_url", "URL base de la API (https://…)", imprenta.url || (esCg && imprenta.ambiente !== "PRODUCCION" ? HOST_CG_CALIDAD : ""), "url", 'required maxlength="200" autocomplete="off" placeholder="https://calidad.cgimprenta.digital/"')}
+        ${campo("imp_url", "URL base de la API (https://…)", imprenta.url || (esCg && imprenta.ambiente !== "PRODUCCION" ? HOST_CG_CALIDAD : ""), "url", 'required maxlength="200" autocomplete="off" placeholder="https://calidad.cgimprenta.digital/ o URL de Producción CG"')}
+        <small class="error" id="imp-url-aviso" hidden style="display:block;margin:-6px 0 8px"></small>
         ${campo("imp_usuario", esCg ? "Correo / Usuario API CG" : "Usuario o RIF", imprenta.usuario, "text", `${esCg ? "required " : ""}maxlength="100" autocomplete="off" placeholder="usuario@empresa.com"`)}
         ${campo("imp_clave", imprenta.clave_configurada ? `Contraseña API / Token (••••${esc(imprenta.clave_final)}; vacío para conservar)` : (esCg ? "Contraseña API CG" : "Token / API Key"), "", "password", `maxlength="200" autocomplete="new-password"${imprenta.clave_configurada ? "" : " required"}`)}
         ${campo("imp_serie", "Serie de facturación CG (ej: A)", imprenta.serie || "A", "text", 'maxlength="5" autocomplete="off" placeholder="A"')}
@@ -217,20 +218,36 @@ export async function enlazarMedio(alCambiar) {
   $("#imp-confirmo")?.addEventListener("change", () => { $("#imp-ir").disabled = !$("#imp-confirmo").checked; });
   $("#rec-confirmo")?.addEventListener("change", () => { $("#rec-ir").disabled = !$("#rec-confirmo").checked; });
 
-  // Autocompletado inteligente al elegir CG Imprenta Digital o cambiar ambiente
+  // Autocompletado inteligente al elegir CG Imprenta Digital o cambiar ambiente (compatible con cualquier URL CG)
   const selTipo = $("#imp_proveedor_tipo");
   const selAmb = $("#imp_ambiente");
+  const inpUrl = $("#imp_url");
+  const urlAviso = $("#imp-url-aviso");
+  const validarAvisoUrlAmbiente = () => {
+    if (!urlAviso || !selTipo || !selAmb || !inpUrl) return;
+    const u = inpUrl.value.trim().toLowerCase();
+    if (selTipo.value === "CG_IMPRENTA" && selAmb.value === "PRODUCCION" && u.includes("calidad.cgimprenta.digital")) {
+      urlAviso.textContent = "⚠️ Seleccionaste Producción, pero la URL todavía apunta a Calidad (Pruebas). Pega la URL de Producción entregada por CG para este cliente.";
+      urlAviso.hidden = false;
+    } else {
+      urlAviso.textContent = "";
+      urlAviso.hidden = true;
+    }
+  };
   const aplicarPresetCg = () => {
     if (!selTipo) return;
     if (selTipo.value === "CG_IMPRENTA") {
       if (!$("#imp_proveedor").value.trim()) $("#imp_proveedor").value = "CG La Imprenta Digital";
-      if (selAmb?.value === "PRUEBAS" && (!$("#imp_url").value.trim() || /miimprenta/i.test($("#imp_url").value))) {
-        $("#imp_url").value = HOST_CG_CALIDAD;
+      if (selAmb?.value === "PRUEBAS" && (!inpUrl.value.trim() || /miimprenta/i.test(inpUrl.value))) {
+        inpUrl.value = HOST_CG_CALIDAD;
       }
     }
+    validarAvisoUrlAmbiente();
   };
   selTipo?.addEventListener("change", aplicarPresetCg);
   selAmb?.addEventListener("change", aplicarPresetCg);
+  inpUrl?.addEventListener("input", validarAvisoUrlAmbiente);
+  validarAvisoUrlAmbiente();
 
   // Chips rápidos de plan en configuración y en recarga
   zona.querySelectorAll("[data-plan-preset]").forEach((btn) =>

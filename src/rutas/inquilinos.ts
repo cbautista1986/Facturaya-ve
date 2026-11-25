@@ -16,6 +16,7 @@ import {
   type FilaCobroSaas,
 } from "../suscripciones";
 import { cifrarSecreto, exigirLlaveMaestra } from "../cifrado";
+import { normalizarHostCg, PROVEEDOR_CG, PROVEEDOR_GENERICO, validarUrlImprentaSegura, type TipoProveedorImprenta } from "../imprenta-cg";
 import {
   consultarDesplieguesYBuilds,
   consultarEstadoCloudflare,
@@ -324,13 +325,37 @@ inquilinos.post("/", async (c) => {
     return falla(c, 400, "El correo remitente de la API de Brevo/Resend no es válido.");
   }
 
-  const imprenta_proveedor = texto(b.imprenta_proveedor, 60);
-  const imprenta_url = texto(b.imprenta_url, 200);
+  const imprenta_prov_tipo_raw = texto(b.imprenta_proveedor_tipo, 20).toUpperCase();
+  const imprenta_proveedor_raw = texto(b.imprenta_proveedor, 60);
+  const imprenta_url_raw = texto(b.imprenta_url, 200);
+  const imprenta_proveedor_tipo: TipoProveedorImprenta =
+    imprenta_prov_tipo_raw === PROVEEDOR_CG ||
+    (!imprenta_prov_tipo_raw && /cg\s*imprenta|cgimprenta\.digital/i.test(`${imprenta_proveedor_raw} ${imprenta_url_raw}`))
+      ? PROVEEDOR_CG
+      : PROVEEDOR_GENERICO;
+  const imprenta_proveedor = imprenta_proveedor_raw || (imprenta_proveedor_tipo === PROVEEDOR_CG ? "CG La Imprenta Digital" : "");
   const imprenta_usuario = texto(b.imprenta_usuario, 100);
   const imprenta_clave = texto(b.imprenta_clave, 200);
-  const imprenta_ambiente = texto(b.imprenta_ambiente, 12) === "PRODUCCION" ? "PRODUCCION" : "PRUEBAS";
-  if (imprenta_url && !/^https:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?(\/[^\s]*)?$/i.test(imprenta_url)) {
-    return falla(c, 400, "La URL de la API de Imprenta Digital debe comenzar por https://.");
+  const imprenta_ambiente = texto(b.imprenta_ambiente, 12).toUpperCase() === "PRODUCCION" ? "PRODUCCION" : "PRUEBAS";
+  const imprenta_serie = (texto(b.imprenta_serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
+  const imprenta_plan_nombre = texto(b.imprenta_plan_nombre, 80);
+  const imprenta_plan_cupo = b.imprenta_plan_cupo_total !== undefined && b.imprenta_plan_cupo_total !== "" ? Math.trunc(Number(b.imprenta_plan_cupo_total)) : 0;
+  const imprenta_plan_fecha_pago = texto(b.imprenta_plan_fecha_pago, 10);
+  const imprenta_plan_fecha_vence = texto(b.imprenta_plan_fecha_vence, 10);
+  let imprenta_url = "";
+  if (imprenta_url_raw) {
+    const valImpUrl = validarUrlImprentaSegura(imprenta_url_raw);
+    if (!valImpUrl.ok) return falla(c, 400, valImpUrl.error);
+    imprenta_url = imprenta_proveedor_tipo === PROVEEDOR_CG ? normalizarHostCg(valImpUrl.url) : valImpUrl.url;
+  }
+  if (!Number.isFinite(imprenta_plan_cupo) || imprenta_plan_cupo < 0 || imprenta_plan_cupo > 10_000_000) {
+    return falla(c, 400, "El cupo inicial de números de control debe ser un entero mayor o igual a 0.");
+  }
+  if (imprenta_plan_fecha_pago && !/^\d{4}-\d{2}-\d{2}$/.test(imprenta_plan_fecha_pago)) {
+    return falla(c, 400, "La fecha pagada del plan de imprenta debe tener formato AAAA-MM-DD.");
+  }
+  if (imprenta_plan_fecha_vence && !/^\d{4}-\d{2}-\d{2}$/.test(imprenta_plan_fecha_vence)) {
+    return falla(c, 400, "La fecha de vigencia del plan de imprenta debe tener formato AAAA-MM-DD.");
   }
 
   const envObj = c.env as unknown as Record<string, unknown>;
@@ -505,20 +530,41 @@ inquilinos.post("/", async (c) => {
     }
   }
 
-  // Si se incluyó la API de Imprenta Digital en el Alta, guardarla cifrada de inmediato
+  // Si se incluyó la API de Imprenta Digital en el Alta, guardarla cifrada de inmediato (compatible con cualquier cuenta CG o genérica)
   if (imprenta_clave && imprenta_url && imprenta_proveedor) {
     const claveImpCifrada = await cifrarSecreto(imprenta_clave, envObj);
-    for (const [k, val] of [
+    const paresImp: [string, string][] = [
+      ["imprenta_proveedor_tipo", imprenta_proveedor_tipo],
       ["imprenta_proveedor", imprenta_proveedor],
       ["imprenta_url", imprenta_url],
       ["imprenta_usuario", imprenta_usuario],
       ["imprenta_clave", claveImpCifrada],
       ["imprenta_ambiente", imprenta_ambiente],
-    ] as const) {
+      ["imprenta_serie", imprenta_serie],
+    ];
+    if (imprenta_plan_cupo > 0) {
+      paresImp.push(
+        ["imprenta_plan_nombre", imprenta_plan_nombre || `Lote ${imprenta_plan_cupo} números`],
+        ["imprenta_plan_cupo_total", String(imprenta_plan_cupo)],
+        ["imprenta_plan_fecha_pago", imprenta_plan_fecha_pago || fecha_alta],
+        ["imprenta_plan_fecha_vence", imprenta_plan_fecha_vence || ""]
+      );
+    }
+    for (const [k, val] of paresImp) {
       lotes.push(
         dbInquilino
           .prepare(`INSERT INTO integraciones (clave, valor, actualizado_en) VALUES (?, ?, ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`)
           .bind(k, val, ahoraIso)
+      );
+    }
+    if (imprenta_plan_cupo > 0) {
+      lotes.push(
+        dbInquilino
+          .prepare(
+            `INSERT INTO imprenta_plan_recargas (plan_nombre, cantidad_numeros, fecha_pago, fecha_vence, monto_usd_centavos, referencia, nota, registrado_por, creado_en)
+             VALUES (?, ?, ?, ?, 0, 'PLAN-INICIAL', 'Cargado en el alta del negocio', NULL, ?)`
+          )
+          .bind(imprenta_plan_nombre || `Lote ${imprenta_plan_cupo} números`, imprenta_plan_cupo, imprenta_plan_fecha_pago || fecha_alta, imprenta_plan_fecha_vence || null, ahoraIso)
       );
     }
   }

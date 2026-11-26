@@ -579,6 +579,7 @@ export async function eliminarInquilinoDefinitivo(
 
   const dbInq = obtenerDbInquilino({ ...envObj, DB: rawDb }, codigo);
   const ordenTablas = [
+    "imprenta_envios", "imprenta_plan_recargas", "correo_envios",
     "pagos", "movimientos_stock", "compra_impuestos", "compras", "compras_vieja",
     "documento_impuestos", "documento_renglones", "documentos", "catalogo", "clientes", "proveedores",
     "medio_historial", "metodos_cobro", "integraciones", "parametros_fiscales", "contadores", "ajustes",

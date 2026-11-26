@@ -282,7 +282,8 @@ documentos.get("/:id", async (c) => {
   });
   const imprentaEnvio = await db
     .prepare(
-      `SELECT proveedor, proveedor_tipo, ambiente, numero_documento, numero_serie, control_fiscal, pdf_url, estado, intentos, ultimo_error, enviado_en, retornado_en, anulado_en
+      `SELECT proveedor, proveedor_tipo, ambiente, numero_documento, numero_serie, control_fiscal, pdf_url, estado, intentos, ultimo_error, enviado_en, retornado_en, anulado_en,
+              fecha_asignacion, hora_asignacion, imprenta_razon_social, imprenta_autorizacion
        FROM imprenta_envios WHERE documento_id = ?`
     )
     .bind(id)
@@ -483,6 +484,8 @@ documentos.post("/:id/emitir", async (c) => {
         igtf_usd: calc.igtf_usd ?? 0,
         total_usd: calc.total_usd,
         tasa_e8: tasa,
+        condicion: doc.condicion ?? "CONTADO",
+        vendedor_nombre: u.nombre ?? null,
       });
       if (resImp.ok && resImp.control_fiscal) {
         controlFiscalAsignado = resImp.control_fiscal;
@@ -714,6 +717,10 @@ documentos.post("/:id/devolver", async (c) => {
         total_usd: calc.total_usd,
         tasa_e8: tasa,
         factura_afectada_numero: F.numero,
+        factura_afectada_fecha: F.fecha_emision ?? null,
+        factura_afectada_monto_bs: Number(F.total_bs ?? 0),
+        condicion: "CONTADO",
+        vendedor_nombre: u.nombre ?? null,
       });
       if (resImp.ok && resImp.control_fiscal) {
         controlFiscalNc = resImp.control_fiscal;
@@ -894,6 +901,10 @@ documentos.post("/:id/nota-debito", async (c) => {
         total_usd: calc.total_usd,
         tasa_e8: tasa,
         factura_afectada_numero: F.numero,
+        factura_afectada_fecha: F.fecha_emision ?? null,
+        factura_afectada_monto_bs: Number(F.total_bs ?? 0),
+        condicion: "CONTADO",
+        vendedor_nombre: u.nombre ?? null,
       });
       if (resImp.ok && resImp.control_fiscal) controlFiscalNd = resImp.control_fiscal;
     } catch (e) {
@@ -984,8 +995,10 @@ documentos.post("/:id/anular", async (c) => {
     try {
       const resAnul = await anularFacturaImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
         documento_id: id,
+        tipo_documento: "FACTURA",
         numero_documento: Number(doc.numero),
         control_fiscal: String(doc.control_fiscal),
+        motivo,
       });
       if (!resAnul.omitido) {
         imprentaAnulacion = { ok: resAnul.ok, ...(resAnul.error ? { error: resAnul.error } : {}) };
@@ -1062,15 +1075,35 @@ documentos.post("/:id/fiscal", async (c) => {
   if (d.control_fiscal) return falla(c, 409, "Este documento ya tiene su número de control definitivo asignado; no se puede cambiar.");
 
   const numeroManual = texto(b.numero, 30).toUpperCase();
+  const esImprentaReal = d.medio === "IMPRENTA_DIGITAL" && d.modo === "REAL";
+
+  // Candado legal estricto SNAT/2024/000102: en Imprenta Digital + REAL JAMÁS se admite ingreso o edición manual del N.º de Control.
+  // En APP_SENIAT y en modo PRACTICA el ingreso manual sigue funcionando exactamente igual.
+  if (esImprentaReal && numeroManual && b.reintentar_imprenta !== true) {
+    return falla(
+      c,
+      403,
+      "Por normativa SNAT/2024/000102, en modalidad Imprenta Digital el N.º de Control solo puede ser asignado automáticamente por la API de tu Imprenta Digital (no se admite carga manual). Usa «Reintentar con Imprenta» o «Conciliar»."
+    );
+  }
+
   if (d.medio === "IMPRENTA_DIGITAL" && (b.reintentar_imprenta === true || !numeroManual)) {
     if (!puedeInvocarImprentaDigital(d.medio, d.modo)) {
       return falla(c, 409, "La Imprenta Digital en vivo solo se invoca en documentos fiscales reales (modo REAL). En modo práctica registra un número de control de prueba.");
     }
     let facAfectadaNum: number | null = null;
+    let facAfectadaFecha: string | null = null;
+    let facAfectadaMontoBs: number | null = null;
     let esNcTotalRetry = false;
     if (d.factura_afectada_id) {
-      const fa = await db.prepare(`SELECT numero, total_usd FROM documentos WHERE id = ?`).bind(d.factura_afectada_id).first<{ numero: number; total_usd: number }>().catch(() => null);
+      const fa = await db
+        .prepare(`SELECT numero, fecha_emision, total_usd, total_bs FROM documentos WHERE id = ?`)
+        .bind(d.factura_afectada_id)
+        .first<{ numero: number; fecha_emision: string | null; total_usd: number; total_bs: number }>()
+        .catch(() => null);
       facAfectadaNum = fa?.numero ?? null;
+      facAfectadaFecha = fa?.fecha_emision ?? null;
+      facAfectadaMontoBs = fa ? Number(fa.total_bs ?? 0) : null;
       if (d.es_nota_credito && fa && Number(d.total_usd) === Number(fa.total_usd)) esNcTotalRetry = true;
     }
     const resImp = await solicitarControlImprentaDigital(db, c.env as unknown as Record<string, unknown>, {
@@ -1098,12 +1131,24 @@ documentos.post("/:id/fiscal", async (c) => {
       total_usd: Number(d.total_usd ?? 0),
       tasa_e8: Number(d.tasa_e8 ?? 0),
       factura_afectada_numero: facAfectadaNum,
+      factura_afectada_fecha: facAfectadaFecha,
+      factura_afectada_monto_bs: facAfectadaMontoBs,
+      vendedor_nombre: u.nombre ?? null,
     });
     if (!resImp.ok || !resImp.control_fiscal) {
       return falla(c, 502, `No se pudo obtener el número de control de la Imprenta Digital (${resImp.error || "sin respuesta"}). Revisa la conexión o reintenta.`);
     }
     await auditar(c, u.id, "FISCAL_IMPRENTA_REINTENTO", `${id} IMPRENTA_DIGITAL ${resImp.control_fiscal}`);
-    return c.json({ ok: true, control_fiscal: resImp.control_fiscal, ...(resImp.pdf_url ? { pdf_url: resImp.pdf_url } : {}), idempotency_key: resImp.idempotency_key });
+    return c.json({
+      ok: true,
+      control_fiscal: resImp.control_fiscal,
+      ...(resImp.pdf_url ? { pdf_url: resImp.pdf_url } : {}),
+      ...(resImp.fecha_asignacion ? { fecha_asignacion: resImp.fecha_asignacion } : {}),
+      ...(resImp.hora_asignacion ? { hora_asignacion: resImp.hora_asignacion } : {}),
+      ...(resImp.imprenta_razon_social ? { imprenta_razon_social: resImp.imprenta_razon_social } : {}),
+      ...(resImp.imprenta_autorizacion ? { imprenta_autorizacion: resImp.imprenta_autorizacion } : {}),
+      idempotency_key: resImp.idempotency_key,
+    });
   }
 
   if (!/^[0-9A-Z][0-9A-Z-]{0,29}$/.test(numeroManual)) return falla(c, 400, "Escribe el número de control (ejemplo: 00-00000001).");
@@ -1149,6 +1194,15 @@ documentos.post("/:id/enviar-correo", async (c) => {
   if (!cargado) return falla(c, 404, "Documento no encontrado.");
   const { doc, lineas } = cargado;
   if (doc.estado === "BORRADOR") return falla(c, 409, "Emite el documento antes de enviarlo por correo.");
+  // Candado legal SNAT/2024/000102: en Imprenta Digital + REAL no se entrega documento fiscal al cliente hasta tener control_fiscal oficial.
+  // APP_SENIAT, PRESUPUESTO y PRACTICA siguen intactos.
+  if (doc.tipo === "FACTURA" && doc.medio === "IMPRENTA_DIGITAL" && doc.modo === "REAL" && !doc.control_fiscal) {
+    return falla(
+      c,
+      409,
+      "No puedes enviar este documento fiscal al cliente todavía: en modalidad Imprenta Digital (SNAT/2024/000102) requiere primero el N.º de Control oficial asignado por tu Imprenta Digital."
+    );
+  }
   const destino = texto(b.email || doc.cliente_email, 120).toLowerCase();
   if (!EMAIL.test(destino)) return falla(c, 400, "Escribe un correo electrónico válido del cliente.");
   if (doc.cliente_id && destino !== doc.cliente_email) {
@@ -1181,6 +1235,22 @@ documentos.post("/:id/enviar-correo", async (c) => {
     <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(l.monto_bs)}<br><small style="color:#6b7280">${fmtUsd(l.monto_usd)}</small></td>
   </tr>`).join("");
 
+  const impLegal =
+    doc.tipo === "FACTURA" && doc.medio === "IMPRENTA_DIGITAL" && doc.modo === "REAL" && doc.control_fiscal
+      ? await db
+          .prepare(`SELECT fecha_asignacion, hora_asignacion, imprenta_razon_social, imprenta_autorizacion FROM imprenta_envios WHERE documento_id = ?`)
+          .bind(id)
+          .first<Fila>()
+          .catch(() => null)
+      : null;
+  const pieLegalHtml = impLegal
+    ? `<div style="margin-top:16px;padding:10px 12px;border-top:1px dashed #cbd5e1;font-size:12px;color:#475569;line-height:1.5">
+         <b>Sello Digital Autorizado (SNAT/2024/000102):</b> ${escHtml(impLegal.imprenta_razon_social || "Imprenta Digital Autorizada")}<br>
+         N.º de Control Fiscal: <b>${escHtml(doc.control_fiscal)}</b>${impLegal.fecha_asignacion ? ` · Asignado: ${escHtml(impLegal.fecha_asignacion)} ${escHtml(impLegal.hora_asignacion || "")}` : ""}<br>
+         ${impLegal.imprenta_autorizacion ? escHtml(impLegal.imprenta_autorizacion) : ""}
+       </div>`
+    : "";
+
   const html = `<div style="font-family:system-ui,-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:24px;border:1px solid #dde3ec;border-radius:16px;color:#1f2933">
     <div style="border-bottom:2px solid #1A73E8;padding-bottom:12px;margin-bottom:16px">
       <h2 style="margin:0;color:#1A73E8">${escHtml(nombreNegocio)}</h2>
@@ -1206,6 +1276,7 @@ documentos.post("/:id/enviar-correo", async (c) => {
       <div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:2px solid #dde3ec;font-size:16px"><span><b>TOTAL:</b></span><b>${fmtBs(doc.total_bs)} (${fmtUsd(doc.total_usd)})</b></div>
     </div>
     ${doc.nota ? `<p style="margin:14px 0 0;font-size:13px;color:#5f6b7a"><b>Nota:</b> ${escHtml(doc.nota)}</p>` : ""}
+    ${pieLegalHtml}
   </div>`;
 
   const textoPlano = `${nombreNegocio} (RIF ${rifNegocio})\n${tituloDoc} N.º ${nroDoc}${nroControl ? ` | Control: ${nroControl}` : ""}\nCliente: ${doc.cliente_nombre} (${doc.cliente_rif})\nTotal: ${fmtBs(doc.total_bs)} (${fmtUsd(doc.total_usd)})`;

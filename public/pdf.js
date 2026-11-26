@@ -25,7 +25,7 @@ async function incrustarLogo(pdf, dataUrl) {
   }
 }
 
-export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA, negocio, esDemo = false }) {
+export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afectada: FA, imprenta_envio: impEnv = null, negocio, esDemo = false }) {
   if (!D.emisor_json || D.numero == null) throw new Error("Solo se puede crear el PDF de un documento emitido.");
   const { PDFDocument, StandardFonts, rgb, degrees } = L;
   const pdf = await PDFDocument.create();
@@ -49,6 +49,9 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   const esFactura = D.tipo === "FACTURA", esNc = !!D.es_nota_credito, esNd = !!D.es_nota_debito;
   const titulo = esNc ? "NOTA DE CRÉDITO" : esNd ? "NOTA DE DÉBITO" : esFactura ? "FACTURA" : "PRESUPUESTO";
 
+  const esImprentaPendiente = esFactura && D.medio === "IMPRENTA_DIGITAL" && D.modo === "REAL" && !D.control_fiscal;
+  const esImprentaSellada = esFactura && D.medio === "IMPRENTA_DIGITAL" && D.modo === "REAL" && Boolean(D.control_fiscal);
+
   const paginas = []; let pag, y;
   const diagonal = (p, txt, size, grados, color, opacity, dy = 0) => {
     const w = fb.widthOfTextAtSize(txt, size), a = (grados * Math.PI) / 180, h = size * 0.7;
@@ -58,6 +61,7 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   const marcas = (p) => {
     if (esDemoPdf) diagonal(p, "DEMO - SIN VALIDEZ FISCAL", 34, 35, [0.82, 0.42, 0.08], 0.28, 120);
     else if (D.modo === "PRACTICA") diagonal(p, "PRÁCTICA - SIN VALOR", 40, 35, [0.6, 0.6, 0.6], 0.4, 150);
+    else if (esImprentaPendiente) diagonal(p, "PENDIENTE IMPRENTA - SIN VALIDEZ FISCAL", 24, 35, [0.78, 0.35, 0.08], 0.26, 100);
     if (D.estado === "ANULADO") diagonal(p, "ANULADA", 100, 35, [0.85, 0.15, 0.15], 0.22, -40);
   };
   const nueva = () => { pag = pdf.addPage([ANCHO, ALTO]); paginas.push(pag); marcas(pag); y = M; };
@@ -96,8 +100,12 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   T(`N.º: ${numeroDoc(D)}`, R, dy, { s: 11, b: true, der: true }); dy += 15;
   const esAppSeniatInterno = esFactura && D.medio === "APP_SENIAT" && !D.control_fiscal;
   if (esFactura) {
-    const nroControl = D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`;
-    T(`${esAppSeniatInterno ? "N.º de Control Interno" : "N.º de Control"}: ${nroControl}`, R, dy, { s: 9, b: true, der: true }); dy += 13;
+    if (esImprentaPendiente) {
+      T("N.º de Control: PENDIENTE DE IMPRENTA", R, dy, { s: 9, b: true, c: [0.75, 0.25, 0.05], der: true }); dy += 13;
+    } else {
+      const nroControl = D.control_fiscal || `00-${String(D.control_interno ?? D.numero ?? 1).padStart(8, "0")}`;
+      T(`${esAppSeniatInterno ? "N.º de Control Interno" : "N.º de Control"}: ${nroControl}`, R, dy, { s: 9, b: true, der: true }); dy += 13;
+    }
   }
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
@@ -193,7 +201,13 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   y += 4; notaLineas.forEach((l) => { T(l, M, y, { s: 9 }); y += 12; });
 
   paginas.forEach((p, i) => { // pie de cada página
-    if (esAppSeniatInterno) {
+    if (esImprentaSellada) {
+      const razonImp = impEnv?.imprenta_razon_social || impEnv?.proveedor || "Imprenta Digital Autorizada";
+      const fechaHoraImp = impEnv?.fecha_asignacion ? ` · Asignado: ${impEnv.fecha_asignacion}${impEnv.hora_asignacion ? ` ${impEnv.hora_asignacion}` : ""}` : "";
+      const autImp = impEnv?.imprenta_autorizacion || "Imprenta Digital Autorizada por el SENIAT · Providencia SNAT/2024/000102";
+      T(`Imprenta Digital: ${razonImp} · Control: ${D.control_fiscal}${fechaHoraImp}`, M, ALTO - 49, { s: 7, b: true, c: [0.22, 0.28, 0.38], p });
+      T(autImp, M, ALTO - 39, { s: 6.8, c: [0.42, 0.46, 0.52], p });
+    } else if (esAppSeniatInterno) {
       T("Control interno de facturación · Emisión fiscal oficial vía Sistema Digital SENIAT (SNAT/2024/000102)", R, ALTO - 39, { s: 7, c: [0.45, 0.45, 0.45], der: true, p });
     }
     T(`Página ${i + 1} de ${paginas.length}  ·  Conforme a Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102`, ANCHO / 2 + 115, ALTO - 28, { s: 7.5, c: [0.55, 0.55, 0.55], der: true, p });

@@ -13,6 +13,7 @@ import { generarRespaldoNegocio, obtenerFirmaCoberturaReal } from "../salud-bd";
 import {
   PROVEEDOR_CG,
   PROVEEDOR_GENERICO,
+  PROVEEDOR_TFHKA,
   anularFacturaCg,
   conciliarDocumentosCg,
   enviarDocumentoCg,
@@ -29,6 +30,14 @@ import {
   type ResultadoEnvioImprenta,
   type TipoProveedorImprenta,
 } from "../imprenta-cg";
+import {
+  anularDocumentoTfhka,
+  conciliarDocumentosTfhka,
+  enviarDocumentoTfhka,
+  normalizarHostTfhka,
+  numeroDocumentoTfhka,
+  probarConexionTfhka,
+} from "../imprenta-tfhka";
 
 const sistema = new Hono<Env>();
 sistema.use("*", requiereSesion, requiereAdmin);
@@ -209,6 +218,51 @@ export async function solicitarControlImprentaDigital(
     }
   }
 
+  // Ruta oficial The Factory HKA Venezuela (API Emisión v2 · SNAT/2024/000102)
+  if (cfg.proveedor_tipo === PROVEEDOR_TFHKA) {
+    try {
+      const resTf = await enviarDocumentoTfhka(
+        db,
+        env,
+        cfg,
+        { ...payload, emisor, renglones, impuestos },
+        idempotencyKey,
+        fetchFn
+      );
+      if (!resTf.ok) {
+        await registrarPendiente(resTf.error || "Error con The Factory HKA");
+      }
+      return resTf;
+    } catch (err) {
+      const errMsg = `Error inesperado comunicando con The Factory HKA: ${String((err as Error)?.message || err).slice(0, 180)}`;
+      console.error("[imprenta-tfhka] enviarDocumentoTfhka:", err);
+      await registrarPendiente(errMsg);
+      await registrarEnvioImprentaDb(db, {
+        documento_id: payload.documento_id,
+        proveedor: cfg.proveedor || "The Factory HKA Venezuela",
+        proveedor_tipo: PROVEEDOR_TFHKA,
+        ambiente: cfg.ambiente,
+        tipo_documento: payload.tipo_documento,
+        numero_documento: numeroDocumentoTfhka(payload.numero),
+        numero_serie: cfg.serie,
+        control_fiscal: null,
+        pdf_url: null,
+        estado: "PENDIENTE",
+        ultimo_error: errMsg,
+        idempotency_key: idempotencyKey,
+      });
+      return {
+        ok: false,
+        control_fiscal: null,
+        pdf_url: null,
+        proveedor: cfg.proveedor || "The Factory HKA Venezuela",
+        proveedor_tipo: PROVEEDOR_TFHKA,
+        error: errMsg,
+        idempotency_key: idempotencyKey,
+      };
+    }
+  }
+
   // Ruta genérica compatible con otros proveedores autorizados (webhook Bearer + JSON)
   const numDocStr = numeroDocumentoCg(payload.numero);
   try {
@@ -333,7 +387,13 @@ export async function solicitarControlImprentaDigital(
 export async function anularFacturaImprentaDigital(
   db: D1Database,
   env: Record<string, unknown> | undefined,
-  datos: { documento_id: number; numero_documento: number | string; control_fiscal: string },
+  datos: {
+    documento_id: number;
+    tipo_documento?: "FACTURA" | "NOTA_CREDITO" | "NOTA_DEBITO";
+    numero_documento: number | string;
+    control_fiscal: string;
+    motivo?: string;
+  },
   fetchFn: typeof fetch = fetch
 ): Promise<{ ok: boolean; omitido?: boolean; pdf_url?: string | null; error?: string }> {
   const cfg = await leerConfigImprentaCompleta(db, env);
@@ -344,6 +404,14 @@ export async function anularFacturaImprentaDigital(
     } catch (err) {
       console.error("[imprenta-cg] anularFacturaCg:", err);
       return { ok: false, error: `Error inesperado anulando en CG: ${String((err as Error)?.message || err).slice(0, 180)}` };
+    }
+  }
+  if (cfg.proveedor_tipo === PROVEEDOR_TFHKA) {
+    try {
+      return await anularDocumentoTfhka(db, env, cfg, datos, fetchFn);
+    } catch (err) {
+      console.error("[imprenta-tfhka] anularDocumentoTfhka:", err);
+      return { ok: false, error: `Error inesperado anulando en The Factory HKA: ${String((err as Error)?.message || err).slice(0, 180)}` };
     }
   }
   await registrarEnvioImprentaDb(db, {
@@ -379,29 +447,51 @@ sistema.post("/imprenta", async (c) => {
   const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
   if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
 
-  const provTipoRaw = texto(b.proveedor_tipo, 20).toUpperCase();
+  const provTipoRaw = texto(b.proveedor_tipo, 24).toUpperCase();
   const proveedorTxt = texto(b.proveedor, 60);
   const urlRaw = texto(b.url, 200);
   const provTipo: TipoProveedorImprenta =
     provTipoRaw === PROVEEDOR_CG || (!provTipoRaw && /cg\s*imprenta|cgimprenta\.digital/i.test(`${proveedorTxt} ${urlRaw}`))
       ? PROVEEDOR_CG
-      : PROVEEDOR_GENERICO;
+      : provTipoRaw === PROVEEDOR_TFHKA ||
+          (!provTipoRaw && /thefactoryhka\.com\.ve/i.test(urlRaw))
+        ? PROVEEDOR_TFHKA
+        : PROVEEDOR_GENERICO;
 
-  const proveedor = proveedorTxt || (provTipo === PROVEEDOR_CG ? "CG La Imprenta Digital" : "");
+  const proveedor =
+    proveedorTxt ||
+    (provTipo === PROVEEDOR_CG
+      ? "CG La Imprenta Digital"
+      : provTipo === PROVEEDOR_TFHKA
+        ? "The Factory HKA Venezuela"
+        : "");
   if (proveedor.length < 2) return falla(c, 400, "Escribe el nombre de tu imprenta digital.");
 
   const valUrl = validarUrlImprentaSegura(urlRaw);
   if (!valUrl.ok) return falla(c, 400, valUrl.error);
-  const urlFinal = provTipo === PROVEEDOR_CG ? normalizarHostCg(valUrl.url) : valUrl.url;
+  const urlFinal =
+    provTipo === PROVEEDOR_CG
+      ? normalizarHostCg(valUrl.url)
+      : provTipo === PROVEEDOR_TFHKA
+        ? normalizarHostTfhka(valUrl.url)
+        : valUrl.url;
 
   const ambiente = texto(b.ambiente, 12).toUpperCase();
   if (!["PRUEBAS", "PRODUCCION"].includes(ambiente)) return falla(c, 400, "Elige el ambiente: pruebas o producción.");
 
   const usuarioApi = texto(b.usuario, 100);
-  if (provTipo === PROVEEDOR_CG && !usuarioApi) {
-    return falla(c, 400, "Indica el usuario (correo) de tu cuenta API en CG La Imprenta Digital.");
+  if ((provTipo === PROVEEDOR_CG || provTipo === PROVEEDOR_TFHKA) && !usuarioApi) {
+    return falla(c, 400, `Indica el usuario de tu cuenta API en ${provTipo === PROVEEDOR_TFHKA ? "The Factory HKA" : "CG La Imprenta Digital"}.`);
   }
-  const serie = (texto(b.serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
+  const serie =
+    provTipo === PROVEEDOR_TFHKA
+      ? texto(b.serie, 10).toUpperCase().replace(/[^A-Z0-9_-]/g, "")
+      : (texto(b.serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
+  const sucursal = (texto(b.sucursal, 10) || "0001").replace(/[^A-Za-z0-9_-]/g, "") || "0001";
+  const reservarPrevio =
+    b.reservar_previo === true || b.reservar_previo === 1 || b.reservar_previo === "1" || b.reservar_previo === "on"
+      ? "1"
+      : "0";
 
   const claveNueva = texto(b.clave, 200);
   const previa = (await db.prepare(`SELECT valor FROM integraciones WHERE clave = 'imprenta_clave'`).first<{ valor: string }>())?.valor;
@@ -443,6 +533,8 @@ sistema.post("/imprenta", async (c) => {
     ["imprenta_usuario", usuarioApi],
     ["imprenta_ambiente", ambiente],
     ["imprenta_serie", serie],
+    ["imprenta_sucursal", sucursal],
+    ["imprenta_reservar_previo", reservarPrevio],
   ];
   if (claveNueva) {
     pares.push(["imprenta_clave", await cifrarSecreto(claveNueva, envObj)]);
@@ -464,9 +556,14 @@ sistema.post("/imprenta", async (c) => {
       )
       .bind(k, val, ahoraIso)
   );
-  // Al cambiar credenciales/URL invalidamos el JWT cacheado para forzar re-autenticación limpia
+  // Al cambiar credenciales/URL invalidamos los JWT cacheados (CG y TFHKA) para forzar re-autenticación limpia
   pasos.push(
-    db.prepare(`DELETE FROM integraciones WHERE clave IN ('imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host', 'imprenta_cg_jwt_user')`)
+    db.prepare(
+      `DELETE FROM integraciones WHERE clave IN (
+         'imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host', 'imprenta_cg_jwt_user',
+         'imprenta_tfhka_jwt', 'imprenta_tfhka_jwt_exp', 'imprenta_tfhka_jwt_host', 'imprenta_tfhka_jwt_user'
+       )`
+    )
   );
   await db.batch(pasos);
 
@@ -485,7 +582,7 @@ sistema.post("/imprenta", async (c) => {
     }
   }
 
-  await auditar(c, yo.id, "IMPRENTA_CONFIG", `${provTipo}:${proveedor} ${ambiente} serie=${serie}${planCupo !== null ? ` cupo=${planCupo}` : ""}${claveNueva ? " (clave nueva)" : ""}`);
+  await auditar(c, yo.id, "IMPRENTA_CONFIG", `${provTipo}:${proveedor} ${ambiente} serie=${serie || "(vacía)"}${planCupo !== null ? ` cupo=${planCupo}` : ""}${claveNueva ? " (clave nueva)" : ""}`);
   const estado = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
   return c.json({ ok: true, ...(await leerImprenta(db, envObj)), imprenta_estado: estado });
 });
@@ -551,8 +648,14 @@ sistema.post("/imprenta/probar", async (c) => {
   if (!cfg.url || !cfg.clave_clara) {
     return falla(c, 400, "Guarda primero las credenciales de tu Imprenta Digital antes de probar la conexión.");
   }
+  if (cfg.proveedor_tipo === PROVEEDOR_TFHKA) {
+    const res = await probarConexionTfhka(db, envObj, cfg);
+    if (!res.ok) return falla(c, 502, res.error || "No se pudo validar la conexión con The Factory HKA.");
+    await auditar(c, c.get("usuario").id, "IMPRENTA_PROBAR", `TFHKA OK (${cfg.ambiente})`);
+    return c.json({ ...res, ok: true });
+  }
   if (cfg.proveedor_tipo !== PROVEEDOR_CG) {
-    return c.json({ ok: true, mensaje: `Proveedor genérico (${cfg.proveedor}) configurado en ${cfg.ambiente}. La validación en vivo está disponible para CG La Imprenta Digital.` });
+    return c.json({ ok: true, mensaje: `Proveedor genérico (${cfg.proveedor}) configurado en ${cfg.ambiente}. La validación en vivo está disponible para CG La Imprenta Digital y The Factory HKA Venezuela.` });
   }
   const res = await probarConexionCg(db, envObj, cfg);
   if (!res.ok) return falla(c, 502, res.error || "No se pudo validar la conexión con CG Imprenta Digital.");
@@ -564,10 +667,17 @@ sistema.post("/imprenta/conciliar", async (c) => {
   const db = c.env.DB, b = await leerJson(c), envObj = c.env as unknown as Record<string, unknown>;
   const cfg = await leerConfigImprentaCompleta(db, envObj);
   if (!cfg.url || !cfg.clave_clara) {
-    return falla(c, 400, "Configura primero tu API de CG Imprenta Digital.");
+    return falla(c, 400, "Configura primero tu API de Imprenta Digital.");
+  }
+  if (cfg.proveedor_tipo === PROVEEDOR_TFHKA) {
+    const res = await conciliarDocumentosTfhka(db, envObj, cfg);
+    if (!res.ok) return falla(c, 502, res.error || "No se pudo conciliar con The Factory HKA.");
+    await auditar(c, c.get("usuario").id, "IMPRENTA_CONCILIAR", `TFHKA consultados=${res.consultados ?? 0} recuperados=${res.recuperados}`);
+    const estado = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
+    return c.json({ ok: true, conciliacion: res, imprenta_estado: estado });
   }
   if (cfg.proveedor_tipo !== PROVEEDOR_CG) {
-    return falla(c, 400, "La conciliación automática contra servidores remotos está disponible para CG La Imprenta Digital.");
+    return falla(c, 400, "La conciliación automática contra servidores remotos está disponible para CG La Imprenta Digital y The Factory HKA Venezuela.");
   }
   const fechaInicio = texto(b.fechaInicio, 10);
   const fechaFin = texto(b.fechaFin, 10);

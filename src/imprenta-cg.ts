@@ -10,8 +10,12 @@ import { usdABs } from "../public/dinero.js";
 
 export const HOST_CG_CALIDAD = "https://calidad.cgimprenta.digital/";
 export const PROVEEDOR_CG = "CG_IMPRENTA" as const;
+export const PROVEEDOR_TFHKA = "THE_FACTORY_HKA" as const;
 export const PROVEEDOR_GENERICO = "GENERICO" as const;
-export type TipoProveedorImprenta = typeof PROVEEDOR_CG | typeof PROVEEDOR_GENERICO;
+export type TipoProveedorImprenta = typeof PROVEEDOR_CG | typeof PROVEEDOR_TFHKA | typeof PROVEEDOR_GENERICO;
+
+export const CG_IMPRENTA_RAZON_SOCIAL = "CG LA IMPRENTA DIGITAL, C.A. · RIF J-504526711";
+export const CG_IMPRENTA_AUTORIZACION = "Imprenta Digital Autorizada por el SENIAT · Providencia SNAT/INTI/012";
 
 export const PLANES_CG_PREDEFINIDOS = [
   { codigo: "EMPRENDE_1", nombre: "Emprende I (100 números)", cantidad: 100 },
@@ -28,6 +32,8 @@ export type ConfigImprentaCompleta = {
   usuario: string;
   ambiente: "PRUEBAS" | "PRODUCCION";
   serie: string;
+  sucursal: string;
+  reservar_previo: boolean;
   clave_configurada: boolean;
   clave_final: string;
   plan_nombre: string;
@@ -74,6 +80,10 @@ export type PayloadImprentaDocumento = {
   total_usd: number;
   tasa_e8: number;
   factura_afectada_numero?: number | null;
+  factura_afectada_fecha?: string | null;
+  factura_afectada_monto_bs?: number | null;
+  condicion?: string | null;
+  vendedor_nombre?: string | null;
   emisor?: { rif: string; nombre_razon_social: string; direccion_fiscal?: string; email?: string | null };
   renglones?: {
     orden?: number;
@@ -95,6 +105,10 @@ export type ResultadoEnvioImprenta = {
   pdf_url?: string | null;
   proveedor?: string;
   proveedor_tipo?: TipoProveedorImprenta;
+  fecha_asignacion?: string | null;
+  hora_asignacion?: string | null;
+  imprenta_razon_social?: string | null;
+  imprenta_autorizacion?: string | null;
   error?: string;
   idempotency_key?: string;
   sin_cupo?: boolean;
@@ -611,7 +625,7 @@ export function calcularResumenPlanImprenta(params: {
     mensaje = "Carga el lote contratado y la fecha pagada para activar el medidor de disponibles.";
   } else if (disponibles === 0) {
     nivel = "AGOTADO";
-    mensaje = "Cupo agotado: registra una recarga de números de control para seguir timbrando en CG.";
+    mensaje = "Cupo agotado: registra una recarga de números de control para seguir timbrando en tu Imprenta Digital.";
   } else if (diasRestantes !== null && diasRestantes < 0) {
     nivel = "VENCIDO";
     mensaje = `La vigencia anual del plan venció hace ${Math.abs(diasRestantes)} día(s). Renueva el almacenamiento/plan.`;
@@ -668,7 +682,10 @@ export async function leerConfigImprentaCompleta(
     m.proveedor_tipo === PROVEEDOR_CG ||
     (!m.proveedor_tipo && /cg\s*imprenta|cgimprenta\.digital/i.test(`${m.proveedor ?? ""} ${m.url ?? ""}`))
       ? PROVEEDOR_CG
-      : PROVEEDOR_GENERICO;
+      : m.proveedor_tipo === PROVEEDOR_TFHKA ||
+          (!m.proveedor_tipo && /thefactoryhka\.com\.ve/i.test(String(m.url ?? "")))
+        ? PROVEEDOR_TFHKA
+        : PROVEEDOR_GENERICO;
 
   let ultimaConciliacion: ConfigImprentaCompleta["ultima_conciliacion"] = null;
   if (m.ultima_conciliacion_json) {
@@ -686,13 +703,20 @@ export async function leerConfigImprentaCompleta(
     } catch {}
   }
 
+  const serie =
+    provTipo === PROVEEDOR_TFHKA
+      ? String(m.serie ?? "").trim().toUpperCase().replace(/[^A-Z0-9_-]/g, "").slice(0, 10)
+      : (m.serie || "A").trim().toUpperCase().slice(0, 5) || "A";
+
   return {
     proveedor_tipo: provTipo,
     proveedor: m.proveedor ?? "",
     url: m.url ?? "",
     usuario: m.usuario ?? "",
     ambiente: m.ambiente === "PRODUCCION" ? "PRODUCCION" : "PRUEBAS",
-    serie: (m.serie || "A").trim().toUpperCase().slice(0, 5) || "A",
+    serie,
+    sucursal: (m.sucursal || "0001").trim().slice(0, 10) || "0001",
+    reservar_previo: m.reservar_previo === "1" || m.reservar_previo === "true",
     clave_configurada: !!claveClara,
     clave_final: claveClara ? claveClara.slice(-4) : "",
     clave_clara: claveClara,
@@ -709,6 +733,21 @@ export async function leerConfigImprentaCompleta(
 export function ocultarSecretoImprenta(cfg: ConfigImprentaConSecreto): ConfigImprentaCompleta {
   const { clave_clara: _omit, ...publica } = cfg;
   return publica;
+}
+
+export function fechaHoraAsignacionCaracas(fechaRef: Date = new Date()): { fecha: string; hora: string } {
+  const ccs = new Date(fechaRef.getTime() - 4 * 3600 * 1000);
+  const dd = String(ccs.getUTCDate()).padStart(2, "0");
+  const mm = String(ccs.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = ccs.getUTCFullYear();
+  let h = ccs.getUTCHours();
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12;
+  if (h === 0) h = 12;
+  const hh = String(h).padStart(2, "0");
+  const mi = String(ccs.getUTCMinutes()).padStart(2, "0");
+  const ss = String(ccs.getUTCSeconds()).padStart(2, "0");
+  return { fecha: `${dd}/${mm}/${yyyy}`, hora: `${hh}:${mi}:${ss} ${ampm}` };
 }
 
 export async function registrarEnvioImprentaDb(
@@ -728,6 +767,10 @@ export async function registrarEnvioImprentaDb(
     idempotency_key?: string;
     retornado_en?: string | null;
     anulado_en?: string | null;
+    fecha_asignacion?: string | null;
+    hora_asignacion?: string | null;
+    imprenta_razon_social?: string | null;
+    imprenta_autorizacion?: string | null;
   }
 ) {
   const ahora = new Date().toISOString();
@@ -736,22 +779,27 @@ export async function registrarEnvioImprentaDb(
       `INSERT INTO imprenta_envios (
          documento_id, proveedor, proveedor_tipo, ambiente, tipo_documento,
          numero_documento, numero_serie, control_fiscal, pdf_url, estado,
-         intentos, ultimo_error, idempotency_key, enviado_en, retornado_en, anulado_en, actualizado_en
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+         intentos, ultimo_error, idempotency_key, enviado_en, retornado_en, anulado_en,
+         fecha_asignacion, hora_asignacion, imprenta_razon_social, imprenta_autorizacion, actualizado_en
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(documento_id) DO UPDATE SET
          proveedor = excluded.proveedor,
          proveedor_tipo = excluded.proveedor_tipo,
          ambiente = excluded.ambiente,
          numero_documento = excluded.numero_documento,
          numero_serie = excluded.numero_serie,
-         control_fiscal = COALESCE(excluded.control_fiscal, imprenta_envios.control_fiscal),
+         control_fiscal = COALESCE(imprenta_envios.control_fiscal, excluded.control_fiscal),
          pdf_url = COALESCE(excluded.pdf_url, imprenta_envios.pdf_url),
          estado = excluded.estado,
          intentos = imprenta_envios.intentos + 1,
          ultimo_error = excluded.ultimo_error,
          idempotency_key = CASE WHEN excluded.idempotency_key <> '' THEN excluded.idempotency_key ELSE imprenta_envios.idempotency_key END,
-         retornado_en = COALESCE(excluded.retornado_en, imprenta_envios.retornado_en),
+         retornado_en = COALESCE(imprenta_envios.retornado_en, excluded.retornado_en),
          anulado_en = COALESCE(excluded.anulado_en, imprenta_envios.anulado_en),
+         fecha_asignacion = COALESCE(imprenta_envios.fecha_asignacion, excluded.fecha_asignacion),
+         hora_asignacion = COALESCE(imprenta_envios.hora_asignacion, excluded.hora_asignacion),
+         imprenta_razon_social = COALESCE(imprenta_envios.imprenta_razon_social, excluded.imprenta_razon_social),
+         imprenta_autorizacion = COALESCE(imprenta_envios.imprenta_autorizacion, excluded.imprenta_autorizacion),
          actualizado_en = excluded.actualizado_en`
     )
     .bind(
@@ -770,6 +818,10 @@ export async function registrarEnvioImprentaDb(
       ahora,
       datos.retornado_en ?? null,
       datos.anulado_en ?? null,
+      datos.fecha_asignacion ?? null,
+      datos.hora_asignacion ?? null,
+      datos.imprenta_razon_social ?? null,
+      datos.imprenta_autorizacion ?? null,
       ahora
     )
     .run()
@@ -842,9 +894,16 @@ export async function obtenerResumenImprenta(
     medio_activo: perfil?.medio_facturacion ?? "APP_SENIAT",
     configurado: Boolean(cfg.url && cfg.clave_configurada),
     proveedor_tipo: cfg.proveedor_tipo,
-    proveedor: cfg.proveedor || (cfg.proveedor_tipo === PROVEEDOR_CG ? "CG La Imprenta Digital" : ""),
+    proveedor:
+      cfg.proveedor ||
+      (cfg.proveedor_tipo === PROVEEDOR_CG
+        ? "CG La Imprenta Digital"
+        : cfg.proveedor_tipo === PROVEEDOR_TFHKA
+          ? "The Factory HKA Venezuela"
+          : ""),
     ambiente: cfg.ambiente,
     serie: cfg.serie,
+    sucursal: cfg.sucursal,
     ultima_conciliacion: cfg.ultima_conciliacion,
     resumen,
   };
@@ -856,7 +915,9 @@ export async function obtenerResumenImprenta(
       .prepare(
         `SELECT e.documento_id, e.tipo_documento, e.numero_documento, e.numero_serie,
                 e.control_fiscal, e.pdf_url, e.estado, e.intentos, e.ultimo_error,
-                e.enviado_en, e.retornado_en, e.anulado_en, d.cliente_nombre, d.total_usd
+                e.enviado_en, e.retornado_en, e.anulado_en,
+                e.fecha_asignacion, e.hora_asignacion, e.imprenta_razon_social, e.imprenta_autorizacion,
+                d.cliente_nombre, d.total_usd
          FROM imprenta_envios e
          LEFT JOIN documentos d ON d.id = e.documento_id
          ORDER BY e.id DESC LIMIT 20`
@@ -1274,6 +1335,7 @@ export async function enviarDocumentoCg(
       idempotency_key: idempotencyKey,
     };
   }
+  const fhAsig = fechaHoraAsignacionCaracas();
   await registrarEnvioImprentaDb(db, {
     documento_id: payload.documento_id,
     proveedor: cfg.proveedor || "CG La Imprenta Digital",
@@ -1288,6 +1350,10 @@ export async function enviarDocumentoCg(
     ultimo_error: "",
     idempotency_key: idempotencyKey,
     retornado_en: ahoraIso,
+    fecha_asignacion: fhAsig.fecha,
+    hora_asignacion: fhAsig.hora,
+    imprenta_razon_social: CG_IMPRENTA_RAZON_SOCIAL,
+    imprenta_autorizacion: CG_IMPRENTA_AUTORIZACION,
   });
 
   return {
@@ -1296,6 +1362,10 @@ export async function enviarDocumentoCg(
     pdf_url: parsed.pdf_url,
     proveedor: cfg.proveedor || "CG La Imprenta Digital",
     proveedor_tipo: PROVEEDOR_CG,
+    fecha_asignacion: fhAsig.fecha,
+    hora_asignacion: fhAsig.hora,
+    imprenta_razon_social: CG_IMPRENTA_RAZON_SOCIAL,
+    imprenta_autorizacion: CG_IMPRENTA_AUTORIZACION,
     idempotency_key: idempotencyKey,
   };
 }
@@ -1425,6 +1495,7 @@ export async function conciliarDocumentosCg(
       if ((rUpd.meta?.changes ?? 0) > 0) {
         recuperados++;
         await db.prepare(`DELETE FROM integraciones WHERE clave = ?`).bind(`imprenta_pendiente_${d.id}`).run().catch(() => {});
+        const fhAsig = fechaHoraAsignacionCaracas();
         await registrarEnvioImprentaDb(db, {
           documento_id: d.id,
           proveedor: cfg.proveedor || "CG La Imprenta Digital",
@@ -1438,6 +1509,10 @@ export async function conciliarDocumentosCg(
           estado: "ENVIADO_OK",
           ultimo_error: "",
           retornado_en: new Date().toISOString(),
+          fecha_asignacion: fhAsig.fecha,
+          hora_asignacion: fhAsig.hora,
+          imprenta_razon_social: CG_IMPRENTA_RAZON_SOCIAL,
+          imprenta_autorizacion: CG_IMPRENTA_AUTORIZACION,
         });
       }
     }

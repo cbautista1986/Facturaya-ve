@@ -1,12 +1,12 @@
 // Entrada de la aplicación: instalador, login, inicio, ajustes y panel Multi-Tenant Súper Admin.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, montarTurnstile, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
-import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261125v514";
+import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261126v520";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261125v514";
-import { vistaPagos } from "./pagos.js?v=20261125v514";
+import { vistaFactura } from "./factura.js?v=20261126v520";
+import { vistaPagos } from "./pagos.js?v=20261126v520";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
@@ -64,16 +64,16 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.1.4)</span>
-  <p class="suave">Descarga el paquete completo <b>v5.1.4 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>CG La Imprenta Digital</b>, visor de cupo y plan, <b>blindaje anti-500</b>, <b>auto-recuperación y conciliación con CG</b> y redirección segura en móvil:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.1.4)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.2.0)</span>
+  <p class="suave">Descarga el paquete completo <b>v5.2.0 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>conector oficial The Factory HKA Venezuela (Emisión v2)</b>, <b>CG La Imprenta Digital</b>, <b>candado legal estricto SNAT/2024/000102</b> para Imprenta Digital (manteniendo App SENIAT intacta) y sello legal inmutable en PDF:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.2.0)</button>
   <div class="dos-botones">
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-tfhka.ts">⬇️ src/imprenta-tfhka.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-cg.ts">⬇️ src/imprenta-cg.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="documentos.ts">⬇️ src/rutas/documentos.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="sistema.ts">⬇️ src/rutas/sistema.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="factura.js">⬇️ public/factura.js</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="sw.js">⬇️ public/sw.js</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="pdf.js">⬇️ public/pdf.js</button>
   </div>
 </section>` : "";
 
@@ -1007,10 +1007,11 @@ async function vistaInquilinos(subvista = "") {
             <label for="imprenta_proveedor_tipo">Conector / Imprenta Digital</label>
             <select id="imprenta_proveedor_tipo" name="imprenta_proveedor_tipo">
               <option value="CG_IMPRENTA" selected>🏛️ CG La Imprenta Digital (Oficial · SNAT/INTI/012)</option>
+              <option value="THE_FACTORY_HKA">🏭 The Factory HKA Venezuela (Oficial · Emisión v2)</option>
               <option value="GENERICO">🌐 Otro proveedor autorizado (API genérica)</option>
             </select>
-            ${campo("imprenta_proveedor", "Nombre del proveedor", "CG La Imprenta Digital", "text", 'placeholder="Ej: CG La Imprenta Digital"')}
-            ${campo("imprenta_url", "URL base de la API (https://…)", "", "url", 'placeholder="https://calidad.cgimprenta.digital/ o URL Producción CG"')}
+            ${campo("imprenta_proveedor", "Nombre del proveedor", "CG La Imprenta Digital", "text", 'placeholder="Ej: The Factory HKA Venezuela o CG La Imprenta Digital"')}
+            ${campo("imprenta_url", "URL base de la API (https://…)", "", "url", 'placeholder="https://demoemisionv2.thefactoryhka.com.ve/ o https://calidad.cgimprenta.digital/"')}
             <div class="dos-botones">
               <div>${campo("imprenta_usuario", "Correo / Usuario API", "", "text", 'placeholder="usuario@empresa.com"')}</div>
               <div>
@@ -1022,12 +1023,12 @@ async function vistaInquilinos(subvista = "") {
               </div>
             </div>
             <div class="dos-botones">
-              <div>${campo("imprenta_serie", "Serie CG (ej: A)", "A", "text", 'maxlength="5" placeholder="A"')}</div>
-              <div>${campo("imprenta_plan_cupo_total", "Cupo contratado (opc.)", "", "number", 'min="0" max="10000000" step="1" placeholder="Ej: 100 o 500"')}</div>
+              <div>${campo("imprenta_serie", "Serie (CG: A · HKA: opcional)", "A", "text", 'maxlength="10" placeholder="A o vacío en HKA"')}</div>
+              <div>${campo("imprenta_sucursal", "Sucursal HKA (opc.)", "0001", "text", 'maxlength="10" placeholder="0001"')}</div>
             </div>
             <div class="dos-botones">
+              <div>${campo("imprenta_plan_cupo_total", "Cupo contratado (opc.)", "", "number", 'min="0" max="10000000" step="1" placeholder="Ej: 100 o 500"')}</div>
               <div>${campo("imprenta_plan_nombre", "Plan contratado (opc.)", "", "text", 'maxlength="80" placeholder="Ej: Emprende I (100 núm.)"')}</div>
-              <div>${campo("imprenta_plan_fecha_pago", "📅 Fecha pagada (opc.)", "", "date")}</div>
             </div>
             ${campo("imprenta_clave", "🔑 Contraseña API / Token de Imprenta Digital (se cifra con AES-256-GCM)", "", "password", 'autocomplete="off" placeholder="Dejar en blanco si se configurará después"')}
           </div>
@@ -1063,6 +1064,19 @@ async function vistaInquilinos(subvista = "") {
     });
     $("#medio_facturacion").addEventListener("change", (e) => {
       $("#caja-alta-imprenta").hidden = e.target.value !== "IMPRENTA_DIGITAL";
+    });
+    $("#imprenta_proveedor_tipo")?.addEventListener("change", (e) => {
+      const t = e.target.value;
+      const amb = $("#imprenta_ambiente")?.value || "PRUEBAS";
+      if (t === "THE_FACTORY_HKA") {
+        $("#imprenta_proveedor").value = "The Factory HKA Venezuela";
+        $("#imprenta_url").value = amb === "PRODUCCION" ? "https://emisionv2.thefactoryhka.com.ve/" : "https://demoemisionv2.thefactoryhka.com.ve/";
+        if ($("#imprenta_serie").value.trim() === "A") $("#imprenta_serie").value = "";
+      } else if (t === "CG_IMPRENTA") {
+        $("#imprenta_proveedor").value = "CG La Imprenta Digital";
+        if (amb === "PRUEBAS") $("#imprenta_url").value = "https://calidad.cgimprenta.digital/";
+        if (!$("#imprenta_serie").value.trim()) $("#imprenta_serie").value = "A";
+      }
     });
     $("#alta-logo-archivo").addEventListener("change", async (ev) => {
       const file = ev.target.files?.[0];

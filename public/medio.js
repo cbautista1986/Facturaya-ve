@@ -11,6 +11,8 @@ export const NOMBRE_MEDIO = {
 };
 
 const HOST_CG_CALIDAD = "https://calidad.cgimprenta.digital/";
+const HOST_TFHKA_DEMO = "https://demoemisionv2.thefactoryhka.com.ve/";
+const HOST_TFHKA_PROD = "https://emisionv2.thefactoryhka.com.ve/";
 const PLANES_RAPIDOS = [
   { nombre: "Emprende I (100 números)", cupo: 100 },
   { nombre: "Emprende II (500 números)", cupo: 500 },
@@ -45,7 +47,13 @@ export function renderVisorImprentaHtml(estadoImp, opts = {}) {
   const color = colorAlerta(res.nivel_alerta);
   const pct = Math.max(0, Math.min(100, Number(res.porcentaje_uso || 0)));
   const esCompacto = !!opts.compacto;
-  const provNombre = estadoImp.proveedor || (estadoImp.proveedor_tipo === "CG_IMPRENTA" ? "CG La Imprenta Digital" : "Imprenta Digital");
+  const provNombre =
+    estadoImp.proveedor ||
+    (estadoImp.proveedor_tipo === "CG_IMPRENTA"
+      ? "CG La Imprenta Digital"
+      : estadoImp.proveedor_tipo === "THE_FACTORY_HKA"
+        ? "The Factory HKA Venezuela"
+        : "Imprenta Digital");
   const ambTxt = estadoImp.ambiente === "PRODUCCION" ? "Producción" : "Calidad / Pruebas";
   const ambClase = estadoImp.ambiente === "PRODUCCION" ? "verde" : "morado";
 
@@ -102,11 +110,11 @@ export function renderVisorImprentaHtml(estadoImp, opts = {}) {
     <small class="suave" style="display:block;margin-top:6px">
       ${esc(res.mensaje_alerta)}
       <br>Desglose retornado: <b>${res.facturas_ok}</b> Facturas · <b>${res.nc_ok}</b> N. Crédito · <b>${res.nd_ok}</b> N. Débito · <b>${res.anuladas_ok}</b> Anuladas${res.plan_consumo_previo > 0 ? ` · <b>${res.plan_consumo_previo}</b> consumo previo` : ""}.
-      ${conc ? `<br>Última conciliación CG (${esc(fechaDoc(conc.en))}): <b>${conc.total_cg}</b> en servidor CG vs <b>${conc.total_local}</b> en FacturaYa${conc.recuperados ? ` · <b>${conc.recuperados}</b> recuperado(s)` : ""}.` : ""}
+      ${conc ? `<br>Última conciliación Imprenta (${esc(fechaDoc(conc.en))}): <b>${conc.total_cg}</b> en servidor vs <b>${conc.total_local}</b> en FacturaYa${conc.recuperados ? ` · <b>${conc.recuperados}</b> recuperado(s)` : ""}.` : ""}
     </small>
     <div class="imp-acciones">
-      <button type="button" class="boton chico contorno-azul" id="imp-probar-btn" ${estadoImp.configurado ? "" : "disabled"}>🔌 Probar conexión CG</button>
-      <button type="button" class="boton chico contorno-azul" id="imp-conciliar-btn" ${estadoImp.configurado && estadoImp.proveedor_tipo === "CG_IMPRENTA" ? "" : "disabled"}>🔄 Conciliar con CG</button>
+      <button type="button" class="boton chico contorno-azul" id="imp-probar-btn" ${estadoImp.configurado ? "" : "disabled"}>🔌 Probar conexión</button>
+      <button type="button" class="boton chico contorno-azul" id="imp-conciliar-btn" ${estadoImp.configurado && (estadoImp.proveedor_tipo === "CG_IMPRENTA" || estadoImp.proveedor_tipo === "THE_FACTORY_HKA") ? "" : "disabled"}>🔄 Conciliar con Imprenta</button>
       <button type="button" class="boton chico verde" id="imp-abrir-recarga-btn">➕ Cargar recarga / lote</button>
     </div>
     <p class="suave" id="imp-acc-msg" hidden style="margin:8px 0 0"></p>
@@ -131,16 +139,17 @@ export function renderVisorImprentaHtml(estadoImp, opts = {}) {
       <div style="margin-top:6px">${envios.slice(0, 8).map((e) => {
         const pdf = urlSeguraHttps(e.pdf_url);
         const estCl = e.estado === "ENVIADO_OK" ? "verde" : e.estado === "ANULADO_OK" ? "gris" : "rojo";
-        const estLbl = e.estado === "ENVIADO_OK" ? "Retornado OK" : e.estado === "ANULADO_OK" ? "Anulado CG" : "Pendiente";
+        const estLbl = e.estado === "ENVIADO_OK" ? "Retornado OK" : e.estado === "ANULADO_OK" ? "Anulado Imprenta" : "Pendiente";
+        const fhAsig = e.fecha_asignacion ? ` · Asignado: ${esc(e.fecha_asignacion)}${e.hora_asignacion ? ` ${esc(e.hora_asignacion)}` : ""}` : "";
         return `<div class="reng" style="padding:8px 10px">
           <div class="reng-cab">
             <span><a href="#/factura/${e.documento_id}"><b>${esc(e.tipo_documento)} ${esc(e.numero_documento)}</b></a>${e.cliente_nombre ? ` · ${esc(e.cliente_nombre)}` : ""}</span>
             <span class="insignia ${estCl}">${estLbl}</span>
           </div>
           <small class="suave">
-            ${e.control_fiscal ? `Control: <code>${esc(e.control_fiscal)}</code>` : "Sin N.º de control aún"}
+            ${e.control_fiscal ? `Control: <code>${esc(e.control_fiscal)}</code>` : "Sin N.º de control aún"}${fhAsig}
             · Intentos: ${e.intentos || 1}
-            ${pdf ? ` · <a href="${esc(pdf)}" target="_blank" rel="noopener noreferrer">🏛️ PDF oficial CG</a>` : ""}
+            ${pdf ? ` · <a href="${esc(pdf)}" target="_blank" rel="noopener noreferrer">🏛️ PDF oficial Imprenta</a>` : ""}
             ${e.ultimo_error ? `<br><span class="rojo-txt">Error: ${esc(e.ultimo_error)}</span>` : ""}
           </small>
         </div>`;
@@ -163,7 +172,10 @@ export async function enlazarMedio(alCambiar) {
   const { medio, historial, imprenta, imprenta_estado } = await api("sistema/medio");
   if (!$("#medio-zona")) return;
   const otro = medio === "APP_SENIAT" ? "IMPRENTA_DIGITAL" : medio === "IMPRENTA_DIGITAL" ? "APP_SENIAT" : null;
-  const esCg = (imprenta.proveedor_tipo || "CG_IMPRENTA") === "CG_IMPRENTA";
+  const provTipoActual = imprenta.proveedor_tipo || "CG_IMPRENTA";
+  const esCg = provTipoActual === "CG_IMPRENTA";
+  const esTfhka = provTipoActual === "THE_FACTORY_HKA";
+  const esOficial = esCg || esTfhka;
 
   zona.innerHTML = `<h2>🧾 Modalidad Digital (SNAT/2024/000102)</h2>
     <p><span class="etiqueta">MODALIDAD ACTIVA</span><br><strong id="medio-actual">${esc(NOMBRE_MEDIO[medio] ?? medio)}</strong></p>
@@ -179,24 +191,29 @@ export async function enlazarMedio(alCambiar) {
     ${medio === "IMPRENTA_DIGITAL" ? `<hr>
       ${renderVisorImprentaHtml(imprenta_estado)}
       <hr><h3>🌐 Configuración API y Plan · Imprenta Digital Autorizada</h3>
-      <p class="suave"><b>Conector oficial CG La Imprenta Digital (SNAT/INTI/012)</b> y proveedores compatibles. El Súper Admin o el Administrador del negocio pueden cargar las credenciales API, el lote contratado y la fecha pagada. La contraseña y el token JWT se guardan cifrados con AES-256-GCM.</p>
+      <p class="suave"><b>Conectores oficiales:</b> <b>CG La Imprenta Digital (SNAT/INTI/012)</b> y <b>The Factory HKA Venezuela (Emisión v2)</b>, además de proveedores compatibles. La contraseña y el token JWT se guardan cifrados con AES-256-GCM. En modalidad Imprenta Digital los números de control se obtienen exclusivamente desde la API (sin edición manual, conforme a SNAT/2024/000102).</p>
       <form id="imp-form">
         <label for="imp_proveedor_tipo">Conector / Imprenta Digital</label>
         <select id="imp_proveedor_tipo" name="imp_proveedor_tipo">
           <option value="CG_IMPRENTA" ${esCg ? "selected" : ""}>🏛️ CG La Imprenta Digital (Oficial · SNAT/INTI/012)</option>
-          <option value="GENERICO" ${!esCg ? "selected" : ""}>🌐 Otro proveedor autorizado (API genérica)</option>
+          <option value="THE_FACTORY_HKA" ${esTfhka ? "selected" : ""}>🏭 The Factory HKA Venezuela (Oficial · Emisión v2)</option>
+          <option value="GENERICO" ${!esOficial ? "selected" : ""}>🌐 Otro proveedor autorizado (API genérica)</option>
         </select>
         <label for="imp_ambiente">Ambiente</label>
         <select id="imp_ambiente" name="imp_ambiente">
-          <option value="PRUEBAS" ${imprenta.ambiente === "PRUEBAS" ? "selected" : ""}>🧪 Calidad / Pruebas (Sandbox)</option>
+          <option value="PRUEBAS" ${imprenta.ambiente === "PRUEBAS" ? "selected" : ""}>🧪 Calidad / Pruebas (Sandbox / Demo)</option>
           <option value="PRODUCCION" ${imprenta.ambiente === "PRODUCCION" ? "selected" : ""}>🟢 Producción (Fiscal en vivo)</option>
         </select>
-        ${campo("imp_proveedor", "Nombre del proveedor", imprenta.proveedor || (esCg ? "CG La Imprenta Digital" : ""), "text", 'required maxlength="60" autocomplete="off" placeholder="Ej: CG La Imprenta Digital"')}
-        ${campo("imp_url", "URL base de la API (https://…)", imprenta.url || (esCg && imprenta.ambiente !== "PRODUCCION" ? HOST_CG_CALIDAD : ""), "url", 'required maxlength="200" autocomplete="off" placeholder="https://calidad.cgimprenta.digital/ o URL de Producción CG"')}
+        ${campo("imp_proveedor", "Nombre del proveedor", imprenta.proveedor || (esCg ? "CG La Imprenta Digital" : esTfhka ? "The Factory HKA Venezuela" : ""), "text", 'required maxlength="60" autocomplete="off" placeholder="Ej: The Factory HKA Venezuela o CG La Imprenta Digital"')}
+        ${campo("imp_url", "URL base de la API (https://…)", imprenta.url || (esCg && imprenta.ambiente !== "PRODUCCION" ? HOST_CG_CALIDAD : esTfhka ? (imprenta.ambiente === "PRODUCCION" ? HOST_TFHKA_PROD : HOST_TFHKA_DEMO) : ""), "url", 'required maxlength="200" autocomplete="off" placeholder="https://demoemisionv2.thefactoryhka.com.ve/ o https://calidad.cgimprenta.digital/"')}
         <small class="error" id="imp-url-aviso" hidden style="display:block;margin:-6px 0 8px"></small>
-        ${campo("imp_usuario", esCg ? "Correo / Usuario API CG" : "Usuario o RIF", imprenta.usuario, "text", `${esCg ? "required " : ""}maxlength="100" autocomplete="off" placeholder="usuario@empresa.com"`)}
-        ${campo("imp_clave", imprenta.clave_configurada ? `Contraseña API / Token (••••${esc(imprenta.clave_final)}; vacío para conservar)` : (esCg ? "Contraseña API CG" : "Token / API Key"), "", "password", `maxlength="200" autocomplete="new-password"${imprenta.clave_configurada ? "" : " required"}`)}
-        ${campo("imp_serie", "Serie de facturación CG (ej: A)", imprenta.serie || "A", "text", 'maxlength="5" autocomplete="off" placeholder="A"')}
+        ${campo("imp_usuario", esTfhka ? "Usuario API The Factory HKA" : esCg ? "Correo / Usuario API CG" : "Usuario o RIF", imprenta.usuario, "text", `${esOficial ? "required " : ""}maxlength="100" autocomplete="off" placeholder="usuario@empresa.com"`)}
+        ${campo("imp_clave", imprenta.clave_configurada ? `Contraseña API / Token (••••${esc(imprenta.clave_final)}; vacío para conservar)` : (esTfhka ? "Clave API The Factory HKA" : esCg ? "Contraseña API CG" : "Token / API Key"), "", "password", `maxlength="200" autocomplete="new-password"${imprenta.clave_configurada ? "" : " required"}`)}
+        ${campo("imp_serie", esTfhka ? "Serie (opcional en HKA; dejar vacío si no usas serie)" : "Serie de facturación (ej: A)", esTfhka ? (imprenta.serie || "") : (imprenta.serie || "A"), "text", `maxlength="10" autocomplete="off" placeholder="${esTfhka ? "(vacío)" : "A"}"`)}
+        <div id="imp-tfhka-extra" ${esTfhka ? "" : "hidden"}>
+          ${campo("imp_sucursal", "Sucursal The Factory HKA (ej: 0001)", imprenta.sucursal || "0001", "text", 'maxlength="10" autocomplete="off" placeholder="0001"')}
+          <label class="opcion"><input type="checkbox" id="imp_reservar_previo" ${imprenta.reservar_previo ? "checked" : ""}> 📋 Reservar numeración previa (<code>AsignarNumeraciones</code>) antes de emitir en The Factory HKA</label>
+        </div>
 
         <hr><span class="etiqueta">📦 PLAN CONTRATADO Y FECHA PAGADA (VISOR DEL CLIENTE)</span>
         <div class="chips" style="margin:6px 0 8px">
@@ -218,10 +235,13 @@ export async function enlazarMedio(alCambiar) {
   $("#imp-confirmo")?.addEventListener("change", () => { $("#imp-ir").disabled = !$("#imp-confirmo").checked; });
   $("#rec-confirmo")?.addEventListener("change", () => { $("#rec-ir").disabled = !$("#rec-confirmo").checked; });
 
-  // Autocompletado inteligente al elegir CG Imprenta Digital o cambiar ambiente (compatible con cualquier URL CG)
+  // Autocompletado inteligente al elegir CG Imprenta Digital o The Factory HKA y cambiar ambiente
   const selTipo = $("#imp_proveedor_tipo");
   const selAmb = $("#imp_ambiente");
   const inpUrl = $("#imp_url");
+  const inpProv = $("#imp_proveedor");
+  const inpSerie = $("#imp_serie");
+  const boxTfhka = $("#imp-tfhka-extra");
   const urlAviso = $("#imp-url-aviso");
   const validarAvisoUrlAmbiente = () => {
     if (!urlAviso || !selTipo || !selAmb || !inpUrl) return;
@@ -229,23 +249,37 @@ export async function enlazarMedio(alCambiar) {
     if (selTipo.value === "CG_IMPRENTA" && selAmb.value === "PRODUCCION" && u.includes("calidad.cgimprenta.digital")) {
       urlAviso.textContent = "⚠️ Seleccionaste Producción, pero la URL todavía apunta a Calidad (Pruebas). Pega la URL de Producción entregada por CG para este cliente.";
       urlAviso.hidden = false;
+    } else if (selTipo.value === "THE_FACTORY_HKA" && selAmb.value === "PRODUCCION" && u.includes("demoemisionv2.thefactoryhka.com.ve")) {
+      urlAviso.textContent = "⚠️ Seleccionaste Producción, pero la URL todavía apunta a Demo. Usa https://emisionv2.thefactoryhka.com.ve/ cuando pases a Producción.";
+      urlAviso.hidden = false;
     } else {
       urlAviso.textContent = "";
       urlAviso.hidden = true;
     }
   };
-  const aplicarPresetCg = () => {
+  const aplicarPresetImprenta = (cambioTipo = false) => {
     if (!selTipo) return;
-    if (selTipo.value === "CG_IMPRENTA") {
-      if (!$("#imp_proveedor").value.trim()) $("#imp_proveedor").value = "CG La Imprenta Digital";
-      if (selAmb?.value === "PRUEBAS" && (!inpUrl.value.trim() || /miimprenta/i.test(inpUrl.value))) {
+    const tipo = selTipo.value;
+    if (boxTfhka) boxTfhka.hidden = tipo !== "THE_FACTORY_HKA";
+    if (tipo === "CG_IMPRENTA") {
+      if (cambioTipo || !inpProv.value.trim() || /the\s*factory/i.test(inpProv.value)) inpProv.value = "CG La Imprenta Digital";
+      if (selAmb?.value === "PRUEBAS" && (!inpUrl.value.trim() || /thefactoryhka|miimprenta/i.test(inpUrl.value))) {
         inpUrl.value = HOST_CG_CALIDAD;
       }
+      if (cambioTipo && !inpSerie.value.trim()) inpSerie.value = "A";
+    } else if (tipo === "THE_FACTORY_HKA") {
+      if (cambioTipo || !inpProv.value.trim() || /cg\s*(la\s*)?imprenta/i.test(inpProv.value)) inpProv.value = "The Factory HKA Venezuela";
+      const urlAct = inpUrl.value.trim();
+      const esUrlConocida = !urlAct || /cgimprenta|thefactoryhka|miimprenta/i.test(urlAct);
+      if (esUrlConocida) {
+        inpUrl.value = selAmb?.value === "PRODUCCION" ? HOST_TFHKA_PROD : HOST_TFHKA_DEMO;
+      }
+      if (cambioTipo && inpSerie.value.trim().toUpperCase() === "A") inpSerie.value = "";
     }
     validarAvisoUrlAmbiente();
   };
-  selTipo?.addEventListener("change", aplicarPresetCg);
-  selAmb?.addEventListener("change", aplicarPresetCg);
+  selTipo?.addEventListener("change", () => aplicarPresetImprenta(true));
+  selAmb?.addEventListener("change", () => aplicarPresetImprenta(false));
   inpUrl?.addEventListener("input", validarAvisoUrlAmbiente);
   validarAvisoUrlAmbiente();
 
@@ -275,11 +309,11 @@ export async function enlazarMedio(alCambiar) {
   $("#imp-probar-btn")?.addEventListener("click", async () => {
     const b = $("#imp-probar-btn");
     b.disabled = true;
-    mostrarMsg("Conectando con CG La Imprenta Digital…");
+    mostrarMsg("Conectando con tu Imprenta Digital…");
     try {
       const r = await api("sistema/imprenta/probar", "POST", {});
       mostrarMsg(`✅ ${r.mensaje || "Conexión verificada correctamente."}`);
-      aviso("Conexión con CG Imprenta Digital OK ✅");
+      aviso("Conexión con Imprenta Digital OK ✅");
     } catch (e) {
       mostrarMsg(`⚠️ ${e.message}`, true);
     } finally {
@@ -289,11 +323,11 @@ export async function enlazarMedio(alCambiar) {
   $("#imp-conciliar-btn")?.addEventListener("click", async () => {
     const b = $("#imp-conciliar-btn");
     b.disabled = true;
-    mostrarMsg("Consultando documentos emitidos en CG La Imprenta Digital…");
+    mostrarMsg("Consultando documentos emitidos en tu Imprenta Digital…");
     try {
       const r = await api("sistema/imprenta/conciliar", "POST", {});
       const c = r.conciliacion || {};
-      aviso(`Conciliación CG lista: ${c.total_cg ?? 0} en CG · ${c.total_local ?? 0} en FacturaYa${c.recuperados ? ` · ${c.recuperados} recuperado(s)` : ""} ✅`);
+      aviso(`Conciliación lista: ${c.total_cg ?? 0} en servidor · ${c.total_local ?? 0} en FacturaYa${c.recuperados ? ` · ${c.recuperados} recuperado(s)` : ""} ✅`);
       await enlazarMedio(alCambiar);
     } catch (e) {
       mostrarMsg(`⚠️ ${e.message}`, true);
@@ -336,6 +370,8 @@ export async function enlazarMedio(alCambiar) {
         clave: d.imp_clave,
         ambiente: d.imp_ambiente,
         serie: d.imp_serie,
+        sucursal: d.imp_sucursal || "0001",
+        reservar_previo: Boolean($("#imp_reservar_previo")?.checked),
         plan_nombre: d.imp_plan_nombre,
         plan_cupo_total: d.imp_plan_cupo_total === "" ? undefined : Number(d.imp_plan_cupo_total),
         plan_fecha_pago: d.imp_plan_fecha_pago,

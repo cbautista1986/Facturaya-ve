@@ -16,7 +16,8 @@ import {
   type FilaCobroSaas,
 } from "../suscripciones";
 import { cifrarSecreto, exigirLlaveMaestra } from "../cifrado";
-import { normalizarHostCg, PROVEEDOR_CG, PROVEEDOR_GENERICO, validarUrlImprentaSegura, type TipoProveedorImprenta } from "../imprenta-cg";
+import { normalizarHostCg, PROVEEDOR_CG, PROVEEDOR_GENERICO, PROVEEDOR_TFHKA, validarUrlImprentaSegura, type TipoProveedorImprenta } from "../imprenta-cg";
+import { normalizarHostTfhka } from "../imprenta-tfhka";
 import {
   consultarDesplieguesYBuilds,
   consultarEstadoCloudflare,
@@ -325,19 +326,36 @@ inquilinos.post("/", async (c) => {
     return falla(c, 400, "El correo remitente de la API de Brevo/Resend no es válido.");
   }
 
-  const imprenta_prov_tipo_raw = texto(b.imprenta_proveedor_tipo, 20).toUpperCase();
+  const imprenta_prov_tipo_raw = texto(b.imprenta_proveedor_tipo, 24).toUpperCase();
   const imprenta_proveedor_raw = texto(b.imprenta_proveedor, 60);
   const imprenta_url_raw = texto(b.imprenta_url, 200);
   const imprenta_proveedor_tipo: TipoProveedorImprenta =
     imprenta_prov_tipo_raw === PROVEEDOR_CG ||
     (!imprenta_prov_tipo_raw && /cg\s*imprenta|cgimprenta\.digital/i.test(`${imprenta_proveedor_raw} ${imprenta_url_raw}`))
       ? PROVEEDOR_CG
-      : PROVEEDOR_GENERICO;
-  const imprenta_proveedor = imprenta_proveedor_raw || (imprenta_proveedor_tipo === PROVEEDOR_CG ? "CG La Imprenta Digital" : "");
+      : imprenta_prov_tipo_raw === PROVEEDOR_TFHKA ||
+          (!imprenta_prov_tipo_raw && /thefactoryhka\.com\.ve/i.test(imprenta_url_raw))
+        ? PROVEEDOR_TFHKA
+        : PROVEEDOR_GENERICO;
+  const imprenta_proveedor =
+    imprenta_proveedor_raw ||
+    (imprenta_proveedor_tipo === PROVEEDOR_CG
+      ? "CG La Imprenta Digital"
+      : imprenta_proveedor_tipo === PROVEEDOR_TFHKA
+        ? "The Factory HKA Venezuela"
+        : "");
   const imprenta_usuario = texto(b.imprenta_usuario, 100);
   const imprenta_clave = texto(b.imprenta_clave, 200);
   const imprenta_ambiente = texto(b.imprenta_ambiente, 12).toUpperCase() === "PRODUCCION" ? "PRODUCCION" : "PRUEBAS";
-  const imprenta_serie = (texto(b.imprenta_serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
+  const imprenta_serie =
+    imprenta_proveedor_tipo === PROVEEDOR_TFHKA
+      ? texto(b.imprenta_serie, 10).toUpperCase().replace(/[^A-Z0-9_-]/g, "")
+      : (texto(b.imprenta_serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
+  const imprenta_sucursal = (texto(b.imprenta_sucursal, 10) || "0001").replace(/[^A-Za-z0-9_-]/g, "") || "0001";
+  const imprenta_reservar_previo =
+    b.imprenta_reservar_previo === true || b.imprenta_reservar_previo === 1 || b.imprenta_reservar_previo === "1" || b.imprenta_reservar_previo === "on"
+      ? "1"
+      : "0";
   const imprenta_plan_nombre = texto(b.imprenta_plan_nombre, 80);
   const imprenta_plan_cupo = b.imprenta_plan_cupo_total !== undefined && b.imprenta_plan_cupo_total !== "" ? Math.trunc(Number(b.imprenta_plan_cupo_total)) : 0;
   const imprenta_plan_fecha_pago = texto(b.imprenta_plan_fecha_pago, 10);
@@ -346,7 +364,12 @@ inquilinos.post("/", async (c) => {
   if (imprenta_url_raw) {
     const valImpUrl = validarUrlImprentaSegura(imprenta_url_raw);
     if (!valImpUrl.ok) return falla(c, 400, valImpUrl.error);
-    imprenta_url = imprenta_proveedor_tipo === PROVEEDOR_CG ? normalizarHostCg(valImpUrl.url) : valImpUrl.url;
+    imprenta_url =
+      imprenta_proveedor_tipo === PROVEEDOR_CG
+        ? normalizarHostCg(valImpUrl.url)
+        : imprenta_proveedor_tipo === PROVEEDOR_TFHKA
+          ? normalizarHostTfhka(valImpUrl.url)
+          : valImpUrl.url;
   }
   if (!Number.isFinite(imprenta_plan_cupo) || imprenta_plan_cupo < 0 || imprenta_plan_cupo > 10_000_000) {
     return falla(c, 400, "El cupo inicial de números de control debe ser un entero mayor o igual a 0.");
@@ -541,6 +564,8 @@ inquilinos.post("/", async (c) => {
       ["imprenta_clave", claveImpCifrada],
       ["imprenta_ambiente", imprenta_ambiente],
       ["imprenta_serie", imprenta_serie],
+      ["imprenta_sucursal", imprenta_sucursal],
+      ["imprenta_reservar_previo", imprenta_reservar_previo],
     ];
     if (imprenta_plan_cupo > 0) {
       paresImp.push(

@@ -817,6 +817,18 @@ export const MIGRACIONES: Migracion[] = [
       `CREATE INDEX IF NOT EXISTS idx_imprenta_recargas_fecha ON imprenta_plan_recargas(fecha_pago)`,
     ],
   },
+  // 0022: Imprenta Digital v5.2 (The Factory HKA Emisión v2 + Sello Legal Inmutable SNAT/2024/000102):
+  // - Agrega metadatos legales inmutables devueltos por la Imprenta Digital (fecha/hora exacta de asignación,
+  //   razón social/RIF y autorización SENIAT de la imprenta) en `imprenta_envios`.
+  {
+    id: "0022_imprenta_legal_tfhka_v5_2",
+    sql: [
+      `ALTER TABLE imprenta_envios ADD COLUMN fecha_asignacion TEXT DEFAULT NULL`,
+      `ALTER TABLE imprenta_envios ADD COLUMN hora_asignacion TEXT DEFAULT NULL`,
+      `ALTER TABLE imprenta_envios ADD COLUMN imprenta_razon_social TEXT DEFAULT NULL`,
+      `ALTER TABLE imprenta_envios ADD COLUMN imprenta_autorizacion TEXT DEFAULT NULL`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

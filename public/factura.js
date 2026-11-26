@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261125v514";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261125v514";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261126v520";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261126v520";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -404,13 +404,15 @@ async function ver(estado, id) {
       : (tienePagosVigentes ? "Este presupuesto tiene abonos registrados: anula primero los abonos si deseas anularlo." : null);
   const puedeAnularDirecto = D.estado === "EMITIDO" && puede("anular") && !bloqueoAnularFactura;
 
+  const esImprentaSellada = esImprenta && D.modo === "REAL" && Boolean(D.control_fiscal);
+  const provEtiqueta = impEnv?.proveedor || (impEnv?.proveedor_tipo === "THE_FACTORY_HKA" ? "The Factory HKA Venezuela" : "Imprenta Digital");
   const botones = D.estado === "BORRADOR"
     ? [["editar", "✏️ Editar", ""], ["emitir", `EMITIR ${nom.toUpperCase()}`, "verde"], ["borrar", "Eliminar borrador", "contorno"]]
-    : [["pdf", "📄 Descargar PDF", ""], ["compartir", "📤 Compartir PDF", "verde"],
-      ["correo", "✉️ Enviar por correo al cliente", "contorno-azul"],
+    : [
+      ...(!imprentaPendiente ? [["pdf", "📄 Descargar PDF", ""], ["compartir", "📤 Compartir PDF", "verde"], ["correo", "✉️ Enviar por correo al cliente", "contorno-azul"]] : []),
       ...(esAppSeniat ? [["clonar_seniat", "📋 Copiar resumen fiscal SENIAT", "contorno-azul"]] : []),
       ...(D.tipo === "FACTURA" && D.estado === "EMITIDO" && !esNc && saldo_usd > 0 ? [["pagar", "💵 Registrar pago", "verde"]] : []),
-      ["whatsapp", "💬 Enviar por WhatsApp", ""],
+      ...(!imprentaPendiente ? [["whatsapp", "💬 Enviar por WhatsApp", ""]] : []),
       ...(D.tipo === "PRESUPUESTO" && D.estado === "EMITIDO" ? [["convertir", "🧾 Convertir en factura", "verde"]] : []),
       ...(!esNc && !esNd ? [["copiar", "📑 Copiar como borrador nuevo", "contorno-azul"]] : []),
       ...(tieneDisponibleDevolver && puede("anular") ? [["devolver", "↩️ Devolver (Nota de crédito SENIAT)", "morado"]] : []),
@@ -421,6 +423,7 @@ async function ver(estado, id) {
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver a la lista" aria-label="Volver">←</button>
       <h1>${esc(titulo)} ${emitido ? esc(numeroDoc(D)) : "(borrador)"}</h1><span class="insignia ${estColor}">${estTxt}</span></header>
     ${D.modo === "PRACTICA" ? bannerPractica({ modo: "PRACTICA" }) : ""}
+    ${imprentaPendiente ? `<section class="aviso-control" id="aviso-imprenta-pendiente">⏳ <b>PENDIENTE DE IMPRENTA DIGITAL (SNAT/2024/000102):</b> Este documento aún no tiene N.º de Control oficial asignado por tu Imprenta Digital. Por normativa legal, la descarga y envío al cliente están bloqueados hasta obtener el sello digital (usa <b>Reintentar</b> abajo o <b>Conciliar</b> en Ajustes).</section>` : ""}
     ${docEsFormal && D.tipo === "FACTURA" ? `<section class="aviso-control">🩺 <b>CONTRIBUYENTE FORMAL · SIN DERECHO A CRÉDITO FISCAL</b> (Providencia SENIAT SNAT/2011/0071).</section>` : ""}
     ${D.estado === "ANULADO" ? `<section class="aviso-anulado">⛔ ANULADO el ${fechaDoc(D.anulado_en)} · Motivo: ${esc(D.motivo_anulacion)}</section>` : ""}
     ${esNc || esNd ? `<section class="tarjeta"><span class="etiqueta">${esNd ? "📈 FACTURA AFECTADA POR NOTA DE DÉBITO (SENIAT)" : "↩️ FACTURA AFECTADA (NORMATIVA SENIAT)"}</span>
@@ -434,11 +437,18 @@ async function ver(estado, id) {
       ${emitido ? `<div class="tot"><span>Fecha de emisión</span><b>${fechaDoc(D.fecha_emision)}</b></div>` : ""}
       ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>${esc(nroControlEtiqueta)}</b></div>
         <div class="tot"><span>Modalidad digital</span><b>${esImprenta ? "🌐 Imprenta Digital (SNAT/2024/000102)" : "📱 Sistema Digital SENIAT (SNAT/2024/000102)"}</b></div>` : ""}
-      ${impEnv ? `<div class="tot"><span>Estado Imprenta (${esc(impEnv.proveedor || "CG")})</span><b><span class="insignia ${impEnv.estado === "ENVIADO_OK" ? "verde" : impEnv.estado === "ANULADO_OK" ? "gris" : "rojo"}">${impEnv.estado === "ENVIADO_OK" ? "✅ Retornado OK" : impEnv.estado === "ANULADO_OK" ? "⛔ Anulado en CG" : "⏳ Pendiente"}</span></b></div>` : ""}
-      ${pdfOficialCg ? `<div style="margin-top:8px"><a class="boton chico morado" href="${esc(pdfOficialCg)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ Ver PDF oficial firmado (${esc(impEnv?.proveedor || "CG Imprenta")})</a></div>` : ""}
+      ${impEnv ? `<div class="tot"><span>Estado Imprenta (${esc(provEtiqueta)})</span><b><span class="insignia ${impEnv.estado === "ENVIADO_OK" ? "verde" : impEnv.estado === "ANULADO_OK" ? "gris" : "rojo"}">${impEnv.estado === "ENVIADO_OK" ? "✅ Retornado OK" : impEnv.estado === "ANULADO_OK" ? "⛔ Anulado en Imprenta" : "⏳ Pendiente"}</span></b></div>` : ""}
+      ${pdfOficialCg ? `<div style="margin-top:8px"><a class="boton chico morado" href="${esc(pdfOficialCg)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ Ver PDF oficial firmado (${esc(provEtiqueta)})</a></div>` : ""}
       ${impEnv?.ultimo_error && !D.control_fiscal ? `<p class="error" style="margin:6px 0 0">Último error imprenta: ${esc(impEnv.ultimo_error)}</p>` : ""}
       ${emitido ? `<div class="tot"><span>Tasa BCV (Art. 128 Ley BCV)</span><b>Bs. ${bs(D.tasa_e8 / 1e8)}</b></div>` : ""}
     </section>
+    ${esImprentaSellada ? `<section class="tarjeta" id="sello-legal-imprenta">
+      <span class="etiqueta">🏛️ SELLO LEGAL INMUTABLE · IMPRENTA DIGITAL (SNAT/2024/000102)</span>
+      <div class="tot"><span>Imprenta Digital Autorizada</span><b>${esc(impEnv?.imprenta_razon_social || provEtiqueta)}</b></div>
+      <div class="tot"><span>N.º de Control Fiscal</span><b><code>${esc(D.control_fiscal)}</code></b></div>
+      ${impEnv?.fecha_asignacion ? `<div class="tot"><span>Fecha y hora de asignación</span><b>${esc(impEnv.fecha_asignacion)}${impEnv.hora_asignacion ? ` · ${esc(impEnv.hora_asignacion)}` : ""}</b></div>` : ""}
+      <small class="suave" style="display:block;margin-top:6px">${esc(impEnv?.imprenta_autorizacion || "Imprenta Digital Autorizada por el SENIAT · Providencia SNAT/2024/000102")}. Datos fiscales certificados e inmutables.</small>
+    </section>` : ""}
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span>${lineas.map((l) => `<div class="reng-ver"><div><b>${esc(l.descripcion)}</b><br><small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.precio_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : "Exento"}${l.devuelto_milli > 0 ? ` · ↩️ Devuelto: ${cantidadTexto(l.devuelto_milli)}` : ""}</small></div><b>${usd(l.monto_usd)}</b></div>`).join("")}</section>
     <section class="tarjeta"><span class="etiqueta">💰 TOTALES</span>
       ${emitido ? impuestos.map((i) => i.alicuota_cent === 0 ? `<div class="tot"><span>Monto exento</span><b>${usd(i.base_usd)} · Bs. ${bs(i.base_bs / 100)}</b></div>`
@@ -449,12 +459,18 @@ async function ver(estado, id) {
       ${emitido ? `<div class="tot"><span>Total en Bs.</span><b>Bs. ${bs(D.total_bs / 100)}</b></div>` : `<small class="suave">Los montos en Bs. se fijan al emitir a la tasa BCV vigente.</small>`}
       ${D.costo_total_usd ? `<small class="ganancia-txt">🔒 Ganancia: ${usd(D.subtotal_usd - D.costo_total_usd)} (solo la ves tú)</small>` : ""}</section>
     ${pideFiscal ? `<section class="tarjeta"><span class="etiqueta">🔢 ${esAppSeniat ? "CONTROL INTERNO Y N.º FISCAL SENIAT (SNAT/2024/000102)" : "N.º DE CONTROL FISCAL (IMPRENTA DIGITAL)"}</span>
-      <p class="suave">${esAppSeniat
-        ? `Control interno asignado: <b>${esc(nroControlMostrar)}</b>. Usa este documento como control interno inmediato y copia el resumen fiscal en la App del SENIAT; cuando el SENIAT te emita el comprobante oficial, registra aquí el N.º de Control definitivo:`
-        : `Correlativo interno: <b>${esc(nroControlMostrar)}</b>. Aún no se ha registrado el N.º de Control definitivo de la Imprenta Digital.`}</p>
-      ${esImprenta && D.modo === "REAL" ? `<button type="button" class="boton chico" id="reintentar-imprenta" style="margin-bottom:10px">🔄 Reintentar / Recuperar N.º de Control en CG</button>` : ""}
-      <form id="fiscal-form">${campo("numero", "N.º de Control definitivo", nroControlMostrar, "text", 'required maxlength="30" autocomplete="off"')}
-        ${ERROR}<button class="boton chico" type="submit">GUARDAR N.º DE CONTROL</button></form></section>` : ""}
+      ${imprentaPendiente
+        ? `<p class="suave">Correlativo interno: <b>${esc(nroControlMostrar)}</b>. Por normativa <b>SNAT/2024/000102</b>, en modalidad Imprenta Digital el N.º de Control <b>no se escribe ni edita manualmente</b>: se obtiene exclusivamente desde la API de tu Imprenta Digital.</p>
+           <div class="dos-botones">
+             <button type="button" class="boton chico verde" id="reintentar-imprenta">🔄 Reintentar / Recuperar N.º de Control</button>
+             <a class="boton chico contorno-azul" href="#/ajustes" style="text-align:center;text-decoration:none">⚙️ Ir a Conciliar en Ajustes</a>
+           </div>`
+        : `<p class="suave">${esAppSeniat
+            ? `Control interno asignado: <b>${esc(nroControlMostrar)}</b>. Usa este documento como control interno inmediato y copia el resumen fiscal en la App del SENIAT; cuando el SENIAT te emita el comprobante oficial, registra aquí el N.º de Control definitivo:`
+            : `Correlativo interno: <b>${esc(nroControlMostrar)}</b>. Registra un N.º de Control de prueba:`}</p>
+           <form id="fiscal-form">${campo("numero", "N.º de Control definitivo", nroControlMostrar, "text", 'required maxlength="30" autocomplete="off"')}
+             ${ERROR}<button class="boton chico" type="submit">GUARDAR N.º DE CONTROL</button></form>`}
+    </section>` : ""}
     ${emitido && !esNc && (D.tipo === "FACTURA" || pagos.length > 0) ? seccionPagos(D, pagos, notas_credito, notas_debito, pagado_usd, acreditado_nc_usd, saldo_usd) : ""}
     ${D.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(D.nota)}</p></section>` : ""}
     ${D.estado === "EMITIDO" && puede("anular") && bloqueoAnularFactura ? `<section class="tarjeta" id="aviso-proteccion-fiscal">
@@ -520,7 +536,7 @@ async function ver(estado, id) {
   $("#atras").addEventListener("click", () => (location.hash = "#/factura"));
   const pedir = async (fn) => { try { await fn(); } catch (e) { const er = $("#error"); er.textContent = e.message; er.hidden = false; } };
   const esDemo = Boolean(estado?.demo?.activo);
-  const bytesPdf = async () => await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, negocio: estado.negocio, esDemo });
+  const bytesPdf = async () => await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, imprenta_envio: impEnv, negocio: estado.negocio, esDemo });
   const blobPdf = async () => new Blob([await bytesPdf()], { type: "application/pdf" });
   const tasaNc = tasaInfo(estado).e8 || D.tasa_e8;
   const recalcularNc = () => {
@@ -579,9 +595,16 @@ async function ver(estado, id) {
       await ver(estado, id);
     }),
     borrar: () => pedir(async () => { if (!confirm("¿Eliminar este borrador?")) return; await api(`documentos/${id}`, "DELETE"); aviso("Borrador eliminado"); location.hash = "#/factura"; }),
-    pdf: () => pedir(async () => descargar(await blobPdf(), nombreArchivo(D, esDemo))),
-    compartir: () => pedir(async () => compartir(await blobPdf(), nombreArchivo(D, esDemo))),
+    pdf: () => pedir(async () => {
+      if (imprentaPendiente) throw new Error("Este documento requiere primero el N.º de Control oficial de la Imprenta Digital.");
+      descargar(await blobPdf(), nombreArchivo(D, esDemo));
+    }),
+    compartir: () => pedir(async () => {
+      if (imprentaPendiente) throw new Error("Este documento requiere primero el N.º de Control oficial de la Imprenta Digital.");
+      compartir(await blobPdf(), nombreArchivo(D, esDemo));
+    }),
     correo: () => {
+      if (imprentaPendiente) { aviso("Obtén primero el N.º de Control oficial de la Imprenta Digital."); return; }
       $("#correo-form").hidden = !$("#correo-form").hidden;
       if (!$("#correo-form").hidden) $("#email_destino")?.focus();
     },

@@ -1,12 +1,12 @@
 // Entrada de la aplicación: instalador, login, inicio, ajustes y panel Multi-Tenant Súper Admin.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, montarTurnstile, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
-import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261125v512";
+import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261125v514";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261125v512";
-import { vistaPagos } from "./pagos.js?v=20261125v512";
+import { vistaFactura } from "./factura.js?v=20261125v514";
+import { vistaPagos } from "./pagos.js?v=20261125v514";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
 import { vistaInformes } from "./informes.js";
 import { generarQrSvg } from "./qr.js";
@@ -64,14 +64,14 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.0.0)</span>
-  <p class="suave">Descarga el ZIP completo v5.0.0 con <b>App Instalable (PWA)</b>, <b>Alertas globales de conexión (Web y App)</b>, <b>Bindings Nativos D1 automáticos</b>, <b>Mantenimiento Nocturno 2:00 AM VET</b> (silencio total 6 AM–9 PM) e <b>Interruptor de Modo Mantenimiento para Despliegues</b>:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.0.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.1.4)</span>
+  <p class="suave">Descarga el paquete completo <b>v5.1.4 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>CG La Imprenta Digital</b>, visor de cupo y plan, <b>blindaje anti-500</b>, <b>auto-recuperación y conciliación con CG</b> y redirección segura en móvil:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.1.4)</button>
   <div class="dos-botones">
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="wrangler.toml">⬇️ wrangler.toml</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="mantenimiento.ts">⬇️ src/mantenimiento.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="cloudflare-api.ts">⬇️ src/cloudflare-api.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="pwa.js">⬇️ public/pwa.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-cg.ts">⬇️ src/imprenta-cg.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="documentos.ts">⬇️ src/rutas/documentos.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="sistema.ts">⬇️ src/rutas/sistema.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="factura.js">⬇️ public/factura.js</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="sw.js">⬇️ public/sw.js</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="app.js">⬇️ public/app.js</button>
   </div>

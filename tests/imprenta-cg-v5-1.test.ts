@@ -1163,3 +1163,286 @@ test("5. Compatibilidad universal CG: cualquier host/serie/usuario, saneamiento 
     globalThis.fetch = fetchOriginal;
   }
 });
+
+// =========================================================================
+// 6. Blindaje anti-500 en emisión (v5.1.3): colisión UNIQUE de control_fiscal en CG jamás rompe /emitir
+// =========================================================================
+test("6. Blindaje anti-500 al emitir: si CG devuelve un control_number ya usado en otro documento local, emitir devuelve 200 con aviso claro", async () => {
+  const db = crearBaseDatosD1(":memory:");
+  const env: Record<string, unknown> = { DB: db, MASTER_KEY: "llave-anti500-v513", SUPER_ADMIN_EMAIL: "admin@anti500.test" };
+  const jar: Record<string, string> = {};
+
+  assert.equal(
+    (
+      await reqJson(env, jar, "/api/instalar", "POST", {
+        nombre: "COMERCIAL TEST ANTI500 C.A.",
+        rif: "J-50999888-1",
+        direccion: "Caracas",
+        telefono: "0414-5556677",
+        email: "admin@anti500.test",
+        clave: CLAVE_TEST,
+        tipo_contribuyente: "ORDINARIO",
+        medio_facturacion: "IMPRENTA_DIGITAL",
+      })
+    ).status,
+    200
+  );
+  await db.prepare(`UPDATE perfil_emisor SET tasa_bcv = '922.56', tasa_bcv_fecha = ? WHERE id = 1`).bind(new Date().toISOString()).run();
+  await db.prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`).run();
+  assert.equal(
+    (
+      await reqJson(env, jar, "/api/sistema/imprenta", "POST", {
+        proveedor_tipo: "CG_IMPRENTA",
+        url: "https://calidad.cgimprenta.digital/",
+        usuario: "api@anti500.invalid",
+        clave: "clave-api-test",
+        ambiente: "PRUEBAS",
+        serie: "A",
+        plan_cupo_total: 100,
+        password: CLAVE_TEST,
+        confirmo: true,
+      })
+    ).status,
+    200
+  );
+
+  const cli = await reqJson(env, jar, "/api/clientes", "POST", {
+    rif_cedula: "V-19876543",
+    nombre_apellido: "CARLOS GOMEZ",
+    direccion: "Caracas",
+    email: "carlos@test.ve",
+    whatsapp: "0414-1112233",
+  });
+  assert.equal(cli.status, 200);
+
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const u = new URL(String(input));
+    if (u.pathname.endsWith("/api/Invoice/create_token_authenticator")) {
+      return new Response(JSON.stringify({ success: true, token: "tok-anti500" }), { status: 200 });
+    }
+    if (u.pathname.endsWith("/api/Invoice/add_list_invoice")) {
+      // Simular que CG devuelve el MISMO control_number para dos facturas distintas (colisión UNIQUE en documentos_fiscal_unico)
+      return new Response(
+        JSON.stringify({
+          success: true,
+          invoice_list_success: [
+            {
+              invoice_number: "000001",
+              control_number: "00-00000077",
+              invoice_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/77",
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    }
+    return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    // Factura #1 recibe 00-00000077 normalmente
+    const d1 = await reqJson(env, jar, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Servicio 1", cantidad: "1", precio_usd: "34,80", alicuota_iva: 0 }],
+    });
+    const e1 = await reqJson(env, jar, `/api/documentos/${d1.data.id}/emitir`, "POST", {});
+    assert.equal(e1.status, 200);
+    assert.equal(e1.data.control_fiscal, "00-00000077");
+
+    // Factura #2: CG vuelve a devolver 00-00000077 -> JAMÁS debe responder HTTP 500; responde 200 con imprenta_aviso claro
+    const d2 = await reqJson(env, jar, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Servicio 2", cantidad: "1", precio_usd: "34,80", alicuota_iva: 0 }],
+    });
+    const e2 = await reqJson(env, jar, `/api/documentos/${d2.data.id}/emitir`, "POST", {});
+    assert.equal(e2.status, 200, `Emitir con colisión CG no debe dar 500: ${JSON.stringify(e2.data)}`);
+    assert.equal(e2.data.ok, true);
+    assert.equal(e2.data.control_fiscal, undefined);
+    assert.match(String(e2.data.imprenta_aviso ?? ""), /00-00000077.*ya est[aá] asignado/i);
+
+    const det2 = await reqJson(env, jar, `/api/documentos/${d2.data.id}`);
+    assert.equal(det2.status, 200);
+    assert.equal(det2.data.documento.estado, "EMITIDO");
+    assert.equal(det2.data.imprenta_envio.estado, "ERROR");
+    assert.match(String(det2.data.imprenta_envio.ultimo_error), /00-00000077/i);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
+// =========================================================================
+// 7. Auto-recuperación v5.1.4: invoice_list_success 2D, timeout post-timbrado y HTTP 200 sin control_number en línea
+// =========================================================================
+test("7. Auto-recuperación CG v5.1.4: invoice_list_success bidimensional, corte de red tras timbrado y 200 sin control_number inline", async () => {
+  // 7A) Parseo puro de invoice_list_success bidimensional [[ { ... } ]] y details anidado
+  const res2D = extraerRespuestaCg({
+    success: true,
+    invoice_list_success: [
+      [
+        {
+          invoice_number: "000001",
+          details: {
+            control_number: "00-00005140",
+            invoice_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/5140",
+          },
+        },
+      ],
+    ],
+  });
+  assert.equal(res2D.ok, true);
+  assert.equal(res2D.control_fiscal, "00-00005140");
+  assert.equal(res2D.pdf_url, "https://calidad.cgimprenta.digital/readonly/export_pdf/5140");
+
+  // 7B) Parseo puro de HTTP 200 con invoice_list_success: ["000002"] sin control_number inline -> marca sin_control_en_200
+  const resSinCtrl = extraerRespuestaCg(
+    {
+      success: true,
+      message: "Facturas procesadas",
+      invoice_list_success: ["000002"],
+    },
+    "FACTURA",
+    200
+  );
+  assert.equal(resSinCtrl.ok, false);
+  assert.equal(resSinCtrl.sin_control_en_200, true);
+
+  // 7C) Flujo E2E: (i) corte/timeout en add_list_invoice tras timbrado CG y (ii) HTTP 200 sin control_number inline
+  const db = crearBaseDatosD1(":memory:");
+  const env: Record<string, unknown> = { DB: db, MASTER_KEY: "llave-v514-recup", SUPER_ADMIN_EMAIL: "admin@v514.test" };
+  const jar: Record<string, string> = {};
+
+  assert.equal(
+    (
+      await reqJson(env, jar, "/api/instalar", "POST", {
+        nombre: "COMERCIAL RECUPERACION V514 C.A.",
+        rif: "J-50888777-2",
+        direccion: "Caracas",
+        telefono: "0414-5551122",
+        email: "admin@v514.test",
+        clave: CLAVE_TEST,
+        tipo_contribuyente: "ORDINARIO",
+        medio_facturacion: "IMPRENTA_DIGITAL",
+      })
+    ).status,
+    200
+  );
+  await db.prepare(`UPDATE perfil_emisor SET tasa_bcv = '922.56', tasa_bcv_fecha = ? WHERE id = 1`).bind(new Date().toISOString()).run();
+  await db.prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`).run();
+  assert.equal(
+    (
+      await reqJson(env, jar, "/api/sistema/imprenta", "POST", {
+        proveedor_tipo: "CG_IMPRENTA",
+        url: "https://calidad.cgimprenta.digital/",
+        usuario: "api@v514.invalid",
+        clave: "clave-v514-test",
+        ambiente: "PRUEBAS",
+        serie: "A",
+        plan_cupo_total: 100,
+        password: CLAVE_TEST,
+        confirmo: true,
+      })
+    ).status,
+    200
+  );
+
+  const cli = await reqJson(env, jar, "/api/clientes", "POST", {
+    rif_cedula: "V-20112233",
+    nombre_apellido: "MARIA PEREZ",
+    direccion: "Caracas",
+    email: "maria@test.ve",
+    telefono: "0412-2223344",
+  });
+  assert.equal(cli.status, 200);
+
+  const remotos: any[] = [];
+  let consultasLista = 0;
+
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = new URL(String(input));
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+
+    if (u.pathname.endsWith("/api/Invoice/create_token_authenticator")) {
+      return new Response(JSON.stringify({ success: true, token: "tok-v514" }), { status: 200 });
+    }
+
+    if (u.pathname.endsWith("/api/Invoice/add_list_invoice")) {
+      const f = body.facturas[0];
+      if (f.numeroFactura === "000001") {
+        // Simular que CG SÍ timbró la factura pero se cortó la red / expiró el timeout antes de responder
+        remotos.push({
+          document: "FACTURA",
+          invoice_number: "000001",
+          control_number: "00-00005141",
+          status: "Emitida",
+          invoice_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/5141",
+        });
+        throw new Error("AbortError: timeout simulado tras timbrado CG");
+      }
+      if (f.numeroFactura === "000002") {
+        // Simular que CG responde HTTP 200 con solo el número de factura (sin control_number en línea)
+        remotos.push({
+          document: "FACTURA",
+          invoice_number: "000002",
+          control_number: "00-00005142",
+          status: "Emitida",
+          invoice_pdf: "https://calidad.cgimprenta.digital/readonly/export_pdf/5142",
+        });
+        return new Response(
+          JSON.stringify({
+            success: true,
+            message: "Facturas procesadas correctamente",
+            invoice_list_success: ["000002"],
+          }),
+          { status: 200 }
+        );
+      }
+    }
+
+    if (u.pathname.includes("/api/Invoice/get_list_invoices")) {
+      consultasLista++;
+      return new Response(JSON.stringify({ success: true, invoices: [remotos] }), { status: 200 });
+    }
+
+    return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    // Caso 1: timeout/corte de red tras timbrado -> FacturaYa consulta get_list_invoices y retorna 200 con control_fiscal
+    const d1 = await reqJson(env, jar, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Consulta general", cantidad: "1", precio_usd: "25,00", alicuota_iva: 0 }],
+    });
+    const e1 = await reqJson(env, jar, `/api/documentos/${d1.data.id}/emitir`, "POST", {});
+    assert.equal(e1.status, 200, `Timeout post-timbrado no debe fallar: ${JSON.stringify(e1.data)}`);
+    assert.equal(e1.data.control_fiscal, "00-00005141");
+    assert.equal(e1.data.imprenta_pdf_url, "https://calidad.cgimprenta.digital/readonly/export_pdf/5141");
+
+    // Caso 2: HTTP 200 sin control_number inline -> FacturaYa consulta get_list_invoices y retorna 200 con control_fiscal
+    const d2 = await reqJson(env, jar, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Control posterior", cantidad: "1", precio_usd: "30,00", alicuota_iva: 0 }],
+    });
+    const e2 = await reqJson(env, jar, `/api/documentos/${d2.data.id}/emitir`, "POST", {});
+    assert.equal(e2.status, 200, `200 sin control inline debe auto-recuperarse: ${JSON.stringify(e2.data)}`);
+    assert.equal(e2.data.control_fiscal, "00-00005142");
+    assert.equal(e2.data.imprenta_pdf_url, "https://calidad.cgimprenta.digital/readonly/export_pdf/5142");
+    assert.equal(consultasLista, 2, "Debe haber consultado get_list_invoices automáticamente en ambos casos");
+
+    // Verificar visor del plan actualizado con 2 facturas retornadas OK y 98 disponibles
+    const est = await reqJson(env, jar, "/api/sistema/imprenta/estado");
+    assert.equal(est.status, 200);
+    assert.equal(est.data.resumen.facturas_ok, 2);
+    assert.equal(est.data.resumen.enviadas_ok, 2);
+    assert.equal(est.data.resumen.disponibles, 98);
+    assert.equal(est.data.resumen.pendientes, 0);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+

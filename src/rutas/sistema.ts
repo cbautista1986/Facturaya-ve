@@ -166,18 +166,47 @@ export async function solicitarControlImprentaDigital(
 
   // Ruta oficial CG La Imprenta Digital (API Gateway CG v14)
   if (cfg.proveedor_tipo === PROVEEDOR_CG) {
-    const resCg = await enviarDocumentoCg(
-      db,
-      env,
-      cfg,
-      { ...payload, emisor, renglones, impuestos },
-      idempotencyKey,
-      fetchFn
-    );
-    if (!resCg.ok) {
-      await registrarPendiente(resCg.error || "Error con CG Imprenta Digital");
+    try {
+      const resCg = await enviarDocumentoCg(
+        db,
+        env,
+        cfg,
+        { ...payload, emisor, renglones, impuestos },
+        idempotencyKey,
+        fetchFn
+      );
+      if (!resCg.ok) {
+        await registrarPendiente(resCg.error || "Error con CG Imprenta Digital");
+      }
+      return resCg;
+    } catch (err) {
+      const errMsg = `Error inesperado comunicando con CG Imprenta Digital: ${String((err as Error)?.message || err).slice(0, 180)}`;
+      console.error("[imprenta-cg] enviarDocumentoCg:", err);
+      await registrarPendiente(errMsg);
+      await registrarEnvioImprentaDb(db, {
+        documento_id: payload.documento_id,
+        proveedor: cfg.proveedor || "CG La Imprenta Digital",
+        proveedor_tipo: PROVEEDOR_CG,
+        ambiente: cfg.ambiente,
+        tipo_documento: payload.tipo_documento,
+        numero_documento: numeroDocumentoCg(payload.numero),
+        numero_serie: cfg.serie,
+        control_fiscal: null,
+        pdf_url: null,
+        estado: "PENDIENTE",
+        ultimo_error: errMsg,
+        idempotency_key: idempotencyKey,
+      });
+      return {
+        ok: false,
+        control_fiscal: null,
+        pdf_url: null,
+        proveedor: cfg.proveedor || "CG La Imprenta Digital",
+        proveedor_tipo: PROVEEDOR_CG,
+        error: errMsg,
+        idempotency_key: idempotencyKey,
+      };
     }
-    return resCg;
   }
 
   // Ruta genérica compatible con otros proveedores autorizados (webhook Bearer + JSON)
@@ -310,7 +339,12 @@ export async function anularFacturaImprentaDigital(
   const cfg = await leerConfigImprentaCompleta(db, env);
   if (!cfg.url || !cfg.clave_clara) return { ok: true, omitido: true };
   if (cfg.proveedor_tipo === PROVEEDOR_CG) {
-    return anularFacturaCg(db, env, cfg, datos, fetchFn);
+    try {
+      return await anularFacturaCg(db, env, cfg, datos, fetchFn);
+    } catch (err) {
+      console.error("[imprenta-cg] anularFacturaCg:", err);
+      return { ok: false, error: `Error inesperado anulando en CG: ${String((err as Error)?.message || err).slice(0, 180)}` };
+    }
   }
   await registrarEnvioImprentaDb(db, {
     documento_id: datos.documento_id,

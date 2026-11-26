@@ -279,8 +279,10 @@ export function construirPayloadFacturaCg(
   const numStr = numeroDocumentoCg(payload.numero);
   const serieLimpia = limpiarTextoCg(serie, 5, "A").toUpperCase();
   const rengs = payload.renglones ?? [];
+  const tasaSegura = Math.max(0, Math.round(Number(payload.tasa_e8) || 0));
   const productos = rengs.map((r, i) => {
-    const precioBsCent = Math.max(1, usdABs(Number(r.precio_usd ?? 0), payload.tasa_e8));
+    const precioUsdSeguro = Math.max(0, Math.round(Number(r.precio_usd ?? 0) || 0));
+    const precioBsCent = tasaSegura > 0 ? Math.max(1, usdABs(precioUsdSeguro, tasaSegura)) : Math.max(1, precioUsdSeguro);
     const desc = limpiarTextoCg(r.descripcion, 120, `Renglón ${i + 1}`);
     return {
       codigoProducto: codigoProductoCg(r.catalogo_id, r.orden ?? i + 1),
@@ -343,8 +345,10 @@ export function construirPayloadNcParcialCg(payload: PayloadImprentaDocumento): 
 
 export function construirPayloadNdCg(payload: PayloadImprentaDocumento): Record<string, unknown> {
   const rengs = payload.renglones ?? [];
+  const tasaSeguraNd = Math.max(0, Math.round(Number(payload.tasa_e8) || 0));
   const productosNuevos = rengs.map((r, i) => {
-    const precioBsCent = Math.max(1, usdABs(Number(r.precio_usd ?? 0), payload.tasa_e8));
+    const precioUsdSeguro = Math.max(0, Math.round(Number(r.precio_usd ?? 0) || 0));
+    const precioBsCent = tasaSeguraNd > 0 ? Math.max(1, usdABs(precioUsdSeguro, tasaSeguraNd)) : Math.max(1, precioUsdSeguro);
     const desc = limpiarTextoCg(r.descripcion, 120, `Recargo ${i + 1}`);
     return {
       codigoProducto: `ND-${payload.numero}-${i + 1}`.slice(0, 13),
@@ -427,6 +431,7 @@ export function extraerRespuestaCg(
   sin_cupo?: boolean;
   duplicada?: boolean;
   coletilla_conflicto?: boolean;
+  sin_control_en_200?: boolean;
 } {
   if (!data || typeof data !== "object") {
     return { ok: false, control_fiscal: null, pdf_url: null, error: "Respuesta vacía de CG Imprenta Digital." };
@@ -434,24 +439,37 @@ export function extraerRespuestaCg(
 
   // Verificar arreglo invoice_errors (add_list_invoice)
   const invErrors = Array.isArray(data.invoice_errors) ? data.invoice_errors : [];
-  const listaExito = Array.isArray(data.invoice_list_success)
+  const rawExito = Array.isArray(data.invoice_list_success)
     ? data.invoice_list_success
     : Array.isArray(data.credit_note_list_success)
       ? data.credit_note_list_success
       : Array.isArray(data.debit_note_list_success)
         ? data.debit_note_list_success
         : [];
-  const primero = listaExito[0] ?? data.data ?? data.resultado ?? data;
+  // Aplanar posibles arreglos bidimensionales (ej. [[ { control_number, ... } ]]) igual que en get_list_invoices
+  const listaExito: Record<string, any>[] = [];
+  const aplanarExito = (arr: unknown[]) => {
+    for (const el of arr) {
+      if (Array.isArray(el)) aplanarExito(el);
+      else if (el && typeof el === "object") listaExito.push(el as Record<string, any>);
+    }
+  };
+  aplanarExito(rawExito);
+  const primero = listaExito[0] ?? (data.data && typeof data.data === "object" ? data.data : null) ?? (data.resultado && typeof data.resultado === "object" ? data.resultado : null) ?? data;
 
   const rawCtrl = String(
     primero?.control_number ??
       primero?.numero_control ??
       primero?.numeroControl ??
       primero?.control_fiscal ??
+      primero?.details?.control_number ??
+      primero?.details?.numero_control ??
       data.control_number ??
       data.numero_control ??
       data.numeroControl ??
       data.control_fiscal ??
+      data.details?.control_number ??
+      data.details?.numero_control ??
       ""
   )
     .trim()
@@ -465,6 +483,7 @@ export function extraerRespuestaCg(
     primero?.pdf_nota_credito ??
     primero?.pdf_nota_debito ??
     primero?.details?.pdf_factura ??
+    primero?.details?.invoice_pdf ??
     primero?.pdf_url ??
     primero?.url_pdf ??
     primero?.pdf ??
@@ -472,6 +491,7 @@ export function extraerRespuestaCg(
     data.credit_note_pdf ??
     data.debit_note_pdf ??
     data.details?.pdf_factura ??
+    data.details?.invoice_pdf ??
     data.pdf_factura ??
     data.pdf_nota_credito ??
     data.pdf_nota_debito ??
@@ -523,6 +543,13 @@ export function extraerRespuestaCg(
       /ya registrad|ya est[aá] en uso|duplicad|already registered/i.test(msgErr) ||
       soloNumerosEnInvErrors);
 
+  const sinControlEn200 =
+    !sinCupo &&
+    !coletillaConflicto &&
+    (httpStatus === 200 || httpStatus === 201) &&
+    (data.success === true || rawExito.length > 0) &&
+    invErrors.length === 0;
+
   return {
     ok: false,
     control_fiscal: null,
@@ -531,6 +558,7 @@ export function extraerRespuestaCg(
     sin_cupo: sinCupo,
     duplicada,
     coletilla_conflicto: coletillaConflicto,
+    sin_control_en_200: sinControlEn200,
   };
 }
 
@@ -1101,51 +1129,64 @@ export async function enviarDocumentoCg(
     body = construirPayloadNdCg(payload);
   }
 
-  let res = await peticionAutenticadaCg(db, env, cfg, ruta, { method: "POST", body, timeoutMs: 15_000 }, fetchFn);
+  let res = await peticionAutenticadaCg(db, env, cfg, ruta, { method: "POST", body, timeoutMs: 25_000 }, fetchFn);
   const numDocStr = numeroDocumentoCg(payload.numero);
 
+  let parsed: ReturnType<typeof extraerRespuestaCg>;
   if (res.error) {
-    await registrarEnvioImprentaDb(db, {
-      documento_id: payload.documento_id,
-      proveedor: cfg.proveedor || "CG La Imprenta Digital",
-      proveedor_tipo: PROVEEDOR_CG,
-      ambiente: cfg.ambiente,
-      tipo_documento: payload.tipo_documento,
-      numero_documento: numDocStr,
-      numero_serie: cfg.serie,
-      control_fiscal: null,
-      pdf_url: null,
-      estado: "PENDIENTE",
-      ultimo_error: res.error,
-      idempotency_key: idempotencyKey,
-    });
-    return {
-      ok: false,
-      control_fiscal: null,
-      pdf_url: null,
-      proveedor: cfg.proveedor || "CG La Imprenta Digital",
-      proveedor_tipo: PROVEEDOR_CG,
-      error: res.error,
-      idempotency_key: idempotencyKey,
-    };
+    // Si hubo timeout o corte de red tras enviar, verificar una vez en CG si el documento sí se timbró antes de dejarlo pendiente
+    const remotoTrasCorte =
+      res.status === 0 ? await buscarDocumentoRemotoCg(db, env, cfg, payload.tipo_documento, payload.numero, fetchFn).catch(() => null) : null;
+    if (remotoTrasCorte?.control_fiscal) {
+      parsed = {
+        ok: true,
+        control_fiscal: remotoTrasCorte.control_fiscal,
+        pdf_url: remotoTrasCorte.pdf_url,
+      };
+      res = { ok: true, status: 200, data: null };
+    } else {
+      await registrarEnvioImprentaDb(db, {
+        documento_id: payload.documento_id,
+        proveedor: cfg.proveedor || "CG La Imprenta Digital",
+        proveedor_tipo: PROVEEDOR_CG,
+        ambiente: cfg.ambiente,
+        tipo_documento: payload.tipo_documento,
+        numero_documento: numDocStr,
+        numero_serie: cfg.serie,
+        control_fiscal: null,
+        pdf_url: null,
+        estado: "PENDIENTE",
+        ultimo_error: res.error,
+        idempotency_key: idempotencyKey,
+      });
+      return {
+        ok: false,
+        control_fiscal: null,
+        pdf_url: null,
+        proveedor: cfg.proveedor || "CG La Imprenta Digital",
+        proveedor_tipo: PROVEEDOR_CG,
+        error: res.error,
+        idempotency_key: idempotencyKey,
+      };
+    }
+  } else {
+    parsed = extraerRespuestaCg(res.data, payload.tipo_documento, res.status);
   }
-
-  let parsed = extraerRespuestaCg(res.data, payload.tipo_documento, res.status);
 
   // Si la empresa tiene Coletilla / Mensaje Fijo en CG y enviamos `descripcionFactura`, reintentar automáticamente sin ese campo
   if ((!res.ok || !parsed.ok) && parsed.coletilla_conflicto && payload.tipo_documento === "FACTURA") {
     const bodySinDesc = construirPayloadFacturaCg(payload, cfg.serie, { incluirDescripcion: false });
-    const resRetry = await peticionAutenticadaCg(db, env, cfg, ruta, { method: "POST", body: bodySinDesc, timeoutMs: 15_000 }, fetchFn);
+    const resRetry = await peticionAutenticadaCg(db, env, cfg, ruta, { method: "POST", body: bodySinDesc, timeoutMs: 25_000 }, fetchFn);
     if (!resRetry.error) {
       res = resRetry;
       parsed = extraerRespuestaCg(res.data, payload.tipo_documento, res.status);
     }
   }
 
-  // Si CG indica que el documento ya estaba registrado (ej. `invoice_errors: ["000005"]` / HTTP 409),
-  // consultamos `get_list_invoices` de inmediato para recuperar automáticamente el control_number y el PDF oficial.
-  if ((!res.ok || !parsed.ok || !parsed.control_fiscal) && parsed.duplicada) {
-    const remoto = await buscarDocumentoRemotoCg(db, env, cfg, payload.tipo_documento, payload.numero, fetchFn);
+  // Si CG indica que el documento ya estaba registrado (ej. `invoice_errors: ["000005"]` / HTTP 409)
+  // o respondió HTTP 200 exitoso sin incluir `control_number` en línea, consultamos `get_list_invoices` de inmediato para recuperarlo.
+  if ((!res.ok || !parsed.ok || !parsed.control_fiscal) && (parsed.duplicada || parsed.sin_control_en_200)) {
+    const remoto = await buscarDocumentoRemotoCg(db, env, cfg, payload.tipo_documento, payload.numero, fetchFn).catch(() => null);
     if (remoto?.control_fiscal) {
       parsed = {
         ok: true,
@@ -1185,12 +1226,54 @@ export async function enviarDocumentoCg(
   }
 
   const ahoraIso = new Date().toISOString();
-  await db.batch([
-    db
-      .prepare(`UPDATE documentos SET control_fiscal = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`)
-      .bind(parsed.control_fiscal, payload.documento_id),
-    db.prepare(`DELETE FROM integraciones WHERE clave = ?`).bind(`imprenta_pendiente_${payload.documento_id}`),
-  ]);
+  try {
+    await db.batch([
+      db
+        .prepare(`UPDATE documentos SET control_fiscal = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`)
+        .bind(parsed.control_fiscal, payload.documento_id),
+      db.prepare(`DELETE FROM integraciones WHERE clave = ?`).bind(`imprenta_pendiente_${payload.documento_id}`),
+    ]);
+  } catch (e) {
+    const rawErr = String((e as Error)?.message ?? e);
+    let msgUsuario = "No se pudo guardar el número de control en la base local. Usa Conciliar con CG o reintenta.";
+    let estadoErr: "ERROR" | "PENDIENTE" = "PENDIENTE";
+    if (/UNIQUE|documentos_fiscal_unico/i.test(rawErr)) {
+      estadoErr = "ERROR";
+      const dueno = await db
+        .prepare(`SELECT numero, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito FROM documentos WHERE control_fiscal = ? LIMIT 1`)
+        .bind(parsed.control_fiscal)
+        .first<{ numero: number; tipo: string; es_nota_credito: number; es_nota_debito: number }>()
+        .catch(() => null);
+      const duenoTxt = dueno?.numero ? ` (doc. n.º ${numeroDocumentoCg(dueno.numero)})` : "";
+      msgUsuario = `El número de control ${parsed.control_fiscal} devuelto por CG ya está asignado a otro documento local${duenoTxt}. Verifica que el correlativo de facturas en FacturaYa no esté repetido en tu cuenta CG.`;
+    } else if (/Documento emitido|inmutable/i.test(rawErr)) {
+      estadoErr = "ERROR";
+      msgUsuario = "El documento ya estaba cerrado o no tenía modalidad de Imprenta Digital asignada al emitirse.";
+    }
+    await registrarEnvioImprentaDb(db, {
+      documento_id: payload.documento_id,
+      proveedor: cfg.proveedor || "CG La Imprenta Digital",
+      proveedor_tipo: PROVEEDOR_CG,
+      ambiente: cfg.ambiente,
+      tipo_documento: payload.tipo_documento,
+      numero_documento: numDocStr,
+      numero_serie: cfg.serie,
+      control_fiscal: null,
+      pdf_url: null,
+      estado: estadoErr,
+      ultimo_error: msgUsuario,
+      idempotency_key: idempotencyKey,
+    });
+    return {
+      ok: false,
+      control_fiscal: null,
+      pdf_url: null,
+      proveedor: cfg.proveedor || "CG La Imprenta Digital",
+      proveedor_tipo: PROVEEDOR_CG,
+      error: msgUsuario,
+      idempotency_key: idempotencyKey,
+    };
+  }
   await registrarEnvioImprentaDb(db, {
     documento_id: payload.documento_id,
     proveedor: cfg.proveedor || "CG La Imprenta Digital",

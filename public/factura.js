@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261125v512";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261125v512";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261125v514";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261125v514";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -324,8 +324,20 @@ function editor(estado, existente, tipoNuevo) {
     const aviso1 = `¿Emitir ${nombre.toLowerCase()} a ${d.cliente.nombre_apellido} por ${usd(c.r.total_usd)} (Bs. ${bs(c.r.total_bs / 100)})${d.aplica_igtf ? " [incluye IGTF 3%]" : ""}?\n\nCondición de pago: ${d.tipo === "FACTURA" && d.condicion === "CREDITO" ? `a crédito, ${d.dias_credito} días` : "contado"}.\n\nDespués NO se puede editar ni borrar: solo anular o ajustar con Nota de Crédito.`
       + `\n\nTasa BCV usada: Bs. ${bs(tasa.valor)} (${tasa.cuando})${tasa.vieja ? " ⚠️ revísala antes de emitir" : ""}.${estado.modo === "PRACTICA" ? "\n\n🧪 Modo práctica: es un documento de prueba." : ""}`;
     if (!confirm(aviso1)) { aviso("Quedó guardado como borrador."); return; }
-    await api(`documentos/${d.id}/emitir`, "POST");
-    aviso(`${nombre} emitida ✅`); location.hash = `#/factura/${d.id}`;
+    try {
+      const resEmit = await api(`documentos/${d.id}/emitir`, "POST");
+      aviso(resEmit?.imprenta_aviso ? `${nombre} emitida ⚠️ Revisa el aviso de la Imprenta Digital en el detalle.` : `${nombre} emitida ✅`);
+      location.hash = `#/factura/${d.id}`;
+    } catch (eEmit) {
+      // Si hubo corte de red o respuesta interrumpida tras guardar en el servidor, verificamos si el documento sí quedó EMITIDO
+      const verif = d.id ? await api(`documentos/${d.id}`).catch(() => null) : null;
+      if (verif?.documento?.estado === "EMITIDO") {
+        aviso(`${nombre} emitida ⚠️ Revisa el estado de la Imprenta Digital en el detalle.`);
+        location.hash = `#/factura/${d.id}`;
+        return;
+      }
+      throw eEmit;
+    }
   }));
   if (d.tipo === "FACTURA") {
     const mostrar = () => { $("#dias-box").hidden = d.condicion !== "CREDITO"; };
@@ -562,7 +574,9 @@ async function ver(estado, id) {
     editar: () => (location.hash = `#/factura/${id}/editar`),
     emitir: () => pedir(async () => {
       if (!confirm(`¿Emitir ${nom.toLowerCase()} por ${usd(D.total_usd)}?\n\nDespués NO se puede editar ni borrar: solo anular o ajustar con Nota de Crédito.`)) return;
-      await api(`documentos/${id}/emitir`, "POST"); aviso("Emitida ✅"); await ver(estado, id);
+      const resEmit = await api(`documentos/${id}/emitir`, "POST");
+      aviso(resEmit?.imprenta_aviso ? "Emitida ⚠️ Revisa el aviso de la Imprenta Digital." : "Emitida ✅");
+      await ver(estado, id);
     }),
     borrar: () => pedir(async () => { if (!confirm("¿Eliminar este borrador?")) return; await api(`documentos/${id}`, "DELETE"); aviso("Borrador eliminado"); location.hash = "#/factura"; }),
     pdf: () => pedir(async () => descargar(await blobPdf(), nombreArchivo(D, esDemo))),

@@ -1180,8 +1180,20 @@ app.onError((e, c) => {
   if (e instanceof ErrorLlaveMaestra) {
     return c.json({ ok: false, error: e.message, codigo: e.codigo }, 503);
   }
-  console.error(e);
-  return c.json({ ok: false, error: "Error interno del servidor." }, 500);
+  const ref = crypto.randomUUID().slice(0, 8).toUpperCase();
+  console.error(`[500:${ref}] ${c.req.method} ${c.req.path}:`, e);
+  const u = c.get("usuario");
+  const envObj = c.env as unknown as Record<string, unknown>;
+  if (u && esSuperAdmin(u.rol, u.email, envObj)) {
+    const raw = String((e as Error)?.message ?? e ?? "")
+      .replace(/https?:\/\/\S+/gi, "[url]")
+      .replace(/bearer\s+\S+/gi, "[token]")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 140);
+    return c.json({ ok: false, error: `Error interno del servidor (${ref}: ${raw || "error inesperado"}).`, ref }, 500);
+  }
+  return c.json({ ok: false, error: "Error interno del servidor.", ref }, 500);
 });
 
 // Tarea programada (Cron Trigger de Cloudflare Workers v5.0.0):

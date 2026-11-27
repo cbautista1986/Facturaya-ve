@@ -465,7 +465,7 @@ async function verificarClaveOperador(
           .catch(() => null)
       : null;
     if (filaRaw?.password_hash) {
-      return verificarClave(password, filaRaw.password_hash);
+      return verificarClave(password, filaRaw.password_hash, envObj);
     }
   }
   const filaLocal = await db
@@ -473,7 +473,7 @@ async function verificarClaveOperador(
     .bind(yo.id)
     .first<{ password_hash: string }>()
     .catch(() => null);
-  return Boolean(filaLocal?.password_hash && (await verificarClave(password, filaLocal.password_hash)));
+  return Boolean(filaLocal?.password_hash && (await verificarClave(password, filaLocal.password_hash, envObj)));
 }
 
 sistema.post("/imprenta", async (c) => {

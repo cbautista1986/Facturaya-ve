@@ -149,13 +149,16 @@ type CacheHidratacion = {
   activos: Map<string, boolean>;
 };
 const CACHE_TTL_MS = 60_000;
+const CACHE_ESTADO_INQ_TTL_MS = 20_000;
 const cachePorRawDb = new WeakMap<D1Database, CacheHidratacion>();
+const cacheEstadoInqPorRawDb = new WeakMap<D1Database, Map<string, { ts: number; activo: boolean; motivo_suspension: string }>>();
 const ddlMtAsegurado = new WeakSet<D1Database>();
 const principalSincronizado = new WeakSet<D1Database>();
 
 export function invalidarCacheInquilinos(rawDb?: D1Database) {
   if (rawDb) {
     cachePorRawDb.delete(rawDb);
+    cacheEstadoInqPorRawDb.delete(rawDb);
     principalSincronizado.delete(rawDb);
   }
 }
@@ -177,9 +180,10 @@ export async function obtenerEstadoInquilino(rawDb: D1Database, codigo: string):
     return { activo: vigente, motivo_suspension: vigente ? "" : "DEMO_EXPIRADO" };
   }
   const ahora = Date.now();
-  const c = cachePorRawDb.get(rawDb);
-  if (c && ahora - c.ts < CACHE_TTL_MS && c.activos.has(codigo) && c.activos.get(codigo) === true) {
-    return { activo: true, motivo_suspension: "" };
+  let mapaEstado = cacheEstadoInqPorRawDb.get(rawDb);
+  const hit = mapaEstado?.get(codigo);
+  if (hit && ahora - hit.ts < CACHE_ESTADO_INQ_TTL_MS) {
+    return { activo: hit.activo, motivo_suspension: hit.motivo_suspension };
   }
   const estadoInq = await rawDb
     .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
@@ -187,10 +191,17 @@ export async function obtenerEstadoInquilino(rawDb: D1Database, codigo: string):
     .first<{ activo: number; motivo_suspension?: string }>()
     .catch(() => null);
   const activo = !estadoInq || estadoInq.activo === 1;
+  const motivo_suspension = String(estadoInq?.motivo_suspension || "");
+  if (!mapaEstado) {
+    mapaEstado = new Map();
+    cacheEstadoInqPorRawDb.set(rawDb, mapaEstado);
+  }
+  mapaEstado.set(codigo, { ts: ahora, activo, motivo_suspension });
+  const c = cachePorRawDb.get(rawDb);
   if (c && ahora - c.ts < CACHE_TTL_MS) {
     c.activos.set(codigo, activo);
   }
-  return { activo, motivo_suspension: String(estadoInq?.motivo_suspension || "") };
+  return { activo, motivo_suspension };
 }
 
 // Hidrata en `env` adaptadores D1 HTTP para todos los inquilinos que tengan `d1_uuid` creado por API de Cloudflare (cuando no tengan ya binding nativo en wrangler.toml)

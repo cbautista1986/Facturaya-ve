@@ -57,6 +57,9 @@ const REGLAS: Regla[] = [
   [P, /^\/api\/sistema\/correo\/probar$/, ["admin"]],                    // Enviar correo de prueba usando el Correo de Plataforma
   [G, /^\/api\/imprenta\/visor$/, []],                                   // visor de consumo de Imprenta Digital (solo lectura, sin secretos)
   [TODOS, /^\/api\/sistema\/(medio|imprenta)(\/|$)/, ["admin"]],         // Imprenta Digital y Modalidad: Dueño del negocio (ADMIN) y Súper Admin
+  [G, /^\/api\/sistema\/tasa-bcv\/config$/, ["admin", "tasa"]],         // configuración de feriados/pendiente BCV (solo lectura)
+  [P, /^\/api\/sistema\/tasa-bcv\/feriados$/, ["super"]],                // gestión de feriados nacionales / día sin publicación BCV (Súper Admin)
+  [P, /^\/api\/sistema\/tasa-bcv\/aprobar-pendiente$/, ["super"]],       // aprobar o descartar salto anómalo de tasa BCV (Súper Admin)
   [P, /^\/api\/sistema\/tasa-bcv\/sincronizar$/, ["admin", "tasa"]],     // sincronizar tasa BCV oficial (Dueño, Súper Admin o Supervisor)
   [TODOS, /^\/api\/usuarios(\/|$)/, ["admin"]],
   [TODOS, /^\/api\/sistema(\/|$)/, ["admin"]],
@@ -92,13 +95,41 @@ export const permitido = (rol: string, metodo: string, ruta: string, email: stri
   return quien.length === 0 || quien.some((p) => tiene(rol, p, email, env));
 };
 
-// Respuestas JSON sin costos ni ganancias (para quien no los ve): se quita cualquier campo cuyo nombre empiece por costo o ganancia.
-const CAMPO_PRIVADO = /^(costos?|ganancias?)(_|$)/;
+// Red de seguridad secundaria (v5.6.0): además de la lista blanca SQL/DTO por rol en cada ruta,
+// elimina recursivamente cualquier campo de costos, valoración de inventario, márgenes o utilidades.
+export const CAMPO_PRIVADO = /^(costos?|ganancias?|valor_usd|valor_total_usd|margen(es)?|utilidad(es)?|precio_compra|promedio)(_|$)/i;
+const CAMPO_PRIVADO_RENGLON_COMPRA = /^(costos?|ganancias?|valor_usd|valor_total_usd|margen(es)?|utilidad(es)?|precio_compra|promedio|monto_usd|monto_bs)(_|$)/i;
+
+function limpiarRenglonesCompraJson(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return "[]";
+    const limpios = parsed.map((item) => {
+      if (!item || typeof item !== "object") return item;
+      const o: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(item as Record<string, unknown>)) {
+        if (!CAMPO_PRIVADO_RENGLON_COMPRA.test(k)) o[k] = sinCostos(v);
+      }
+      return o;
+    });
+    return JSON.stringify(limpios);
+  } catch {
+    return "[]";
+  }
+}
+
 export function sinCostos(x: unknown): unknown {
   if (Array.isArray(x)) return x.map(sinCostos);
   if (x && typeof x === "object") {
     const o: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(x)) if (!CAMPO_PRIVADO.test(k)) o[k] = sinCostos(v);
+    for (const [k, v] of Object.entries(x)) {
+      if (CAMPO_PRIVADO.test(k)) continue;
+      if (k === "renglones_json" && typeof v === "string") {
+        o[k] = limpiarRenglonesCompraJson(v);
+        continue;
+      }
+      o[k] = sinCostos(v);
+    }
     return o;
   }
   return x;

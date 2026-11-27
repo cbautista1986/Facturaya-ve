@@ -563,7 +563,7 @@ export async function crearEntornoDemo(
   const hoyIso = fechaCaracas();
   const plan = generarPlanSemillaDemo(regimen, hoyIso, tasaBcv, nombreCustom);
   const claveDemo = generarClaveDemo();
-  const hashDemo = await hashClave(claveDemo);
+  const hashDemo = await hashClave(claveDemo, envObj);
   const ahoraSeg = ahora();
   const expiraEn = ahoraSeg + duracionMin * 60;
   const ahoraIso = new Date().toISOString();

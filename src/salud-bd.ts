@@ -1,6 +1,6 @@
 // Auditoría, Diagnóstico de Salud y Reparación No Destructiva de Base de Datos (SENIAT + Multi-Tenant).
 // REGLA DE ORO: Las funciones de reparación JAMÁS borran ni editan facturas, notas de crédito, pagos, compras ni clientes existentes.
-import { asegurarLlavePlataforma, firmarHmacRespaldo } from "./cifrado";
+import { asegurarLlavePlataforma, firmarHmacDigestRespaldo, firmarHmacRespaldo } from "./cifrado";
 import { auditar, modoActual, type Ctx } from "./comun";
 import { asegurarTablasMultiTenant, hidratarBindingsCloudflare, obtenerDbInquilino, prefijoTablaDeCodigo, tieneBindingDedicado } from "./inquilinos";
 import { MIGRACIONES, migrar } from "./migraciones";
@@ -652,9 +652,9 @@ export async function generarRespaldoNegocio(db: D1Database, opts?: { anio?: num
       case "pagos":
         return db.prepare(`SELECT * FROM pagos WHERE substr(COALESCE(fecha_pago, creado_en), 1, 4) = ?`).bind(anioStr);
       case "compras":
-        return db.prepare(`SELECT * FROM compras WHERE substr(COALESCE(fecha_factura, creado_en), 1, 4) = ?`).bind(anioStr);
+        return db.prepare(`SELECT * FROM compras WHERE substr(COALESCE(fecha, creado_en), 1, 4) = ?`).bind(anioStr);
       case "compra_impuestos":
-        return db.prepare(`SELECT * FROM compra_impuestos WHERE compra_id IN (SELECT id FROM compras WHERE substr(COALESCE(fecha_factura, creado_en), 1, 4) = ?)`).bind(anioStr);
+        return db.prepare(`SELECT * FROM compra_impuestos WHERE compra_id IN (SELECT id FROM compras WHERE substr(COALESCE(fecha, creado_en), 1, 4) = ?)`).bind(anioStr);
       case "movimientos_stock":
         return db.prepare(`SELECT * FROM movimientos_stock WHERE substr(COALESCE(fecha, creado_en), 1, 4) = ?`).bind(anioStr);
       case "auditoria":
@@ -753,4 +753,265 @@ export async function generarRespaldoMaestro(
     ...payload,
   };
 }
+
+// ---------------------------------------------------------------- Streaming SHA-256 + Exportación paginada por clave (v5.6 · Sección 5)
+// Usa crypto.DigestStream('SHA-256') nativo en Cloudflare Workers y un hasher incremental puro FIPS 180-4 en runtimes sin DigestStream (Node).
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+export interface HasherSha256Streaming {
+  update(chunk: Uint8Array): Promise<void>;
+  digestHex(): Promise<string>;
+}
+
+export function crearHasherSha256Streaming(): HasherSha256Streaming {
+  const DigestStreamCtor = (crypto as unknown as { DigestStream?: new (alg: string) => WritableStream<Uint8Array> & { digest: Promise<ArrayBuffer> } }).DigestStream;
+  if (typeof DigestStreamCtor === "function") {
+    const ds = new DigestStreamCtor("SHA-256");
+    const writer = ds.getWriter();
+    return {
+      async update(chunk: Uint8Array) {
+        if (chunk.byteLength) await writer.write(chunk);
+      },
+      async digestHex() {
+        await writer.close();
+        const buf = await ds.digest;
+        return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+      },
+    };
+  }
+
+  // Fallback incremental puro FIPS 180-4 (sin dependencias Node)
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const buf = new Uint8Array(64);
+  const w = new Uint32Array(64);
+  let bufLen = 0;
+  let totalBytes = 0;
+
+  const compress = (block: Uint8Array, offset: number) => {
+    for (let i = 0; i < 16; i++) {
+      const j = offset + i * 4;
+      w[i] = ((block[j] << 24) | (block[j + 1] << 16) | (block[j + 2] << 8) | block[j + 3]) >>> 0;
+    }
+    for (let i = 16; i < 64; i++) {
+      const s0 = ((w[i - 15] >>> 7) | (w[i - 15] << 25)) ^ ((w[i - 15] >>> 18) | (w[i - 15] << 14)) ^ (w[i - 15] >>> 3);
+      const s1 = ((w[i - 2] >>> 17) | (w[i - 2] << 15)) ^ ((w[i - 2] >>> 19) | (w[i - 2] << 13)) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0;
+      d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+  };
+
+  return {
+    async update(chunk: Uint8Array) {
+      let i = 0;
+      totalBytes += chunk.byteLength;
+      if (bufLen > 0) {
+        const take = Math.min(64 - bufLen, chunk.byteLength);
+        buf.set(chunk.subarray(0, take), bufLen);
+        bufLen += take;
+        i += take;
+        if (bufLen === 64) {
+          compress(buf, 0);
+          bufLen = 0;
+        }
+      }
+      while (i + 64 <= chunk.byteLength) {
+        compress(chunk, i);
+        i += 64;
+      }
+      if (i < chunk.byteLength) {
+        buf.set(chunk.subarray(i), 0);
+        bufLen = chunk.byteLength - i;
+      }
+    },
+    async digestHex() {
+      const bitLen = totalBytes * 8;
+      buf[bufLen++] = 0x80;
+      if (bufLen > 56) {
+        buf.fill(0, bufLen, 64);
+        compress(buf, 0);
+        bufLen = 0;
+      }
+      buf.fill(0, bufLen, 56);
+      const hi = Math.floor(bitLen / 0x100000000);
+      const lo = bitLen >>> 0;
+      buf[56] = (hi >>> 24) & 0xff; buf[57] = (hi >>> 16) & 0xff; buf[58] = (hi >>> 8) & 0xff; buf[59] = hi & 0xff;
+      buf[60] = (lo >>> 24) & 0xff; buf[61] = (lo >>> 16) & 0xff; buf[62] = (lo >>> 8) & 0xff; buf[63] = lo & 0xff;
+      compress(buf, 0);
+      return [h0, h1, h2, h3, h4, h5, h6, h7].map((x) => x.toString(16).padStart(8, "0")).join("");
+    },
+  };
+}
+
+const TABLAS_CON_ID = new Set([
+  "auditoria", "catalogo", "clientes", "compra_impuestos", "compras",
+  "documento_impuestos", "documento_renglones", "documentos",
+  "medio_historial", "movimientos_stock", "pagos", "perfil_emisor", "proveedores", "usuarios",
+]);
+const PAGE_SIZE_RESPALDO = 2000;
+
+export type MetadatosRespaldoStreaming = {
+  modo_origen: string;
+  conteos: Record<string, number>;
+  sumas: Record<string, Record<string, number>>;
+  sha256_datos: string;
+  firma_hmac: string;
+  cobertura_real: { n: number; max_id: number; firma: string };
+  generado_en: string;
+};
+
+// Emite el JSON del respaldo maestro de una empresa en chunks pequeños usando paginación por clave (WHERE id > ? LIMIT 2000).
+// Nunca construye un único string JSON con toda la base de datos y excluye siempre secretos (integraciones, _mt_llave_plataforma, hashes).
+export async function emitirRespaldoEmpresaStreaming(
+  rawDb: D1Database,
+  dbInq: D1Database,
+  envObj: Record<string, unknown>,
+  codigo: string,
+  metaMaestro: { mtInq: Record<string, unknown>[]; mtDir: Record<string, unknown>[]; totalEmpresas: number },
+  escribir: (textoChunk: string) => Promise<void>,
+  opts?: { pageSize?: number }
+): Promise<MetadatosRespaldoStreaming> {
+  await asegurarLlavePlataforma(dbInq, envObj);
+  const pageSize = Math.max(50, Math.min(2000, Number(opts?.pageSize ?? PAGE_SIZE_RESPALDO) || PAGE_SIZE_RESPALDO));
+  const encUtf8 = new TextEncoder();
+  const hasherDatos = crearHasherSha256Streaming();
+  const modo_origen = await modoActual(dbInq);
+  const cobertura_real = await obtenerFirmaCoberturaReal(dbInq);
+  const generado_en = new Date().toISOString();
+
+  const escribirDatos = async (s: string) => {
+    const bytes = encUtf8.encode(s);
+    await hasherDatos.update(bytes);
+    await escribir(s);
+  };
+
+  // Estructura de sumas idéntica a calcularSumas() en restaurar.ts (PLAN)
+  const sumas: Record<string, Record<string, number>> = {
+    documentos: { total_usd: 0, total_bs: 0 },
+    documento_renglones: { monto_usd: 0, monto_bs: 0 },
+    documento_impuestos: { base_bs: 0, iva_bs: 0 },
+    compras: { total_usd: 0 },
+    movimientos_stock: { cantidad_milli: 0, valor_usd: 0 },
+    pagos: { monto_usd: 0 },
+  };
+  const conteos: Record<string, number> = {};
+
+  const acumularSumas = (tabla: string, fila: Record<string, unknown>) => {
+    const grupo = sumas[tabla];
+    if (!grupo) return;
+    for (const col of Object.keys(grupo)) {
+      grupo[col] += Number(fila[col]) || 0;
+    }
+  };
+
+  // Encabezado del envoltorio maestro compatible con formato respaldo-maestro-facturaya
+  await escribir(
+    `{"formato":"respaldo-maestro-facturaya","version":2,"generado_en":${JSON.stringify(generado_en)},"total_empresas":${metaMaestro.totalEmpresas},"empresas_en_archivo":1,"desde":0,"limite":1,"hay_mas":false,` +
+      `"maestro":${JSON.stringify({ _mt_inquilinos: metaMaestro.mtInq, _mt_directorio: metaMaestro.mtDir })},` +
+      `"negocios":{${JSON.stringify(codigo)}:{"formato":"respaldo-facturacion","version":2,"generado_en":${JSON.stringify(generado_en)},"modo_origen":${JSON.stringify(modo_origen)},"cobertura_real":${JSON.stringify(cobertura_real)},"datos":`
+  );
+
+  // Stream de "datos" (hasheado en streaming para firma HMAC v2)
+  await escribirDatos("{");
+  const tablas = [...TABLAS_EXPORTAR, "usuarios"];
+  for (let tIdx = 0; tIdx < tablas.length; tIdx++) {
+    const tabla = tablas[tIdx];
+    await escribirDatos(`${tIdx > 0 ? "," : ""}${JSON.stringify(tabla)}:[`);
+    let ultimoCursor = 0;
+    let totalFilas = 0;
+    const usaId = TABLAS_CON_ID.has(tabla);
+
+    while (true) {
+      let lote: Record<string, unknown>[] = [];
+      try {
+        if (tabla === "usuarios") {
+          const r = await dbInq
+            .prepare(`SELECT id, nombre, email, rol, activo, creado_en FROM usuarios WHERE id > ? ORDER BY id ASC LIMIT ?`)
+            .bind(ultimoCursor, pageSize)
+            .all<Record<string, unknown>>();
+          lote = r.results ?? [];
+        } else if (usaId) {
+          const r = await dbInq
+            .prepare(`SELECT * FROM ${tabla} WHERE id > ? ORDER BY id ASC LIMIT ?`)
+            .bind(ultimoCursor, pageSize)
+            .all<Record<string, unknown>>();
+          lote = r.results ?? [];
+        } else {
+          const r = await dbInq
+            .prepare(`SELECT rowid AS __rk, * FROM ${tabla} WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`)
+            .bind(ultimoCursor, pageSize)
+            .all<Record<string, unknown>>();
+          lote = r.results ?? [];
+        }
+      } catch {
+        break;
+      }
+
+      if (!lote.length) break;
+
+      // Acumular un pequeño buffer de texto por tanda (máx ~64 filas por write) para eficiencia sin usar memoria grande
+      let bufTxt = "";
+      for (const filaBruta of lote) {
+        let cursor = ultimoCursor;
+        let fila: Record<string, unknown>;
+        if (usaId) {
+          cursor = Number(filaBruta.id ?? 0) || 0;
+          fila = filaBruta;
+        } else {
+          cursor = Number(filaBruta.__rk ?? 0) || 0;
+          const copia = { ...filaBruta };
+          delete copia.__rk;
+          fila = copia;
+        }
+        if (cursor > ultimoCursor) ultimoCursor = cursor;
+        acumularSumas(tabla, fila);
+        bufTxt += `${totalFilas > 0 ? "," : ""}${JSON.stringify(fila)}`;
+        totalFilas++;
+        if (bufTxt.length >= 32_768) {
+          await escribirDatos(bufTxt);
+          bufTxt = "";
+        }
+      }
+      if (bufTxt) await escribirDatos(bufTxt);
+      if (lote.length < pageSize) break;
+    }
+
+    conteos[tabla] = totalFilas;
+    await escribirDatos("]");
+  }
+  await escribirDatos("}");
+
+  const sha256_datos = await hasherDatos.digestHex();
+  const firma_hmac = await firmarHmacDigestRespaldo(modo_origen, sha256_datos, conteos, sumas, { ...envObj, DB: rawDb });
+
+  // Cierre del objeto de la empresa y del envoltorio maestro con conteos, sumas, sha256_datos y firma_hmac v2
+  await escribir(
+    `,"conteos":${JSON.stringify(conteos)},"sumas":${JSON.stringify(sumas)},"huella":${JSON.stringify(sha256_datos)},"sha256_datos":${JSON.stringify(sha256_datos)},"firma_hmac":${JSON.stringify(firma_hmac)}}},` +
+      `"huella":${JSON.stringify(sha256_datos)},"sha256_datos":${JSON.stringify(sha256_datos)},"firma_hmac":${JSON.stringify(firma_hmac)}}`
+  );
+
+  return { modo_origen, conteos, sumas, sha256_datos, firma_hmac, cobertura_real, generado_en };
+}
+
 

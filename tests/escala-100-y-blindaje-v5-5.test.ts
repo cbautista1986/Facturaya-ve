@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import app from "../src/index";
-import { crearBaseDatosD1 } from "../src/d1";
+import { crearBaseDatosD1 } from "./d1";
 import { migrar } from "../src/migraciones";
 import { asegurarTablasMultiTenant } from "../src/inquilinos";
 import { asegurarTablaLimitesRed, limitePayloadPorRuta } from "../src/seguridad-red";

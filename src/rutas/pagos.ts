@@ -7,6 +7,7 @@ import { enviarCorreo } from "../correo";
 import { EMAIL, PAGADO, RIF, auditar, comodin, falla, fechaCaracas, idParam, leerJson, modoActual, normalizarWhatsapp, parametrosVigentes, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
 import { leerTipoContribuyente } from "../regimen";
 import { evaluarAnulacionPago } from "../reglas-fiscales";
+import { validarTasaFiscalVigente } from "../tasa-bcv";
 
 const pagos = new Hono<Env>();
 pagos.use("*", requiereSesion);
@@ -220,17 +221,29 @@ pagos.post("/", async (c) => {
       return falla(c, 400, `La retención de ISLR (${porcentajeRetencion}%) supera el límite legal sobre la base imponible neta (máximo retenible: Bs. ${(maxIslrDispBs / 100).toLocaleString("es-VE", { minimumFractionDigits: 2 })}).`);
     }
   }
+  const fecha = texto(b.fecha, 10) || hoy;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || fecha > hoy || fecha < D.fecha_emision) return falla(c, 400, "La fecha del pago no es válida (no puede ser futura ni anterior a la emisión).");
+
   let tasa: number | null = null, montoUsd = monto;
+  let usoOverrideTasaPago = false;
+  let perfilPagoTasa: { tasa_bcv?: string | null; tasa_bcv_fecha?: string | null } | null = null;
   if (moneda === "BS") {
-    tasa = aTasaE8(b.tasa) || (esRetencion && D.tasa_e8 ? Number(D.tasa_e8) : null);
+    if (D.modo === "REAL" && !esRetencion && fecha === hoy) {
+      perfilPagoTasa = await db.prepare(`SELECT tasa_bcv, tasa_bcv_fecha FROM perfil_emisor WHERE id = 1`).first<{ tasa_bcv?: string | null; tasa_bcv_fecha?: string | null }>();
+      const rawDb = c.get("rawDb") || db;
+      const valTasa = await validarTasaFiscalVigente(rawDb, perfilPagoTasa, D.modo, u, c.env as unknown as Record<string, unknown>, b);
+      if (!valTasa.ok) {
+        return c.json({ ok: false, error: valTasa.error, codigo: valTasa.codigo, puede_forzar: valTasa.puede_forzar, semaforo: valTasa.semaforo }, 409);
+      }
+      usoOverrideTasaPago = valTasa.override;
+    }
+    tasa = aTasaE8(b.tasa) || (perfilPagoTasa?.tasa_bcv ? aTasaE8(perfilPagoTasa.tasa_bcv) : null) || (esRetencion && D.tasa_e8 ? Number(D.tasa_e8) : null);
     if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Escribe la tasa BCV del día del pago (ejemplo: 123,45).");
     try { montoUsd = bsAUsd(monto, tasa); } catch (e) { return falla(c, 400, (e as Error).message); }
     if (montoUsd < 1) return falla(c, 400, "El monto es demasiado pequeño para esa tasa.");
     if (Math.abs(saldoAntes - montoUsd) <= 1) montoUsd = saldoAntes; // diferencia de redondeo de un centavo: se cierra el saldo
   }
   if (montoUsd > saldoAntes) return falla(c, 400, `El pago (${dolares(montoUsd)}) es mayor que el saldo (${dolares(saldoAntes)}).`);
-  const fecha = texto(b.fecha, 10) || hoy;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || fecha > hoy || fecha < D.fecha_emision) return falla(c, 400, "La fecha del pago no es válida (no puede ser futura ni anterior a la emisión).");
 
   const params = await parametrosVigentes(db, hoy), claveRecibo = `RECIBO:${D.modo}`;
   const reglas = JSON.stringify({
@@ -256,6 +269,9 @@ pagos.post("/", async (c) => {
   ]);
   const nuevo = (r[1].results as Fila[])[0];
   if (!nuevo) return falla(c, 409, "El saldo cambió mientras registrabas el pago. Revisa y vuelve a intentarlo.");
+  if (usoOverrideTasaPago) {
+    await auditar(c, u.id, "TASA_VIEJA_OVERRIDE", `PAGO BS ${D.modo} recibo ${nuevo.numero} -> doc ${docId} · tasa=${perfilPagoTasa?.tasa_bcv ?? ""} fecha=${perfilPagoTasa?.tasa_bcv_fecha ?? ""}`);
+  }
   const accionAudit = esRetencionIva ? "RETENCION_IVA_REGISTRAR" : esRetencionIslr ? "RETENCION_ISLR_REGISTRAR" : "PAGO_REGISTRAR";
   await auditar(c, u.id, accionAudit, `${metodo} ${moneda} ${monto} -> doc ${docId} recibo ${nuevo.numero}`);
   return c.json({ ok: true, id: nuevo.id, numero: nuevo.numero, saldo_usd: saldoAntes - montoUsd });

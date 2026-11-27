@@ -14,6 +14,7 @@ import { leerTipoContribuyente, normalizarTipoContribuyente, reglasRegimen } fro
 import { evaluarAnulacionDocumento, puedeInvocarImprentaDigital, validarIgtfNotaCredito } from "../reglas-fiscales";
 import { PROVEEDOR_TFHKA, leerConfigImprentaCompleta, validarUrlPdfSegura } from "../imprenta-cg";
 import { descargarPdfTfhka } from "../imprenta-tfhka";
+import { validarTasaFiscalVigente } from "../tasa-bcv";
 
 const documentos = new Hono<Env>();
 documentos.use("*", requiereSesion);
@@ -55,18 +56,21 @@ async function resolverLogoEmisor(db: D1Database, emisorPrevio: Record<string, a
 type Linea = { catalogo_id: number | null; tipo: "SERVICIO" | "PRODUCTO"; descripcion: string; cantidad_milli: number; precio_usd: number; costo_usd: number | null; alicuota_cent: number };
 type Fila = Record<string, any>;
 
-const COLUMNAS = `id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, factura_afectada_id, motivo_nc, estado, modo, numero, control_interno, control_fiscal, medio,
+const COLUMNAS_SIN_COSTO = `id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, factura_afectada_id, motivo_nc, estado, modo, numero, control_interno, control_fiscal, medio,
   presupuesto_id, cliente_id, cliente_rif, cliente_nombre, cliente_direccion, cliente_whatsapp, cliente_email, nota, fecha_emision, emitido_en,
   tasa_e8, tasa_cargada_en, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd,
-  subtotal_bs, iva_bs, igtf_bs, total_bs, costo_total_usd, parametros_json, emisor_json, anulado_en, motivo_anulacion, creado_en, condicion, dias_credito, vence_el`;
+  subtotal_bs, iva_bs, igtf_bs, total_bs, parametros_json, emisor_json, anulado_en, motivo_anulacion, creado_en, condicion, dias_credito, vence_el`;
+const COLUMNAS = `${COLUMNAS_SIN_COSTO}, costo_total_usd`;
 
-async function cargar(c: Ctx, id: number) {
+async function cargar(c: Ctx, id: number, incluirCostos = true) {
   const db = c.env.DB;
-  const doc = await db.prepare(`SELECT ${COLUMNAS} FROM documentos WHERE id = ?`).bind(id).first<Fila>();
+  const doc = await db.prepare(`SELECT ${incluirCostos ? COLUMNAS : COLUMNAS_SIN_COSTO} FROM documentos WHERE id = ?`).bind(id).first<Fila>();
   if (!doc) return null;
+  const colsReng = incluirCostos
+    ? `id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd, monto_bs`
+    : `id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, alicuota_cent, monto_usd, monto_bs`;
   const [l, i] = await db.batch([
-    db.prepare(`SELECT id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd, monto_bs
-                FROM documento_renglones WHERE documento_id = ? ORDER BY orden`).bind(id),
+    db.prepare(`SELECT ${colsReng} FROM documento_renglones WHERE documento_id = ? ORDER BY orden`).bind(id),
     db.prepare(`SELECT alicuota_cent, base_usd, iva_usd, base_bs, iva_bs FROM documento_impuestos WHERE documento_id = ? ORDER BY alicuota_cent`).bind(id),
   ]);
   return { doc, lineas: l.results as Fila[], impuestos: i.results as Fila[] };
@@ -227,7 +231,9 @@ documentos.get("/resumen", async (c) => {
 });
 
 documentos.get("/:id", async (c) => {
-  const id = idParam(c), db = c.env.DB, r = await cargar(c, id);
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
+  const id = idParam(c), db = c.env.DB, r = await cargar(c, id, puedeVerCostos);
   if (!r) return falla(c, 404, "Documento no encontrado.");
   const { results: resultsRaw } = await db.prepare(
     `SELECT id, documento_id, numero, CASE WHEN es_retencion_iva = 1 THEN 'RETENCION_IVA' WHEN COALESCE(es_retencion_islr, 0) = 1 THEN 'RETENCION_ISLR' ELSE metodo END AS metodo, es_retencion_iva, COALESCE(es_retencion_islr, 0) AS es_retencion_islr, porcentaje_retencion, comprobante_retencion, moneda, monto_recibido, tasa_e8, monto_usd, saldo_despues_usd, referencia, fecha_pago, estado, motivo_anulacion
@@ -364,7 +370,7 @@ documentos.delete("/:id", async (c) => {
 
 // ---------------------------------------------------------------- emitir
 documentos.post("/:id/emitir", async (c) => {
-  const id = idParam(c), db = c.env.DB, u = c.get("usuario");
+  const id = idParam(c), db = c.env.DB, u = c.get("usuario"), bEmitir = await leerJson(c);
   const cargado = await cargar(c, id);
   if (!cargado) return falla(c, 404, "Documento no encontrado.");
   const { doc, lineas } = cargado;
@@ -386,6 +392,15 @@ documentos.post("/:id/emitir", async (c) => {
   }
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? ""));
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV de hoy en Ajustes antes de emitir.");
+  let usoOverrideTasa = false;
+  if (doc.tipo === "FACTURA" && doc.modo === "REAL") {
+    const rawDb = c.get("rawDb") || db;
+    const valTasa = await validarTasaFiscalVigente(rawDb, perfil, doc.modo, u, c.env as unknown as Record<string, unknown>, bEmitir);
+    if (!valTasa.ok) {
+      return c.json({ ok: false, error: valTasa.error, codigo: valTasa.codigo, puede_forzar: valTasa.puede_forzar, semaforo: valTasa.semaforo }, 409);
+    }
+    usoOverrideTasa = valTasa.override;
+  }
   const cli = await db.prepare(`SELECT rif_cedula, nombre_apellido, direccion, whatsapp, email FROM clientes WHERE id = ?`).bind(doc.cliente_id).first<Fila>();
   if (!cli) return falla(c, 400, "El cliente ya no existe.");
 
@@ -501,6 +516,9 @@ documentos.post("/:id/emitir", async (c) => {
       imprentaAviso = "La factura se emitió, pero ocurrió un error al comunicarse con la Imprenta Digital. Puedes reintentar desde el detalle.";
     }
   }
+  if (usoOverrideTasa) {
+    await auditar(c, u.id, "TASA_VIEJA_OVERRIDE", `FACTURA ${doc.modo} n.º ${f?.numero} · tasa=${perfil?.tasa_bcv} fecha=${perfil?.tasa_bcv_fecha ?? ""}`).catch((e) => console.error("[auditar]", e));
+  }
   await auditar(c, u.id, "DOC_EMITIR", `${doc.tipo} ${doc.modo} n.º ${f?.numero}`).catch((e) => console.error("[auditar]", e));
   return c.json({
     ok: true,
@@ -563,6 +581,15 @@ documentos.post("/:id/devolver", async (c) => {
   const perfil = await db.prepare(`SELECT nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, tasa_bcv_fecha, medio_facturacion, tipo_contribuyente, igtf_activo, logo_base64 FROM perfil_emisor WHERE id = 1`).first<Fila>();
   const tasa = aTasaE8(String(perfil?.tasa_bcv ?? "")) || F.tasa_e8;
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, "Define la tasa BCV en Ajustes antes de emitir la Nota de Crédito.");
+  let usoOverrideTasaNc = false;
+  if (F.modo === "REAL") {
+    const rawDb = c.get("rawDb") || db;
+    const valTasa = await validarTasaFiscalVigente(rawDb, perfil, F.modo, u, c.env as unknown as Record<string, unknown>, b);
+    if (!valTasa.ok) {
+      return c.json({ ok: false, error: valTasa.error, codigo: valTasa.codigo, puede_forzar: valTasa.puede_forzar, semaforo: valTasa.semaforo }, 409);
+    }
+    usoOverrideTasaNc = valTasa.override;
+  }
 
   const fecha = fechaCaracas(), params = await parametrosVigentes(db, fecha);
   const aplicaIgtf = b.aplica_igtf === undefined ? !!F.aplica_igtf : (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on");
@@ -732,6 +759,9 @@ documentos.post("/:id/devolver", async (c) => {
       console.error("[devolver] imprenta:", e);
     }
   }
+  if (usoOverrideTasaNc) {
+    await auditar(c, u.id, "TASA_VIEJA_OVERRIDE", `NOTA_CREDITO ${F.modo} n.º ${emitida?.numero} · tasa=${perfil?.tasa_bcv} fecha=${perfil?.tasa_bcv_fecha ?? ""}`).catch((e) => console.error("[auditar]", e));
+  }
   await auditar(c, u.id, "NOTA_CREDITO_EMITIR", `NC ${emitida?.numero} -> Factura ${F.numero}: ${motivo}`).catch((e) => console.error("[auditar]", e));
   return c.json({
     ok: true,
@@ -777,6 +807,15 @@ documentos.post("/:id/nota-debito", async (c) => {
   }
 
   const tasaActual = aTasaE8(String(perfil?.tasa_bcv ?? ""));
+  let usoOverrideTasaNd = false;
+  if (F.modo === "REAL" && b.usar_tasa_factura !== true) {
+    const rawDb = c.get("rawDb") || db;
+    const valTasa = await validarTasaFiscalVigente(rawDb, perfil, F.modo, u, c.env as unknown as Record<string, unknown>, b);
+    if (!valTasa.ok) {
+      return c.json({ ok: false, error: valTasa.error, codigo: valTasa.codigo, puede_forzar: valTasa.puede_forzar, semaforo: valTasa.semaforo }, 409);
+    }
+    usoOverrideTasaNd = valTasa.override;
+  }
   const tasa = b.usar_tasa_factura === true ? Number(F.tasa_e8) : (tasaActual && !Number.isNaN(tasaActual) ? tasaActual : Number(F.tasa_e8));
   const aplicaIgtf = b.aplica_igtf !== undefined
     ? (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on")
@@ -912,6 +951,9 @@ documentos.post("/:id/nota-debito", async (c) => {
     } catch (e) {
       console.error("[nota-debito] imprenta:", e);
     }
+  }
+  if (usoOverrideTasaNd) {
+    await auditar(c, u.id, "TASA_VIEJA_OVERRIDE", `NOTA_DEBITO ${F.modo} n.º ${emitida?.numero} · tasa=${perfil?.tasa_bcv} fecha=${perfil?.tasa_bcv_fecha ?? ""}`).catch((e) => console.error("[auditar]", e));
   }
   await auditar(c, u.id, "NOTA_DEBITO_EMITIR", `ND ${emitida?.numero} -> Factura ${F.numero}: ${motivo}`).catch((e) => console.error("[auditar]", e));
   return c.json({ ok: true, id: ndId, numero: emitida?.numero, control_interno: emitida?.control_interno, total_usd: calc.total_usd, total_bs: calc.total_bs, ...(controlFiscalNd ? { control_fiscal: controlFiscalNd } : {}) });

@@ -4,6 +4,7 @@
 import { Hono } from "hono";
 import { aCantidadMilli, aCentavos, aTasaE8, calcular } from "../../public/dinero.js";
 import { auditar, comodin, esUnico, falla, fechaCaracas, idParam, leerJson, modoActual, parametrosVigentes, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
+import { veCostos } from "../permisos";
 import { costoPromedio, guardaSaldo, movimiento, saldos } from "../stock";
 
 const compras = new Hono<Env>();
@@ -40,12 +41,39 @@ export function clasificarRenglonesCompra(renglonesJson: string | null | undefin
   }
 }
 
+function sanitizarRenglonesCompraSinCosto(renglonesJson: string | null | undefined): Fila[] {
+  try {
+    const arr = JSON.parse(String(renglonesJson ?? "[]"));
+    if (!Array.isArray(arr)) return [];
+    return arr.map((r) => ({
+      tipo: r?.tipo === "GASTO" || r?.producto_id == null ? "GASTO" : "PRODUCTO",
+      ...(r?.categoria ? { categoria: r.categoria } : {}),
+      producto_id: r?.producto_id ?? null,
+      descripcion: r?.descripcion ?? "",
+      cantidad_milli: r?.cantidad_milli ?? 0,
+      alicuota_cent: r?.alicuota_cent ?? 0,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+const COLS_COMPRA_CON_COSTO = `id, modo, proveedor_id, proveedor_rif, proveedor_nombre, factura_numero, control_numero, fecha,
+  subtotal_usd, iva_usd, total_usd, tasa_e8, subtotal_bs, iva_bs, total_bs, nota, estado,
+  registrado_en, registrado_por, anulado_en, anulado_por, motivo_anulacion, renglones_json`;
+const COLS_COMPRA_SIN_COSTO = `id, modo, proveedor_id, proveedor_rif, proveedor_nombre, factura_numero, control_numero, fecha,
+  nota, estado, registrado_en, anulado_en, motivo_anulacion, renglones_json`;
+
 compras.get("/", async (c) => {
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
   const q = texto(c.req.query("q"), 60), like = `%${comodin(q)}%`;
-  const { results } = await c.env.DB.prepare(
-    `SELECT id, modo, proveedor_nombre, factura_numero, fecha, total_usd, estado, renglones_json FROM compras
-     WHERE ? = '' OR proveedor_nombre LIKE ? ESCAPE '\\' OR factura_numero LIKE ? ESCAPE '\\' ORDER BY fecha DESC, id DESC LIMIT 100`
-  ).bind(q, like, like).all<Fila>();
+  const sql = puedeVerCostos
+    ? `SELECT id, modo, proveedor_nombre, factura_numero, fecha, total_usd, estado, renglones_json FROM compras
+       WHERE ? = '' OR proveedor_nombre LIKE ? ESCAPE '\\' OR factura_numero LIKE ? ESCAPE '\\' ORDER BY fecha DESC, id DESC LIMIT 100`
+    : `SELECT id, modo, proveedor_nombre, factura_numero, fecha, estado, renglones_json FROM compras
+       WHERE ? = '' OR proveedor_nombre LIKE ? ESCAPE '\\' OR factura_numero LIKE ? ESCAPE '\\' ORDER BY fecha DESC, id DESC LIMIT 100`;
+  const { results } = await c.env.DB.prepare(sql).bind(q, like, like).all<Fila>();
   const lista = results.map(({ renglones_json, ...resto }) => ({
     ...resto,
     tipo_compra: clasificarRenglonesCompra(renglones_json),
@@ -54,9 +82,22 @@ compras.get("/", async (c) => {
 });
 
 compras.get("/:id", async (c) => {
-  const f = await c.env.DB.prepare(`SELECT * FROM compras WHERE id = ?`).bind(idParam(c)).first<Fila>();
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
+  const f = await c.env.DB
+    .prepare(`SELECT ${puedeVerCostos ? COLS_COMPRA_CON_COSTO : COLS_COMPRA_SIN_COSTO} FROM compras WHERE id = ?`)
+    .bind(idParam(c))
+    .first<Fila>();
   if (!f) return falla(c, 404, "Compra no encontrada.");
   const { renglones_json, ...resto } = f;
+  if (!puedeVerCostos) {
+    return c.json({
+      ok: true,
+      compra: { ...resto, tipo_compra: clasificarRenglonesCompra(renglones_json) },
+      renglones: sanitizarRenglonesCompraSinCosto(renglones_json),
+      impuestos: [],
+    });
+  }
   const { results: impuestos } = await c.env.DB.prepare(`SELECT alicuota_cent, base_usd, iva_usd, base_bs, iva_bs FROM compra_impuestos WHERE compra_id = ? ORDER BY alicuota_cent`).bind(f.id).all();
   return c.json({
     ok: true,

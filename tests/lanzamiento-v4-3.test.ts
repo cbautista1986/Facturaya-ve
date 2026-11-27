@@ -34,24 +34,29 @@ const EMAIL_SUPER_TEST = "superadmin@ejemplo.test";
 const CLAVE_SUPER = "ClaveSuperSeguro2026!";
 
 function crearBucketR2Memoria(): AlmacenR2 & {
-  mapa: Map<string, { texto: string; size: number; uploaded: Date; customMetadata?: Record<string, string> }>;
+  mapa: Map<string, { bytes: Uint8Array; size: number; uploaded: Date; customMetadata?: Record<string, string> }>;
   streamsConsumidos: number;
 } {
-  const mapa = new Map<string, { texto: string; size: number; uploaded: Date; customMetadata?: Record<string, string> }>();
+  const mapa = new Map<string, { bytes: Uint8Array; size: number; uploaded: Date; customMetadata?: Record<string, string> }>();
   const bucket = {
     mapa,
     streamsConsumidos: 0,
     async put(key: string, value: string | ArrayBuffer | ArrayBufferView | Blob | null, options?: { customMetadata?: Record<string, string> }) {
-      const texto = typeof value === "string" ? value : "";
-      const size = Buffer.byteLength(texto, "utf8");
+      let bytes: Uint8Array;
+      if (typeof value === "string") bytes = new TextEncoder().encode(value);
+      else if (value instanceof ArrayBuffer) bytes = new Uint8Array(value.slice(0));
+      else if (value && ArrayBuffer.isView(value)) bytes = new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+      else if (value && typeof (value as Blob).arrayBuffer === "function") bytes = new Uint8Array(await (value as Blob).arrayBuffer());
+      else bytes = new Uint8Array(0);
+      const size = bytes.byteLength;
       const uploaded = new Date();
-      mapa.set(key, { texto, size, uploaded, customMetadata: options?.customMetadata });
+      mapa.set(key, { bytes, size, uploaded, customMetadata: options?.customMetadata });
       return { key, size, uploaded, customMetadata: options?.customMetadata };
     },
     async get(key: string) {
       const it = mapa.get(key);
       if (!it) return null;
-      const bytes = new TextEncoder().encode(it.texto);
+      const bytes = it.bytes.slice(0);
       return {
         key,
         size: it.size,
@@ -64,7 +69,7 @@ function crearBucketR2Memoria(): AlmacenR2 & {
             controller.close();
           },
         }),
-        async text() { return it.texto; },
+        async text() { return new TextDecoder().decode(bytes); },
         async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); },
       };
     },
@@ -466,11 +471,11 @@ test("Respaldo R2 (v4.5): 1 archivo/empresa, archivo mensual 10 años inmutable,
   assert.equal(jMan.resultado.claves.length, 1);
   const keyMan = jMan.resultado.claves[0];
   assert.ok(claveR2Valida(keyMan));
-  assert.ok(keyMan.endsWith("-principal.json"));
+  assert.ok(keyMan.endsWith("-principal.json.gz"));
 
-  // Descargar respaldo desde R2 en streaming (obj.body ReadableStream) y verificar firma HMAC
+  // Descargar respaldo desde R2 en streaming (obj.body ReadableStream + DecompressionStream gzip) y verificar firma HMAC v2
   const streamsAntes = bucket.streamsConsumidos;
-  const rDl = await req(env, "GET", `/api/inquilinos/respaldos-r2/descargar?key=${encodeURIComponent(keyMan)}`, undefined, cookie);
+  const rDl = await req(env, "GET", `/api/inquilinos/respaldos-r2/descargar?key=${encodeURIComponent(keyMan)}&descomprimir=1`, undefined, cookie);
   assert.equal(rDl.status, 200);
   const respaldoDescargado = (await rDl.json()) as any;
   assert.equal(respaldoDescargado.formato, "respaldo-maestro-facturaya");

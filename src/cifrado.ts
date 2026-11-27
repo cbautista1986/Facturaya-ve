@@ -226,6 +226,67 @@ export async function verificarHmacRespaldo(
   return false;
 }
 
+// Firma HMAC v2 para respaldos generados en streaming (.json.gz):
+// Usa un propósito HMAC separado ("hmac-respaldo-v2") para firmar el digest SHA-256 calculado en streaming junto a metadatos críticos.
+async function hmacHexV2(semilla: string, mensaje: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(`hmac-respaldo-v2:${semilla}`),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(mensaje));
+  return aHex(sig);
+}
+
+function mensajeCanonicRespaldoV2(modoOrigen: string, sha256Datos: string, conteos: unknown, sumas: unknown): string {
+  return JSON.stringify({
+    v: 2,
+    modo_origen: modoOrigen === "REAL" ? "REAL" : "PRACTICA",
+    sha256_datos: String(sha256Datos ?? "").toLowerCase(),
+    conteos: conteos ?? {},
+    sumas: sumas ?? {},
+  });
+}
+
+export async function firmarHmacDigestRespaldo(
+  modoOrigen: string,
+  sha256Datos: string,
+  conteos: unknown,
+  sumas: unknown,
+  env?: Record<string, unknown>
+): Promise<string> {
+  if (!llaveMaestraConfigurada(env) && !permiteLlaveEnBd(env)) return "";
+  if (env?.DB && !llaveMaestraConfigurada(env)) await asegurarLlavePlataforma(env.DB as D1Database, env);
+  const { kid, semilla } = obtenerSemillaActiva(env);
+  const msg = mensajeCanonicRespaldoV2(modoOrigen, sha256Datos, conteos, sumas);
+  const hex = await hmacHexV2(semilla, msg);
+  return `hmac:v2:${kid}:${hex}`;
+}
+
+export async function verificarHmacDigestRespaldo(
+  firma: string | null | undefined,
+  modoOrigen: string,
+  sha256Datos: string,
+  conteos: unknown,
+  sumas: unknown,
+  env?: Record<string, unknown>
+): Promise<boolean> {
+  const f = String(firma ?? "").trim();
+  if (!f.startsWith("hmac:v2:")) return false;
+  const partes = f.slice("hmac:v2:".length).split(":");
+  if (partes.length !== 2) return false;
+  const hexRecibido = partes[1];
+  if (partes[0] === "def" || !sha256Datos) return false;
+  const msg = mensajeCanonicRespaldoV2(modoOrigen, sha256Datos, conteos, sumas);
+  for (const sem of obtenerCandidatosSemilla(env, false)) {
+    const esperado = await hmacHexV2(sem, msg);
+    if (comparacionConstante(esperado, hexRecibido)) return true;
+  }
+  return false;
+}
+
 // HMAC-SHA256 con propósito separado (ej. hash de correos bloqueados) usando MASTER_KEY (fail-closed en producción).
 export async function hmacTextoPlataforma(
   proposito: string,

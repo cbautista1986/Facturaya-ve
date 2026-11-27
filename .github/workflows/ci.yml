@@ -1,0 +1,36 @@
+name: CI — FacturaYa Venezuela
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verificacion:
+    name: TypeScript, sintaxis frontend y pruebas automatizadas
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Validar sintaxis JS de public/
+        run: |
+          for f in public/*.js; do
+            node --check "$f"
+          done
+
+      - name: Verificar tipos TypeScript (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Ejecutar suite completa de pruebas
+        run: npx tsx --test tests/*.test.ts

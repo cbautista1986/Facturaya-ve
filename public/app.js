@@ -65,15 +65,15 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.5.0)</span>
-  <p class="suave">Descarga el paquete completo <b>v5.5.0 — Escala 100 Empresas &amp; Blindaje Operativo (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>mantenimiento nocturno por lotes (100+ empresas)</b>, <b>aislamiento de fallos en respaldos R2</b>, <b>envío de PDFs con logo hasta 1,5 MB</b>, <b>timeouts + failover de correo</b>, <b>validación de clave Súper Admin en cualquier BD</b> y <b>escaneo dinámico ilimitado de ranuras D1</b>:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.5.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.6.0)</span>
+  <p class="suave">Descarga el paquete completo <b>v5.6.0 — Blindaje Fiscal, Costos RBAC, BCV Oficial, Streaming R2 &amp; Seguridad (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>aislamiento total de costos por rol</b>, <b>bloqueo de tasa BCV vencida en Modo Real</b>, <b>BCV oficial + guardia anti-anomalías</b>, <b>rotación circular 100+ empresas</b>, <b>respaldos R2 streaming .json.gz (hmac:v2)</b> y <b>CSRF + PBKDF2 pepper + CI</b>:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.6.0)</button>
   <div class="dos-botones">
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="tasa-bcv.ts">⬇️ src/tasa-bcv.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="mantenimiento.ts">⬇️ src/mantenimiento.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="respaldos-r2.ts">⬇️ src/respaldos-r2.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="sistema.ts">⬇️ src/rutas/sistema.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="seguridad-red.ts">⬇️ src/seguridad-red.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="correo.ts">⬇️ src/correo.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="salud-bd.ts">⬇️ src/salud-bd.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="permisos.ts">⬇️ src/permisos.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="index.ts">⬇️ src/index.ts</button>
   </div>
 </section>` : "";

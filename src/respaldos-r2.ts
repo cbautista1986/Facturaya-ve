@@ -4,8 +4,9 @@
 // - Manuales (`respaldos/manuales/YYYY-MM-DD/`): bajo demanda, nunca podados automáticamente.
 // - Descargas en streaming vía `obj.body` y registro de errores de Cron visible para el Súper Administrador.
 import { fechaCaracas } from "./comun";
-import { asegurarTablasMultiTenant } from "./inquilinos";
-import { generarRespaldoMaestro } from "./salud-bd";
+import { asegurarTablasMultiTenant, hidratarBindingsCloudflare, obtenerDbInquilino } from "./inquilinos";
+import { migrar } from "./migraciones";
+import { crearHasherSha256Streaming, emitirRespaldoEmpresaStreaming } from "./salud-bd";
 import { mesAnteriorCaracas } from "./tasa-bcv";
 
 export interface ObjetoR2 {
@@ -22,6 +23,19 @@ export interface CuerpoObjetoR2 extends ObjetoR2 {
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
+export interface ParteMultipartR2 {
+  partNumber: number;
+  etag: string;
+}
+
+export interface SubidaMultipartR2 {
+  key: string;
+  uploadId: string;
+  uploadPart(partNumber: number, value: Uint8Array | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | string): Promise<ParteMultipartR2>;
+  complete(uploadedParts: ParteMultipartR2[]): Promise<ObjetoR2>;
+  abort(): Promise<void>;
+}
+
 export interface AlmacenR2 {
   put(
     key: string,
@@ -35,13 +49,19 @@ export interface AlmacenR2 {
     cursor?: string;
   }>;
   delete(keys: string | string[]): Promise<void>;
+  createMultipartUpload?(
+    key: string,
+    options?: { httpMetadata?: { contentType?: string }; customMetadata?: Record<string, string> }
+  ): Promise<SubidaMultipartR2>;
 }
 
 export const PREFIJO_R2_DIARIOS = "respaldos/diarios/";
 export const PREFIJO_R2_MANUALES = "respaldos/manuales/";
 export const PREFIJO_R2_MENSUALES = "respaldos/mensuales/";
+export const PREFIJO_R2_RETENCION = "respaldos/archivo-retencion/";
 export const RETENCION_DIAS_R2 = 30;
 export const CONSERVACION_FISCAL_ANIOS = 10;
+const TAM_PARTE_MULTIPART_DEFECTO = 5 * 1024 * 1024; // 5 MiB (mínimo oficial de R2/S3 excepto última parte)
 
 const CLAVE_FECHA_AUTO = "ultimo_respaldo_r2_fecha";
 const CLAVE_MES_ARCHIVO = "ultimo_archivo_mensual_r2";
@@ -58,20 +78,20 @@ export function obtenerBucketR2(env?: Record<string, unknown>): AlmacenR2 | null
 
 export function claveR2Valida(key: string): boolean {
   const k = String(key ?? "").trim();
-  if (!k || k.length > 200) return false;
+  if (!k || k.length > 220) return false;
   if (k.includes("..") || k.includes("\\") || /[\x00-\x1f]/.test(k)) return false;
-  return (
-    (k.startsWith(PREFIJO_R2_DIARIOS) ||
-      k.startsWith(PREFIJO_R2_MANUALES) ||
-      k.startsWith(PREFIJO_R2_MENSUALES)) &&
-    k.endsWith(".json")
-  );
+  const prefijoOk =
+    k.startsWith(PREFIJO_R2_DIARIOS) ||
+    k.startsWith(PREFIJO_R2_MANUALES) ||
+    k.startsWith(PREFIJO_R2_MENSUALES) ||
+    k.startsWith(PREFIJO_R2_RETENCION);
+  return prefijoOk && (k.endsWith(".json") || k.endsWith(".json.gz"));
 }
 
 function extraerFechaDeClave(key: string): string | null {
   const mDia = key.match(/^respaldos\/(?:diarios|manuales)\/(\d{4}-\d{2}-\d{2})\//);
   if (mDia) return mDia[1];
-  const mMes = key.match(/^respaldos\/mensuales\/(\d{4}-\d{2})\//);
+  const mMes = key.match(/^respaldos\/(?:mensuales|archivo-retencion)\/(\d{4}-\d{2})\//);
   return mMes ? mMes[1] : null;
 }
 
@@ -173,9 +193,142 @@ export type ResultadoRespaldoR2 = {
   firmado: boolean;
   podados: number;
   errores_empresas?: string[];
+  partes_subidas?: number;
 };
 
-// Genera y sube a R2 un archivo JSON independiente por cada empresa para mantener el consumo de memoria acotado en Workers.
+function concatenarChunks(chunks: Uint8Array[], totalLen: number): Uint8Array {
+  const out = new Uint8Array(totalLen);
+  let pos = 0;
+  for (const ch of chunks) {
+    out.set(ch, pos);
+    pos += ch.byteLength;
+  }
+  return out;
+}
+
+// Comprime en streaming con CompressionStream('gzip') y sube por partes (createMultipartUpload) cuando el bucket lo soporta
+// o hace fallback limpio a bucket.put con el buffer comprimido cuando el almacenamiento local/mock no expone multipart.
+async function subirStreamComprimidoR2(
+  bucket: AlmacenR2,
+  key: string,
+  productor: (escribir: (texto: string) => Promise<void>) => Promise<{
+    sha256_datos: string;
+    firma_hmac: string;
+    generado_en: string;
+  }>,
+  baseMetadata: Record<string, string>,
+  tamParteBytes = TAM_PARTE_MULTIPART_DEFECTO
+): Promise<{ bytes: number; partes: number; sha256_gz: string; firmado: boolean }> {
+  const encUtf8 = new TextEncoder();
+  const cs = new CompressionStream("gzip");
+  const writer = cs.writable.getWriter();
+  const reader = cs.readable.getReader();
+  const hasherGz = crearHasherSha256Streaming();
+
+  type MetaProd = { sha256_datos: string; firma_hmac: string; generado_en: string };
+  let errorProductor: unknown = null;
+
+  const tareaProductor: Promise<MetaProd | null> = (async () => {
+    try {
+      const m = await productor(async (textoChunk: string) => {
+        if (!textoChunk) return;
+        await writer.write(encUtf8.encode(textoChunk));
+      });
+      await writer.close();
+      return m;
+    } catch (e) {
+      errorProductor = e;
+      await writer.abort(e).catch(() => {});
+      return null;
+    }
+  })();
+
+  const soportaMultipart = typeof bucket.createMultipartUpload === "function";
+  let multipart: SubidaMultipartR2 | null = null;
+  const partesSubidas: ParteMultipartR2[] = [];
+  let bufChunks: Uint8Array[] = [];
+  let bufBytes = 0;
+  let totalBytes = 0;
+  const todosFallback: Uint8Array[] = [];
+  const metaInicial: Record<string, string> = {
+    ...baseMetadata,
+    formato: "json.gz.v2",
+    version: "5.6",
+  };
+
+  try {
+    if (soportaMultipart) {
+      multipart = await bucket.createMultipartUpload!(key, {
+        httpMetadata: { contentType: "application/gzip" },
+        customMetadata: metaInicial,
+      });
+    }
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value || !value.byteLength) continue;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value);
+      await hasherGz.update(chunk);
+      totalBytes += chunk.byteLength;
+
+      if (multipart) {
+        bufChunks.push(chunk);
+        bufBytes += chunk.byteLength;
+        while (bufBytes >= tamParteBytes) {
+          const unido = concatenarChunks(bufChunks, bufBytes);
+          const parteBytes = unido.subarray(0, tamParteBytes);
+          const resto = unido.subarray(tamParteBytes);
+          const partNumber = partesSubidas.length + 1;
+          const uploaded = await multipart.uploadPart(partNumber, parteBytes);
+          partesSubidas.push(uploaded);
+          bufChunks = resto.byteLength ? [resto] : [];
+          bufBytes = resto.byteLength;
+        }
+      } else {
+        todosFallback.push(chunk);
+      }
+    }
+
+    const metaProd = await tareaProductor;
+    if (errorProductor) throw errorProductor;
+
+    const sha256_gz = await hasherGz.digestHex();
+    const metaFinal: Record<string, string> = {
+      ...metaInicial,
+      generado_en: metaProd?.generado_en || baseMetadata.generado_en || new Date().toISOString(),
+      firmado: metaProd?.firma_hmac ? "1" : "0",
+      huella: String(metaProd?.sha256_datos || "").slice(0, 64),
+      sha256_datos: String(metaProd?.sha256_datos || "").slice(0, 64),
+      sha256_gz,
+      ...(metaProd?.firma_hmac ? { firma_hmac: metaProd.firma_hmac } : {}),
+    };
+
+    if (multipart) {
+      if (bufBytes > 0 || partesSubidas.length === 0) {
+        const ultimo = concatenarChunks(bufChunks, bufBytes);
+        const partNumber = partesSubidas.length + 1;
+        const uploaded = await multipart.uploadPart(partNumber, ultimo);
+        partesSubidas.push(uploaded);
+      }
+      await multipart.complete(partesSubidas);
+      return { bytes: totalBytes, partes: partesSubidas.length, sha256_gz, firmado: Boolean(metaProd?.firma_hmac) };
+    }
+
+    const cuerpoFinal = concatenarChunks(todosFallback, totalBytes);
+    await bucket.put(key, cuerpoFinal, {
+      httpMetadata: { contentType: "application/gzip" },
+      customMetadata: metaFinal,
+    });
+    return { bytes: totalBytes, partes: 1, sha256_gz, firmado: Boolean(metaProd?.firma_hmac) };
+  } catch (e) {
+    if (multipart) await multipart.abort().catch(() => {});
+    await tareaProductor.catch(() => {});
+    throw e;
+  }
+}
+
+// Genera y sube a R2 un archivo .json.gz independiente por cada empresa en streaming (keyset pagination + gzip + multipart + HMAC v2).
 // Aísla fallos por empresa con try/catch: si una BD falla, las restantes completan su respaldo sin abortar el lote.
 export async function ejecutarRespaldoR2(
   rawDb: D1Database,
@@ -187,6 +340,8 @@ export async function ejecutarRespaldoR2(
     retencionDias?: number;
     codigos?: string[];
     omitirPoda?: boolean;
+    tamParteBytes?: number;
+    pageSize?: number;
   }
 ): Promise<ResultadoRespaldoR2> {
   const bucket = obtenerBucketR2(envObj);
@@ -202,54 +357,70 @@ export async function ejecutarRespaldoR2(
   const stamp = generadoEn.replace(/[:.]/g, "-").slice(0, 19) + "Z";
 
   await asegurarTablasMultiTenant(rawDb);
+  await hidratarBindingsCloudflare(rawDb, envObj);
+  const [resInq, resDir] = await Promise.all([
+    rawDb.prepare(`SELECT * FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en ASC`).all<Record<string, unknown>>().catch(() => ({ results: [] as Record<string, unknown>[] })),
+    rawDb.prepare(`SELECT * FROM _mt_directorio ORDER BY email ASC`).all<Record<string, unknown>>().catch(() => ({ results: [] as Record<string, unknown>[] })),
+  ]);
+  const mtInq = resInq.results ?? [];
+  const mtDir = resDir.results ?? [];
+
   let codigos: string[];
   if (Array.isArray(opts?.codigos) && opts.codigos.length > 0) {
     codigos = opts.codigos.map((c) => String(c || "").trim()).filter((c) => c && c !== "DB_DEMO");
   } else {
-    const { results: filasInq } = await rawDb
-      .prepare(`SELECT codigo FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en ASC`)
-      .all<{ codigo: string }>()
-      .catch(() => ({ results: [] as { codigo: string }[] }));
-    codigos = (filasInq.length ? filasInq.map((r) => String(r.codigo)) : ["principal"]).filter((c) => c !== "DB_DEMO");
+    codigos = (mtInq.length ? mtInq.map((r) => String(r.codigo)) : ["principal"]).filter((c) => c !== "DB_DEMO");
   }
 
   const claves: string[] = [];
   const erroresEmpresas: string[] = [];
   let bytesTotales = 0;
+  let partesTotales = 0;
   const totalEmpresas = codigos.length;
   let firmado = true;
 
   for (const cod of codigos) {
     try {
-      const maestro = await generarRespaldoMaestro(rawDb, envObj, { codigo: cod });
-      if (!maestro.firma_hmac) firmado = false;
+      const dbInq = cod === "principal" ? rawDb : obtenerDbInquilino({ ...envObj, DB: rawDb }, cod);
+      await migrar(dbInq);
       const codSeguro = sanitizarCodigo(cod);
       const key =
         tipo === "mensual"
-          ? `${PREFIJO_R2_MENSUALES}${mesIso}/respaldo-fiscal-${mesIso}-${codSeguro}.json`
+          ? `${PREFIJO_R2_MENSUALES}${mesIso}/respaldo-fiscal-${mesIso}-${codSeguro}.json.gz`
           : tipo === "diario"
-            ? `${PREFIJO_R2_DIARIOS}${hoyIso}/respaldo-${hoyIso}-${codSeguro}.json`
-            : `${PREFIJO_R2_MANUALES}${hoyIso}/respaldo-${stamp}-${codSeguro}.json`;
+            ? `${PREFIJO_R2_DIARIOS}${hoyIso}/respaldo-${hoyIso}-${codSeguro}.json.gz`
+            : `${PREFIJO_R2_MANUALES}${hoyIso}/respaldo-${stamp}-${codSeguro}.json.gz`;
 
-      const cuerpo = JSON.stringify(maestro);
-      const tamBytes = new TextEncoder().encode(cuerpo).length;
-      await bucket.put(key, cuerpo, {
-        httpMetadata: { contentType: "application/json; charset=utf-8" },
-        customMetadata: {
+      const subida = await subirStreamComprimidoR2(
+        bucket,
+        key,
+        (escribir) =>
+          emitirRespaldoEmpresaStreaming(
+            rawDb,
+            dbInq,
+            envObj,
+            cod,
+            { mtInq, mtDir, totalEmpresas: mtInq.length || 1 },
+            escribir,
+            { pageSize: opts?.pageSize }
+          ),
+        {
           tipo,
           fecha: etiquetaFecha,
           empresa: cod,
-          generado_en: maestro.generado_en,
+          generado_en: generadoEn,
           total_empresas: String(totalEmpresas),
           empresas_en_archivo: "1",
-          firmado: maestro.firma_hmac ? "1" : "0",
+          firmado: String(envObj?.MASTER_KEY ?? "").trim() ? "1" : "0",
           conservacion: tipo === "mensual" ? `${CONSERVACION_FISCAL_ANIOS}_anios` : `${RETENCION_DIAS_R2}_dias`,
-          huella: String(maestro.huella || "").slice(0, 64),
-          version: "5.5",
         },
-      });
+        opts?.tamParteBytes ?? TAM_PARTE_MULTIPART_DEFECTO
+      );
+
+      if (!subida.firmado) firmado = false;
       claves.push(key);
-      bytesTotales += tamBytes;
+      bytesTotales += subida.bytes;
+      partesTotales += subida.partes;
     } catch (errEmp) {
       const msg = String((errEmp as Error)?.message || errEmp || "Error en respaldo").slice(0, 180);
       erroresEmpresas.push(`${cod}: ${msg}`);
@@ -274,6 +445,7 @@ export async function ejecutarRespaldoR2(
     total_empresas: totalEmpresas,
     firmado,
     podados,
+    partes_subidas: partesTotales,
     ...(erroresEmpresas.length ? { errores_empresas: erroresEmpresas } : {}),
   };
   await rawDb
@@ -292,6 +464,60 @@ export async function ejecutarRespaldoR2(
   }
 
   return { ok: true, ...meta };
+}
+
+// Archiva en R2 (gzip) registros históricos de retención (>12 meses) de auditoria y correo_envios antes de purgarlos de D1 (v5.6 · Sección 9.4).
+export async function archivarRetencionR2(
+  bucket: AlmacenR2,
+  codigo: string,
+  tabla: "auditoria" | "correo_envios",
+  filas: Record<string, unknown>[],
+  hoyIso = fechaCaracas()
+): Promise<{ key: string; bytes: number; filas: number }> {
+  const mesIso = hoyIso.slice(0, 7);
+  const codSeguro = sanitizarCodigo(codigo);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + "Z";
+  const key = `${PREFIJO_R2_RETENCION}${mesIso}/${codSeguro}-${tabla}-${stamp}.json.gz`;
+  const payload = JSON.stringify({
+    formato: "archivo-retencion-facturaya",
+    version: 1,
+    empresa: codigo,
+    tabla,
+    archivado_en: new Date().toISOString(),
+    corte_fecha: hoyIso,
+    total_filas: filas.length,
+    filas,
+  });
+  const cs = new CompressionStream("gzip");
+  const writer = cs.writable.getWriter();
+  const writeP = writer.write(new TextEncoder().encode(payload)).then(() => writer.close());
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = cs.readable.getReader();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value?.byteLength) {
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  }
+  await writeP;
+  const gz = concatenarChunks(chunks, total);
+  await bucket.put(key, gz, {
+    httpMetadata: { contentType: "application/gzip" },
+    customMetadata: {
+      tipo: "archivo_retencion",
+      formato: "json.gz.v2",
+      empresa: codigo,
+      tabla,
+      fecha: mesIso,
+      filas: String(filas.length),
+      conservacion: `${CONSERVACION_FISCAL_ANIOS}_anios`,
+      version: "5.6",
+    },
+  });
+  return { key, bytes: gz.byteLength, filas: filas.length };
 }
 
 // Ejecutado desde el Cron Trigger: garantiza como máximo 1 respaldo diario automático por día (hora Caracas).
@@ -442,12 +668,15 @@ export async function listarRespaldosR2(rawDb: D1Database, envObj: Record<string
           ? "mensual"
           : o.key.startsWith(PREFIJO_R2_MANUALES)
             ? "manual"
-            : "diario");
+            : o.key.startsWith(PREFIJO_R2_RETENCION)
+              ? "archivo_retencion"
+              : "diario");
       const uploaded = o.uploaded instanceof Date ? o.uploaded.toISOString() : String(o.uploaded || m.generado_en || "");
       return {
         key: o.key,
         nombre: o.key.split("/").pop() || o.key,
         tipo,
+        formato: m.formato || (o.key.endsWith(".json.gz") ? "json.gz.v2" : "json.v1"),
         empresa: m.empresa || null,
         fecha,
         size: Number(o.size || 0),

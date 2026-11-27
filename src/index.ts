@@ -3,12 +3,12 @@ import { getCookie, setCookie, deleteCookie } from "hono/cookie";
 import { asegurarLlavePlataforma, cargarLlavesLegadas, descifrarSecreto, ErrorLlaveMaestra, llaveMaestraConfigurada } from "./cifrado";
 import { recifrarSecretosHeredados } from "./recifrado";
 import { migrar } from "./migraciones";
-import { CLAVE_FALSA, claveTemporal, codigoRecuperacion, hashClave, normalizarCodigo, sha256, tokenAleatorio, verificarClave } from "./seguridad";
+import { CLAVE_FALSA, claveTemporal, codigoRecuperacion, hashClave, necesitaRehashClave, normalizarCodigo, sha256, tokenAleatorio, verificarClave } from "./seguridad";
 import { NOMBRE_ROL, emailSuperAdminConfig, esSuperAdmin, permisosDe, permitido, sinCostos, tiene, veCostos } from "./permisos";
 import { enviarCorreo } from "./correo";
 import { asegurarTablasMultiTenant, buscarInquilinoPorCorreo, esCorreoSuperAdmin, fijarVistaSuperAdmin, hidratarBindingsCloudflare, invalidarCacheInquilinos, obtenerDbInquilino, obtenerEstadoInquilino, obtenerSuperAdminPrincipal, registrarCorreoDirectorio, tieneBindingDedicado, type InquilinoInfo } from "./inquilinos";
 import { usuarios, cuenta } from "./rutas/usuarios";
-import { restaurar } from "./rutas/restaurar";
+import { estaRestaurandoCacheado, restaurar } from "./rutas/restaurar";
 import { EMAIL, RIF, ahora, auditar, falla, fechaCaracas, ip, leerJson, modoActual, usuarioActual, type Ctx, type Env } from "./comun";
 import {
   POLITICA_LIMITE,
@@ -20,7 +20,16 @@ import {
   verificarTurnstile,
 } from "./seguridad-red";
 import { aRifSeniat } from "../public/dinero.js";
-import { intentarCierreMensualAutomatico, mesAnteriorCaracas, obtenerTasaBcvGlobal, sincronizarTasaInquilinoSiAuto } from "./tasa-bcv";
+import {
+  guardarConfigSemaforoBcv,
+  intentarCierreMensualAutomatico,
+  leerConfigSemaforoBcv,
+  leerTasaPendienteBcv,
+  mesAnteriorCaracas,
+  obtenerTasaBcvGlobal,
+  resolverTasaPendienteBcv,
+  sincronizarTasaInquilinoSiAuto,
+} from "./tasa-bcv";
 import { leerUltimoErrorR2, obtenerBucketR2 } from "./respaldos-r2";
 import {
   ejecutarMantenimientoNocturno,
@@ -193,11 +202,15 @@ const METODOS_MUTANTES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 app.use("/api/*", async (c, next) => {
   const ruta = c.req.path;
   if (ruta.startsWith("/api/correo/eventos/")) return next();
-  // Protección Same-Origin (CSRF) en mutaciones con cabecera Origin presente
+  // Protección Same-Origin (CSRF v5.6):
+  // 1) Derivar host esperado EXCLUSIVAMENTE de c.req.url (jamás confiar en x-forwarded-host ni host manipulables).
+  // 2) Validar cabecera Origin si está presente y también Sec-Fetch-Site en peticiones con cookie sid.
   if (METODOS_MUTANTES.has(c.req.method.toUpperCase())) {
+    const reqUrl = new URL(c.req.url);
+    const reqHost = reqUrl.host.toLowerCase();
     const origin = c.req.header("origin");
+    let originHost = "";
     if (origin !== undefined) {
-      let originHost = "";
       try {
         const uOrig = new URL(origin);
         if (uOrig.protocol === "http:" || uOrig.protocol === "https:") {
@@ -206,12 +219,15 @@ app.use("/api/*", async (c, next) => {
       } catch {
         originHost = "";
       }
-      const reqHost = (c.req.header("x-forwarded-host") || c.req.header("host") || new URL(c.req.url).host)
-        .split(",")[0]
-        .trim()
-        .toLowerCase();
       if (!originHost || originHost !== reqHost) {
         return falla(c, 403, "Solicitud rechazada por validación de origen de seguridad.");
+      }
+    }
+    const secFetchSite = String(c.req.header("sec-fetch-site") || "").trim().toLowerCase();
+    if (secFetchSite && getCookie(c, "sid")) {
+      const esPreviewIframe = reqUrl.hostname.endsWith(".run.app") && origin !== undefined && originHost === reqHost;
+      if (secFetchSite !== "same-origin" && secFetchSite !== "none" && !esPreviewIframe) {
+        return falla(c, 403, "Solicitud rechazada por política de origen (Sec-Fetch-Site).");
       }
     }
   }
@@ -255,7 +271,7 @@ app.use("/api/*", async (c, next) => {
   if (!permitido(u.rol, c.req.method, ruta, u.email, envObj)) return falla(c, 403, "Tu usuario no tiene permiso para esto.");
   if (u.debe_cambiar_clave && ruta !== "/api/cuenta/clave") return c.json({ ok: false, error: "Debes cambiar tu clave temporal antes de continuar.", cambiar_clave: true }, 403);
   // Mientras se restaura un respaldo nadie guarda nada (la restauración la hace UNA persona de principio a fin)
-  if (c.req.method !== "GET" && !ruta.startsWith("/api/sistema/restaurar/") && (await c.env.DB.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first()))
+  if (c.req.method !== "GET" && !ruta.startsWith("/api/sistema/restaurar/") && (await estaRestaurandoCacheado(c.env.DB)))
     return c.json({ ok: false, error: "El sistema está restaurando un respaldo. Espera a que el administrador termine.", restaurando: true }, 423);
   await next();
   if (!veCostos(u.rol, u.email, envObj) && (c.res.headers.get("content-type") ?? "").includes("application/json")) { // quien no ve costos tampoco los recibe, aunque la pantalla no los pida
@@ -346,12 +362,8 @@ app.get("/api/estado", async (c) => {
         });
       }
     } else if (inqCod !== "principal") {
-      const estadoInq = await rawDb
-        .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
-        .bind(inqCod)
-        .first<{ activo: number; motivo_suspension?: string }>()
-        .catch(() => null);
-      if (estadoInq && estadoInq.activo === 0) {
+      const estadoInq = await obtenerEstadoInquilino(rawDb, inqCod);
+      if (!estadoInq.activo) {
         return c.json({
           instalado: true,
           sesion: false,
@@ -397,11 +409,8 @@ app.get("/api/estado", async (c) => {
       });
     }
   } else if (inqCod !== "principal" && !esSuperAdmin(usuario.rol, usuario.email, envObj)) {
-    const estadoInq = await rawDb
-      .prepare(`SELECT activo, COALESCE(motivo_suspension, '') AS motivo_suspension FROM _mt_inquilinos WHERE codigo = ?`)
-      .bind(inqCod)
-      .first<{ activo: number; motivo_suspension?: string }>();
-    if (estadoInq && estadoInq.activo === 0) {
+    const estadoInq = await obtenerEstadoInquilino(rawDb, inqCod);
+    if (!estadoInq.activo) {
       return c.json({
         instalado: true,
         sesion: false,
@@ -542,7 +551,7 @@ app.get("/api/estado", async (c) => {
     ...(whatsappContacto ? { whatsapp_contacto: whatsappContacto } : {}),
     usuario: { ...usuario, rol_nombre: NOMBRE_ROL[rolEfectivo] ?? usuario.rol, es_super: esSuper, totp_activo: totpActivoUsuario },
     permisos: permisosDe(usuario.rol, usuario.email, envObj), ve_costos: veCostos(usuario.rol, usuario.email, envObj),
-    restaurando: !!(await c.env.DB.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first()),
+    restaurando: await estaRestaurandoCacheado(c.env.DB),
     negocio, regimen: reglasRegimen(tipoContrib), tiene_documentos_igtf: tieneDocumentosIgtf, modo: await modoActual(c.env.DB),
     inquilino_actual: inqCod,
     ...(demoInfoRespuesta ? { demo: demoInfoRespuesta } : {}),
@@ -612,7 +621,7 @@ app.post("/api/instalar", async (c) => {
     return falla(c, 403, "Solo el correo configurado en SUPER_ADMIN_EMAIL puede completar la instalación inicial de la plataforma.");
   }
   const rolInicial = "SUPER_ADMIN";
-  const hash = await hashClave(clave), codigo = codigoRecuperacion();
+  const hash = await hashClave(clave, envObj), codigo = codigoRecuperacion();
   const r = await rawDb.batch([
     rawDb.prepare(
       `INSERT OR REPLACE INTO perfil_emisor (id, instalado, nombre_razon_social, rif, direccion_fiscal, telefono, email, tasa_bcv, medio_facturacion, tipo_contribuyente, igtf_activo)
@@ -620,7 +629,7 @@ app.post("/api/instalar", async (c) => {
     ).bind(nombre, rif, direccion, telefono, email, medioElegido, tipoContrib, igtfInicial),
     rawDb.prepare(
       `INSERT INTO usuarios (nombre, email, password_hash, rol, codigo_recuperacion_hash) SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM usuarios)`
-    ).bind(nombre, email, hash, rolInicial, await hashClave(codigo.replace(/-/g, ""))),
+    ).bind(nombre, email, hash, rolInicial, await hashClave(codigo.replace(/-/g, ""), envObj)),
   ]);
   if (!r[1].meta.changes) return falla(c, 409, "El sistema ya está instalado.");
   const id = Number(r[1].meta.last_row_id);
@@ -714,10 +723,10 @@ app.post("/api/login", async (c) => {
     }
   }
 
-  const okNormal = await verificarClave(clave, u?.password_hash ?? CLAVE_FALSA);
+  const okNormal = await verificarClave(clave, u?.password_hash ?? CLAVE_FALSA, envObjLogin);
   const okTemporal = !okNormal
     && Boolean(u?.clave_temporal_hash && Number(u.clave_temporal_expira ?? 0) > t)
-    && (await verificarClave(clave, String(u!.clave_temporal_hash)));
+    && (await verificarClave(clave, String(u!.clave_temporal_hash), envObjLogin));
 
   if (!u || !u.activo || (!okNormal && !okTemporal)) {
     const fallos = (lim?.fallos ?? 0) + 1, bloquear = fallos >= 5;
@@ -816,11 +825,21 @@ app.post("/api/login", async (c) => {
         .bind(u.clave_temporal_hash, u.id),
       db.prepare(`DELETE FROM sesiones WHERE usuario_id = ?`).bind(u.id)
     );
-  } else if (u.clave_temporal_hash) {
-    // Inició sesión con su contraseña habitual: descartar cualquier solicitud temporal pendiente
-    pasosLimpieza.push(
-      db.prepare(`UPDATE usuarios SET clave_temporal_hash = NULL, clave_temporal_expira = 0 WHERE id = ?`).bind(u.id)
-    );
+  } else {
+    if (okNormal && necesitaRehashClave(u.password_hash, envObjLogin)) {
+      // Migración transparente v5.6: actualiza cuentas legadas pbkdf2$ a pbkdf2p$ con pepper MASTER_KEY en el primer login exitoso.
+      const hashConPepper = await hashClave(clave, envObjLogin);
+      pasosLimpieza.push(db.prepare(`UPDATE usuarios SET password_hash = ? WHERE id = ?`).bind(hashConPepper, u.id));
+      if (esSuperLogin && rawDb !== db) {
+        await rawDb.prepare(`UPDATE usuarios SET password_hash = ? WHERE lower(email) = ?`).bind(hashConPepper, email).run().catch(() => {});
+      }
+    }
+    if (u.clave_temporal_hash) {
+      // Inició sesión con su contraseña habitual: descartar cualquier solicitud temporal pendiente
+      pasosLimpieza.push(
+        db.prepare(`UPDATE usuarios SET clave_temporal_hash = NULL, clave_temporal_expira = 0 WHERE id = ?`).bind(u.id)
+      );
+    }
   }
   await db.batch(pasosLimpieza);
   await limpiarLimiteIp(rawDb, POLITICA_LIMITE.LOGIN_IP, ipCliente);
@@ -869,7 +888,7 @@ app.post("/api/recuperar", async (c) => {
   const lim = await db.prepare(`SELECT fallos, bloqueado_hasta FROM intentos_login WHERE clave = ?`).bind(llave).first<{ fallos: number; bloqueado_hasta: number }>();
   if (lim && lim.bloqueado_hasta > t) return falla(c, 429, "Demasiados intentos. Espera 15 minutos e inténtalo de nuevo.");
   const u = await db.prepare(`SELECT id, rol, codigo_recuperacion_hash AS h, totp_activo FROM usuarios WHERE email = ? AND rol IN ('ADMIN', 'SUPER_ADMIN') AND activo = 1`).bind(email).first<{ id: number; rol: string; h: string | null; totp_activo?: number | null }>();
-  const ok = await verificarClave(codigo, u?.h ?? CLAVE_FALSA);
+  const ok = await verificarClave(codigo, u?.h ?? CLAVE_FALSA, envObjRec);
   if (!u || !u.h || !ok) {
     const fallos = (lim?.fallos ?? 0) + 1, bloquear = fallos >= 5;
     await db.prepare(`INSERT INTO intentos_login (clave, fallos, bloqueado_hasta) VALUES (?, ?, ?)
@@ -885,7 +904,7 @@ app.post("/api/recuperar", async (c) => {
        SET password_hash = ?, debe_cambiar_clave = 0, codigo_recuperacion_hash = ?,
            totp_activo = 0, totp_secreto = NULL, totp_pendiente = NULL, totp_ultimo_paso = 0, totp_respaldo_json = NULL
        WHERE id = ?`
-    ).bind(await hashClave(nueva), await hashClave(nuevoCodigo.replace(/-/g, "")), u.id),
+    ).bind(await hashClave(nueva, envObjRec), await hashClave(nuevoCodigo.replace(/-/g, ""), envObjRec), u.id),
     db.prepare(`DELETE FROM sesiones WHERE usuario_id = ?`).bind(u.id),
     db.prepare(`DELETE FROM intentos_login WHERE clave = ?`).bind(llave),
   ]);
@@ -994,7 +1013,7 @@ app.post("/api/recuperar-correo", async (c) => {
 
   // Recuperación NO destructiva (anti-DoS): NO pisamos password_hash ni cerramos sesiones activas hasta que el usuario inicie sesión con la clave temporal
   await db.batch([
-    db.prepare(`UPDATE usuarios SET clave_temporal_hash = ?, clave_temporal_expira = ? WHERE id = ?`).bind(await hashClave(temporal), t + 1800, u.id),
+    db.prepare(`UPDATE usuarios SET clave_temporal_hash = ?, clave_temporal_expira = ? WHERE id = ?`).bind(await hashClave(temporal, envObjRecCor), t + 1800, u.id),
     db.prepare(`INSERT INTO intentos_login (clave, fallos, bloqueado_hasta) VALUES (?, 0, ?)
       ON CONFLICT(clave) DO UPDATE SET fallos = 0, bloqueado_hasta = excluded.bloqueado_hasta`).bind(llave, t + 300),
   ]);
@@ -1005,9 +1024,13 @@ app.post("/api/recuperar-correo", async (c) => {
 app.post("/api/logout", async (c) => {
   const token = getCookie(c, "sid");
   if (token) await c.env.DB.prepare(`DELETE FROM sesiones WHERE token_hash = ?`).bind(await sha256(token)).run();
-  const esHttps = c.req.header("x-forwarded-proto") === "https" || new URL(c.req.url).protocol === "https:";
-  deleteCookie(c, "sid", { path: "/", sameSite: esHttps ? "None" : "Lax", secure: esHttps });
-  deleteCookie(c, "inq", { path: "/", sameSite: esHttps ? "None" : "Lax", secure: esHttps });
+  const url = new URL(c.req.url);
+  const esHttps = c.req.header("x-forwarded-proto") === "https" || url.protocol === "https:";
+  const enIframePreview = url.hostname.endsWith(".run.app");
+  const sameSite = enIframePreview && esHttps ? "None" : "Lax";
+  const secure = enIframePreview ? esHttps : url.hostname !== "127.0.0.1" && url.hostname !== "localhost";
+  deleteCookie(c, "sid", { path: "/", sameSite, secure });
+  deleteCookie(c, "inq", { path: "/", sameSite, secure });
   return c.json({ ok: true });
 });
 
@@ -1123,7 +1146,7 @@ app.put("/api/config/regimen", async (c) => {
       .catch(() => null);
     hashReal = filaLocal?.password_hash ?? null;
   }
-  if (!hashReal || !(await verificarClave(claveActual, hashReal))) {
+  if (!hashReal || !(await verificarClave(claveActual, hashReal, envObj))) {
     return falla(c, 403, "Contraseña incorrecta. No se modificó el tipo de contribuyente.");
   }
 
@@ -1148,28 +1171,81 @@ app.put("/api/config/regimen", async (c) => {
   return c.json({ ok: true, tipo_contribuyente: nuevoTipo, igtf_activo: nuevoIgtf, regimen: reglasRegimen(nuevoTipo) });
 });
 
-app.post("/api/sistema/tasa-bcv/sincronizar", async (c) => {
+app.get("/api/sistema/tasa-bcv/config", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const [config, tasaGlobal, tasaPendiente] = await Promise.all([
+    leerConfigSemaforoBcv(rawDb),
+    obtenerTasaBcvGlobal(rawDb, { permitirRed: false }),
+    leerTasaPendienteBcv(rawDb),
+  ]);
+  return c.json({
+    ok: true,
+    config,
+    tasa_global: tasaGlobal,
+    tasa_pendiente: tasaPendiente,
+  });
+});
+
+app.post("/api/sistema/tasa-bcv/feriados", async (c) => {
   const rawDb = c.get("rawDb") || c.env.DB;
   const usuario = c.get("usuario");
-  const global = await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true });
+  const b = await leerJson(c);
+  const feriados = Array.isArray(b.feriados) ? b.feriados.map((x) => String(x || "")) : undefined;
+  const sinPub = "sin_publicacion_hoy" in b ? (b.sin_publicacion_hoy ? String(b.sin_publicacion_hoy) : "") : undefined;
+  const config = await guardarConfigSemaforoBcv(rawDb, { feriados, sin_publicacion_hoy: sinPub });
+  await auditar(c, usuario.id, "TASA_BCV_FERIADOS", JSON.stringify(config));
+  return c.json({ ok: true, config });
+});
+
+app.post("/api/sistema/tasa-bcv/aprobar-pendiente", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const usuario = c.get("usuario");
+  const b = await leerJson(c);
+  const aprobar = b.aprobar !== false && b.aprobar !== 0 && b.aprobar !== "0";
+  const res = await resolverTasaPendienteBcv(rawDb, aprobar);
+  if (!res.ok) return falla(c, 404, res.error);
+  if (res.aprobada && res.tasa) {
+    const fechaGuardar = res.tasa.fecha_valor_asumida ? res.tasa.actualizado_en : res.tasa.fecha_valor || res.tasa.actualizado_en;
+    await c.env.DB
+      .prepare(`UPDATE perfil_emisor SET tasa_bcv = ?, tasa_bcv_fecha = ? WHERE id = 1 AND COALESCE(tasa_bcv_modo, 'AUTOMATICO') <> 'MANUAL'`)
+      .bind(res.tasa.tasa_bcv, fechaGuardar)
+      .run()
+      .catch(() => {});
+  }
+  await auditar(c, usuario.id, aprobar ? "TASA_BCV_PENDIENTE_APROBAR" : "TASA_BCV_PENDIENTE_RECHAZAR", res.tasa ? `${res.tasa.tasa_bcv}` : "rechazada");
+  return c.json(res);
+});
+
+app.post("/api/sistema/tasa-bcv/sincronizar", async (c) => {
+  const rawDb = c.get("rawDb") || c.env.DB;
+  const envObj = c.env as unknown as Record<string, unknown>;
+  const usuario = c.get("usuario");
+  const global = await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true, env: envObj });
   if (!global?.tasa_bcv) {
     return falla(c, 502, "No se pudo consultar la tasa oficial del BCV en este momento; se mantiene la última tasa registrada.");
   }
-  await c.env.DB
-    .prepare(`UPDATE perfil_emisor SET tasa_bcv = ?, tasa_bcv_fecha = ?, tasa_bcv_modo = 'AUTOMATICO' WHERE id = 1`)
-    .bind(global.tasa_bcv, global.actualizado_en)
-    .run();
+  if (!global.pendiente_aprobacion) {
+    const fechaGuardar = global.fecha_valor_asumida ? global.actualizado_en : global.fecha_valor || global.actualizado_en;
+    await c.env.DB
+      .prepare(`UPDATE perfil_emisor SET tasa_bcv = ?, tasa_bcv_fecha = ?, tasa_bcv_modo = 'AUTOMATICO' WHERE id = 1`)
+      .bind(global.tasa_bcv, fechaGuardar)
+      .run();
+  }
 
   // Escala Pro (50–200+ empresas): NO iteramos las N bases de clientes en una sola petición HTTP.
   // La tasa oficial ya quedó guardada en `_mt_tasa_bcv_global` y cada empresa en modo AUTOMATICO la hereda
   // instantáneamente en su siguiente lectura de `/api/estado` (y durante el mantenimiento nocturno 2:00 AM).
-  await auditar(c, usuario.id, "TASA_BCV_SYNC", `${global.tasa_bcv} (${global.fuente})`);
+  await auditar(c, usuario.id, "TASA_BCV_SYNC", `${global.tasa_bcv} (${global.fuente})${global.pendiente_aprobacion ? " [PENDIENTE_APROBACION]" : ""}`);
   return c.json({
     ok: true,
     tasa_bcv: global.tasa_bcv,
     fuente: global.fuente,
     fecha_valor: global.fecha_valor,
+    fecha_valor_asumida: global.fecha_valor_asumida ?? 0,
     actualizado_en: global.actualizado_en,
+    alerta_discrepancia: global.alerta_discrepancia ?? null,
+    pendiente_aprobacion: Boolean(global.pendiente_aprobacion),
+    tasa_pendiente: global.tasa_pendiente ?? null,
   });
 });
 
@@ -1244,7 +1320,7 @@ app.onError((e, c) => {
   }
 
   // Modo Diurno Ultraligero (6:00 AM – 9:00 PM VET): solo tasa BCV global + limpieza Demo expirada (sin tocar BD de clientes)
-  await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true }).catch(() => null);
+  await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true, env: envObj }).catch(() => null);
   await limpiarDemoExpiradaSiCorresponde(rawDb, envObj).catch((e) => console.error("[demo-cron]:", e));
 };
 

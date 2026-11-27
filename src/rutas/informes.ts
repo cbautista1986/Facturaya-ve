@@ -5,6 +5,7 @@ import { redondear } from "../../public/dinero.js";
 import { PAGADO, auditar, falla, fechaCaracas, leerJson, modoActual, requiereSesion, texto, type Ctx, type Env } from "../comun";
 import { enviarCierreMensualInquilino } from "../tasa-bcv";
 import { leerTipoContribuyente } from "../regimen";
+import { veCostos } from "../permisos";
 import { clasificarRenglonesCompra } from "./compras";
 
 const informes = new Hono<Env>();
@@ -382,6 +383,8 @@ const SIGNO = `(CASE WHEN d.es_nota_credito = 1 THEN -1 ELSE 1 END)`;
 const COSTO = `(((r.cantidad_milli * COALESCE(r.costo_usd, 0) + 500) / 1000) * ${SIGNO})`;
 const INGRESO = `(r.monto_usd * ${SIGNO})`;
 informes.get("/ganancias", async (c) => {
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (!veCostos(u.rol, u.email, envObj)) return falla(c, 403, "Tu usuario no tiene permiso para ver ganancias ni costos.");
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
   const base = `FROM documento_renglones r JOIN documentos d ON d.id = r.documento_id
@@ -428,6 +431,22 @@ informes.get("/por-cobrar", async (c) => {
 informes.get("/inventario", async (c) => {
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
+  if (!puedeVerCostos) {
+    const [prod, movs, resumen] = await Promise.all([
+      db.prepare(`SELECT c.id, c.codigo, c.nombre, COALESCE(SUM(m.cantidad_milli), 0) AS stock_milli
+          FROM catalogo c LEFT JOIN movimientos_stock m ON m.producto_id = c.id AND m.modo = ?
+          WHERE c.tipo = 'PRODUCTO' AND c.controla_stock = 1 GROUP BY c.id HAVING c.activo = 1 OR stock_milli <> 0 ORDER BY c.nombre COLLATE NOCASE`).bind(modo).all<Fila>(),
+      db.prepare(`SELECT m.id, m.fecha, c.nombre AS producto, m.tipo, m.motivo, m.cantidad_milli FROM movimientos_stock m JOIN catalogo c ON c.id = m.producto_id
+          WHERE m.modo = ? AND m.fecha BETWEEN ? AND ? ORDER BY m.fecha DESC, m.id DESC LIMIT 300`).bind(modo, r.desde, r.hasta).all<Fila>(),
+      db.prepare(`SELECT tipo, COUNT(*) AS n FROM movimientos_stock WHERE modo = ? AND fecha BETWEEN ? AND ? GROUP BY tipo ORDER BY tipo`)
+        .bind(modo, r.desde, r.hasta).all<Fila>(),
+    ]);
+    const nMovs = suma(resumen.results, "n");
+    return c.json({ ok: true, modo, desde: r.desde, hasta: r.hasta, items: prod.results, movimientos: movs.results,
+      movimientos_n: nMovs, movimientos_recortados: nMovs > movs.results.length, resumen_movimientos: resumen.results });
+  }
   const [prod, movs, resumen] = await Promise.all([
     db.prepare(`SELECT c.id, c.codigo, c.nombre, COALESCE(SUM(m.cantidad_milli), 0) AS stock_milli, COALESCE(SUM(m.valor_usd), 0) AS valor_usd
         FROM catalogo c LEFT JOIN movimientos_stock m ON m.producto_id = c.id AND m.modo = ?

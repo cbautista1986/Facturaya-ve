@@ -3,6 +3,7 @@
 import { Hono } from "hono";
 import { aCantidadMilli, aCentavos, redondear } from "../../public/dinero.js";
 import { auditar, falla, fechaCaracas, idParam, leerJson, modoActual, requiereSesion, texto, type Env } from "../comun";
+import { veCostos } from "../permisos";
 import { costoPromedio, guardaSaldo, movimiento, saldos, valorEntradaAlPromedio, valorSalida } from "../stock";
 
 const existencias = new Hono<Env>();
@@ -12,30 +13,49 @@ const MOTIVOS: Record<string, 1 | -1> = { DANADO: -1, PERDIDO: -1, GARANTIA: -1,
 const CAMBIO = /CHECK constraint failed/;
 
 const estadoStock = (r: Fila) => (r.stock_milli <= 0 ? "AGOTADO" : r.stock_minimo_milli != null && r.stock_milli <= r.stock_minimo_milli ? "BAJO" : "OK");
-const LISTA = `SELECT c.id, c.codigo, c.nombre, c.activo, c.stock_minimo_milli, c.costo_centavos, c.precio_centavos,
+const LISTA_CON_COSTO = `SELECT c.id, c.codigo, c.nombre, c.activo, c.stock_minimo_milli, c.costo_centavos, c.precio_centavos,
     COALESCE(SUM(m.cantidad_milli), 0) AS stock_milli, COALESCE(SUM(m.valor_usd), 0) AS valor_usd
+  FROM catalogo c LEFT JOIN movimientos_stock m ON m.producto_id = c.id
+  WHERE c.tipo = 'PRODUCTO' AND c.controla_stock = 1 AND c.activo = 1 GROUP BY c.id ORDER BY c.nombre COLLATE NOCASE`;
+const LISTA_SIN_COSTO = `SELECT c.id, c.codigo, c.nombre, c.activo, c.stock_minimo_milli, c.precio_centavos,
+    COALESCE(SUM(m.cantidad_milli), 0) AS stock_milli
   FROM catalogo c LEFT JOIN movimientos_stock m ON m.producto_id = c.id
   WHERE c.tipo = 'PRODUCTO' AND c.controla_stock = 1 AND c.activo = 1 GROUP BY c.id ORDER BY c.nombre COLLATE NOCASE`;
 
 existencias.get("/", async (c) => {
-  const { results } = await c.env.DB.prepare(LISTA).all<Fila>();
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
+  const { results } = await c.env.DB.prepare(puedeVerCostos ? LISTA_CON_COSTO : LISTA_SIN_COSTO).all<Fila>();
   const items: Fila[] = results.map((r) => ({ ...r, estado: estadoStock(r) }));
+  if (!puedeVerCostos) {
+    return c.json({ ok: true, items });
+  }
   return c.json({ ok: true, items, valor_total_usd: items.reduce((s, r) => s + r.valor_usd, 0) });
 });
 
 existencias.get("/alertas", async (c) => {
-  const { results } = await c.env.DB.prepare(LISTA).all<Fila>();
+  const { results } = await c.env.DB.prepare(LISTA_SIN_COSTO).all<Fila>();
   const malos = results.map((r) => ({ id: r.id, nombre: r.nombre, stock_milli: r.stock_milli, estado: estadoStock(r) })).filter((r) => r.estado !== "OK");
   return c.json({ ok: true, agotados: malos.filter((r) => r.estado === "AGOTADO").length, bajos: malos.filter((r) => r.estado === "BAJO").length, lista: malos.slice(0, 5) });
 });
 
 existencias.get("/:id/movimientos", async (c) => {
-  const id = idParam(c), db = c.env.DB;
-  const p = await db.prepare(`SELECT id, codigo, nombre, tipo, controla_stock, stock_minimo_milli, costo_centavos FROM catalogo WHERE id = ?`).bind(id).first<Fila>();
+  const id = idParam(c), db = c.env.DB, u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
+  const colsProd = puedeVerCostos
+    ? `id, codigo, nombre, tipo, controla_stock, stock_minimo_milli, costo_centavos`
+    : `id, codigo, nombre, tipo, controla_stock, stock_minimo_milli`;
+  const p = await db.prepare(`SELECT ${colsProd} FROM catalogo WHERE id = ?`).bind(id).first<Fila>();
   if (!p || p.tipo !== "PRODUCTO") return falla(c, 404, "Producto no encontrado.");
   const s = (await saldos(db, [id])).get(id)!;
+  const colsMov = puedeVerCostos
+    ? `id, tipo, motivo, cantidad_milli, valor_usd, documento_id, compra_id, nota, fecha`
+    : `id, tipo, motivo, cantidad_milli, documento_id, compra_id, nota, fecha`;
   const { results } = await db.prepare(
-    `SELECT id, tipo, motivo, cantidad_milli, valor_usd, documento_id, compra_id, nota, fecha FROM movimientos_stock WHERE producto_id = ? ORDER BY id DESC LIMIT 100`).bind(id).all();
+    `SELECT ${colsMov} FROM movimientos_stock WHERE producto_id = ? ORDER BY id DESC LIMIT 100`).bind(id).all();
+  if (!puedeVerCostos) {
+    return c.json({ ok: true, producto: p, stock_milli: s.stock, movimientos: results });
+  }
   return c.json({ ok: true, producto: p, stock_milli: s.stock, valor_usd: s.valor, movimientos: results });
 });
 

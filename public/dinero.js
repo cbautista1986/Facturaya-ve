@@ -113,10 +113,10 @@ export function aRifSeniat(valor) {
 }
 
 // Semáforo visual de la Tasa Oficial BCV en hora de Venezuela (Caracas UTC-4, sin horario de verano):
-// - verde: día hábil (lun–vie) con tasa actualizada hoy.
-// - amarillo: fin de semana (sáb–dom) con tasa vigente desde el viernes (el BCV no publica sábados ni domingos).
-// - rojo: tasa sin definir, sin fecha válida o desactualizada (día hábil sin actualizar hoy, o fin de semana sin tasa del viernes).
-export function estadoSemaforoTasaBcv(tasa, tasaFecha, ahoraMs = Date.now()) {
+// - verde: día hábil (lun–vie, no feriado) con tasa actualizada hoy.
+// - amarillo: fin de semana (sáb–dom), feriado bancario o día sin publicación BCV con tasa vigente desde el último día hábil.
+// - rojo: tasa sin definir, sin fecha válida o desactualizada.
+export function estadoSemaforoTasaBcv(tasa, tasaFecha, ahoraMs = Date.now(), opciones = {}) {
   const numTasa = Number(tasa);
   if (!Number.isFinite(numTasa) || numTasa <= 0) {
     return {
@@ -136,6 +136,9 @@ export function estadoSemaforoTasaBcv(tasa, tasaFecha, ahoraMs = Date.now()) {
     if (/^\d{9,13}$/.test(s)) {
       const n = Number(s);
       tasaMs = s.length <= 10 ? n * 1000 : n;
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      // Fecha ISO pura (YYYY-MM-DD, ej. fecha_valor BCV): se interpreta como mediodía Caracas para no cambiar de día al restar UTC-4
+      tasaMs = Date.parse(`${s}T16:00:00Z`);
     } else {
       const iso = s.replace(" ", "T");
       tasaMs = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
@@ -160,17 +163,34 @@ export function estadoSemaforoTasaBcv(tasa, tasaFecha, ahoraMs = Date.now()) {
   const tasaIso = tasaVet.toISOString().slice(0, 10);
   const diaSemana = ahoraVet.getUTCDay(); // 0=Dom, 1=Lun .. 5=Vie, 6=Sáb
 
+  const feriadosSet = new Set(
+    Array.isArray(opciones?.feriados)
+      ? opciones.feriados.map((x) => String(x || "").trim().slice(0, 10)).filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x))
+      : []
+  );
+  const sinPubHoy = String(opciones?.sinPublicacionHoy || "").trim().slice(0, 10) === hoyIso;
+  const esFeriadoHoy = feriadosSet.has(hoyIso);
+
+  const ultimoDiaHabilAntesDe = (baseMsVet) => {
+    for (let i = 1; i <= 14; i++) {
+      const cand = new Date(baseMsVet - i * DIA_MS);
+      const dow = cand.getUTCDay();
+      const iso = cand.toISOString().slice(0, 10);
+      if (dow !== 0 && dow !== 6 && !feriadosSet.has(iso)) return iso;
+    }
+    return new Date(baseMsVet - DIA_MS).toISOString().slice(0, 10);
+  };
+
   if (diaSemana === 6 || diaSemana === 0) {
-    const diasDesdeViernes = diaSemana === 6 ? 1 : 2;
-    const viernesIso = new Date(ahoraMs - OFFSET_VET_MS - diasDesdeViernes * DIA_MS).toISOString().slice(0, 10);
-    if (tasaIso >= viernesIso) {
+    const ultimoHabilIso = ultimoDiaHabilAntesDe(ahoraMs - OFFSET_VET_MS);
+    if (tasaIso >= ultimoHabilIso) {
       return {
         estado: "amarillo",
         clase: "tasa-amarillo",
         punto: "🟡",
         insignia: "ambar",
         etiqueta: "Fin de semana",
-        detalle: "Fin de semana (BCV): rige la tasa oficial del viernes",
+        detalle: "Fin de semana (BCV): rige la tasa oficial del último día hábil",
       };
     }
     return {
@@ -179,7 +199,7 @@ export function estadoSemaforoTasaBcv(tasa, tasaFecha, ahoraMs = Date.now()) {
       punto: "🔴",
       insignia: "rojo",
       etiqueta: "Sin actualizar",
-      detalle: "Sin actualizar desde antes del viernes",
+      detalle: "Sin actualizar desde antes del último día hábil",
     };
   }
 
@@ -192,6 +212,20 @@ export function estadoSemaforoTasaBcv(tasa, tasaFecha, ahoraMs = Date.now()) {
       etiqueta: "Al día",
       detalle: "",
     };
+  }
+
+  if (esFeriadoHoy || sinPubHoy) {
+    const ultimoHabilIso = ultimoDiaHabilAntesDe(ahoraMs - OFFSET_VET_MS);
+    if (tasaIso >= ultimoHabilIso) {
+      return {
+        estado: "amarillo",
+        clase: "tasa-amarillo",
+        punto: "🟡",
+        insignia: "ambar",
+        etiqueta: esFeriadoHoy ? "Feriado BCV" : "Sin publicación BCV",
+        detalle: "Feriado o día sin publicación BCV: rige la última tasa oficial hábil",
+      };
+    }
   }
 
   return {

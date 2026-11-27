@@ -85,7 +85,7 @@ inquilinos.use("*", async (c, next) => {
 async function verificarClaveSuperAdmin(rawDb: D1Database, clave: string, envObj: Record<string, unknown>): Promise<boolean> {
   if (!clave) return false;
   const u = await obtenerSuperAdminPrincipal(rawDb, envObj);
-  return verificarClave(clave, u?.password_hash ?? CLAVE_FALSA);
+  return verificarClave(clave, u?.password_hash ?? CLAVE_FALSA, envObj);
 }
 
 // Lista todos los negocios (inquilinos), cuál está viendo actualmente el Súper Admin y qué ranuras estándar D1 existen (DB_1..DB_9)
@@ -503,8 +503,8 @@ inquilinos.post("/", async (c) => {
 
   const tempClave = claveTemporal();
   const codRecup = codigoRecuperacion();
-  const hashTemp = await hashClave(tempClave);
-  const hashRecup = await hashClave(normalizarCodigo(codRecup));
+  const hashTemp = await hashClave(tempClave, envObj);
+  const hashRecup = await hashClave(normalizarCodigo(codRecup), envObj);
   const ahoraIso = new Date().toISOString();
 
   const lotes: D1PreparedStatement[] = [
@@ -1524,19 +1524,33 @@ inquilinos.get("/respaldos-r2/descargar", async (c) => {
   const envObj = c.env as unknown as Record<string, unknown>;
   const bucket = obtenerBucketR2(envObj);
   if (!bucket) return falla(c, 400, "El bucket Cloudflare R2 (RESPALDOS_R2) no está vinculado.");
-  const key = texto(c.req.query("key"), 200);
+  const key = texto(c.req.query("key"), 220);
   if (!claveR2Valida(key)) return falla(c, 400, "Clave de respaldo R2 no válida.");
   const obj = await bucket.get(key);
   if (!obj) return falla(c, 404, "Respaldo no encontrado en R2.");
-  const nombre = (key.split("/").pop() || "respaldo-r2.json").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const esGz = key.endsWith(".json.gz");
+  const descomprimir = esGz && c.req.query("descomprimir") === "1";
+  const nombreRaw = (key.split("/").pop() || (esGz ? "respaldo-r2.json.gz" : "respaldo-r2.json")).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const nombre = descomprimir ? nombreRaw.replace(/\.gz$/, "") : nombreRaw;
   await auditar(c, c.get("usuario").id, "RESPALDO_R2_DESCARGAR", key);
-  const cuerpo = obj.body ?? (await obj.arrayBuffer());
+
+  let cuerpo: unknown = obj.body ?? (await obj.arrayBuffer());
+  if (descomprimir) {
+    const streamEntrada = obj.body ?? new ReadableStream({
+      start(ctrl) {
+        ctrl.enqueue(new Uint8Array(cuerpo as ArrayBuffer));
+        ctrl.close();
+      },
+    });
+    cuerpo = streamEntrada.pipeThrough(new DecompressionStream("gzip"));
+  }
+
   const headers: Record<string, string> = {
-    "Content-Type": "application/json; charset=utf-8",
+    "Content-Type": esGz && !descomprimir ? "application/gzip" : "application/json; charset=utf-8",
     "Cache-Control": "no-store",
     "Content-Disposition": `attachment; filename="${nombre}"`,
   };
-  if (Number.isFinite(obj.size) && obj.size > 0) {
+  if (!descomprimir && Number.isFinite(obj.size) && obj.size > 0) {
     headers["Content-Length"] = String(obj.size);
   }
   return new Response(cuerpo as ConstructorParameters<typeof Response>[0], { headers });

@@ -9,7 +9,7 @@
 //  4. Cada tabla nueva del sistema debe figurar en PLAN o en NO_RESTAURAR: si no, la restauración se niega (así nunca se pierden datos en silencio).
 import { Hono } from "hono";
 import { calcular } from "../../public/dinero.js";
-import { verificarHmacRespaldo } from "../cifrado";
+import { verificarHmacDigestRespaldo, verificarHmacRespaldo } from "../cifrado";
 import { auditar, falla, leerJson, modoActual, type Ctx, type Env } from "../comun";
 import { asegurarTablasMultiTenant, prefijoTablaDeCodigo, registrarCorreoDirectorio, tieneBindingDedicado } from "../inquilinos";
 import { claveTemporal, hashClave, verificarClave } from "../seguridad";
@@ -55,6 +55,58 @@ const leerEstado = async (db: D1Database) => {
   const r = await db.prepare(`SELECT valor FROM ajustes WHERE clave = 'restauracion'`).first<{ valor: string }>();
   return r ? (JSON.parse(r.valor) as Fila) : null;
 };
+
+// Micro-caché en memoria por isolate (15s) para evitar consultar `ajustes` en cada petición mutante normal (v5.6 · Sección 9.3).
+const CACHE_RESTAURACION_TTL_MS = 15_000;
+const cacheRestauracion = new WeakMap<D1Database, { ts: number; enCurso: boolean }>();
+
+export function invalidarCacheRestauracion(db?: D1Database) {
+  if (db) cacheRestauracion.delete(db);
+}
+
+export async function estaRestaurandoCacheado(db: D1Database): Promise<boolean> {
+  const ahoraMs = Date.now();
+  const c = cacheRestauracion.get(db);
+  if (c && ahoraMs - c.ts < CACHE_RESTAURACION_TTL_MS) return c.enCurso;
+  const enCurso = Boolean(await db.prepare(`SELECT 1 FROM ajustes WHERE clave = 'restauracion'`).first().catch(() => null));
+  cacheRestauracion.set(db, { ts: ahoraMs, enCurso });
+  return enCurso;
+}
+
+// Descomprime respaldos .json.gz (formato v2) o lee respaldos .json legados (formato v1) de forma transparente.
+export async function leerRespaldoCualquierFormato(entrada: Uint8Array | ArrayBuffer | string): Promise<Fila> {
+  if (typeof entrada === "string") return JSON.parse(entrada) as Fila;
+  const bytes = entrada instanceof Uint8Array ? entrada : new Uint8Array(entrada);
+  const esGzip = bytes.byteLength >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+  if (!esGzip) {
+    return JSON.parse(new TextDecoder().decode(bytes)) as Fila;
+  }
+  const ds = new DecompressionStream("gzip");
+  const writer = ds.writable.getWriter();
+  const copia = new Uint8Array(bytes.byteLength);
+  copia.set(bytes);
+  const writeP = writer.write(copia).then(() => writer.close());
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = ds.readable.getReader();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value?.byteLength) {
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  }
+  await writeP;
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const ch of chunks) {
+    out.set(ch, pos);
+    pos += ch.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(out)) as Fila;
+}
+
 const guardarEstado = (db: D1Database, e: Fila) => db.prepare(`INSERT INTO ajustes (clave, valor) VALUES ('restauracion', ?) ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor`).bind(JSON.stringify(e));
 const n = async (db: D1Database, t: string) => (await db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).first<{ n: number }>())?.n ?? 0;
 
@@ -95,29 +147,32 @@ restaurar.get("/estado", async (c) => {
 // 1) Iniciar: comprueba que el sistema esté vacío, guarda cómo estaba y bloquea las escrituras de los demás
 restaurar.post("/iniciar", async (c) => {
   const db = c.env.DB, yo = c.get("usuario"), b = await leerJson(c, 2_097_152);
+  const envObj = c.env as unknown as Record<string, unknown>;
   if (b.__demasiadoGrande) return falla(c, 413, "El manifiesto de respaldo es demasiado grande.");
   const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
+  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash, envObj))) return falla(c, 400, "La contraseña no es correcta.");
   const razones = await razonesNo(db, prefijoActivo(c));
   if (razones.length) return falla(c, 409, razones[0]);
   const m = b.manifiesto as Fila | undefined;
   if (!m || typeof m !== "object" || ![1, 2].includes(Number(m.version)) || typeof m.conteos !== "object" || typeof m.sumas !== "object") return falla(c, 400, "El archivo no parece un respaldo de este sistema.");
   const modoOrigen = m.modo_origen === "REAL" ? "REAL" : "PRACTICA";
-  // v4.2.1: la firma ya no se puede evitar borrando el campo `firma_hmac` ni bajando `version`.
-  // Un respaldo con firma debe verificarse; uno sin firma (generado sin MASTER_KEY o de versiones antiguas) solo lo restaura el Súper Admin.
+  // v4.2.1 + v5.6: soporta tanto firma legada hmac:v1:<kid>:<hex> como firma streaming hmac:v2:<kid>:<hex> (SHA-256 de datos).
   const firmaRecibida = typeof m.firma_hmac === "string" ? m.firma_hmac.trim() : "";
   const firmaLegada = firmaRecibida.startsWith("hmac:v1:def:"); // v4.1: firmada con una semilla pública, no prueba nada -> se trata como respaldo sin firma
   if (firmaRecibida && !firmaLegada) {
-    const okFirma = await verificarHmacRespaldo(
-      firmaRecibida,
-      modoOrigen,
-      m.conteos,
-      m.sumas,
-      c.env as unknown as Record<string, unknown>,
-      typeof m.huella === "string" ? m.huella : undefined
-    );
+    const sha256Datos = typeof m.sha256_datos === "string" ? m.sha256_datos : typeof m.huella === "string" ? m.huella : "";
+    const okFirma = firmaRecibida.startsWith("hmac:v2:")
+      ? await verificarHmacDigestRespaldo(firmaRecibida, modoOrigen, sha256Datos, m.conteos, m.sumas, envObj)
+      : await verificarHmacRespaldo(
+          firmaRecibida,
+          modoOrigen,
+          m.conteos,
+          m.sumas,
+          envObj,
+          typeof m.huella === "string" ? m.huella : undefined
+        );
     if (!okFirma) return falla(c, 400, "La firma criptográfica HMAC del respaldo no es válida, fue alterada o se firmó con otra llave maestra.");
-  } else if (!esSuperAdmin(yo.rol, yo.email, c.env as unknown as Record<string, unknown>)) {
+  } else if (!esSuperAdmin(yo.rol, yo.email, envObj)) {
     return falla(c, 403, "Este respaldo no está firmado. Por seguridad solo el Súper Admin puede restaurar respaldos sin firma; descarga uno nuevo con MASTER_KEY configurada.");
   }
   // Se guarda cómo estaba lo pequeño que la restauración reemplaza, por si hay que cancelar
@@ -132,6 +187,7 @@ restaurar.post("/iniciar", async (c) => {
     db.prepare(`INSERT INTO ajustes (clave, valor) VALUES ('restauracion_usuarios', '{}') ON CONFLICT(clave) DO UPDATE SET valor = '{}'`),
     guardarEstado(db, { desde: new Date().toISOString(), por: yo.id, version: Number(m.version), modo_origen: modoOrigen, conteos: m.conteos, sumas: m.sumas, cargadas: {} }),
   ]);
+  invalidarCacheRestauracion(db);
   await auditar(c, yo.id, "RESTAURAR_INICIO", `${modoOrigen} v${m.version}`);
   // El registro de «inicio» es de esta restauración, no del respaldo: el punto de partida para contar y para cancelar se fija DESPUÉS de anotarlo (así queda constancia aunque se cancele)
   previo.auditoria_max = (await db.prepare(`SELECT COALESCE(MAX(id), 0) AS m FROM auditoria`).first<{ m: number }>())?.m ?? 0;
@@ -170,7 +226,7 @@ restaurar.post("/lote", async (c) => {
       const rolValido = ["ADMIN", "SUPERVISOR", "CAJERO", "BODEGA", "CONTADOR"].includes(String(f.rol)) ? String(f.rol) : "CAJERO";
       // Los usuarios del respaldo vuelven DESACTIVADOS y con clave inutilizable: el dueño los reactiva y les da clave nueva si quiere
       const r = await db.prepare(`INSERT INTO usuarios (nombre, email, password_hash, rol, activo, debe_cambiar_clave) VALUES (?, ?, ?, ?, 0, 1) RETURNING id`)
-        .bind(String(f.nombre ?? "Usuario").slice(0, 120), email, await hashClave(claveTemporal()), rolValido).first<{ id: number }>();
+        .bind(String(f.nombre ?? "Usuario").slice(0, 120), email, await hashClave(claveTemporal(), c.env as unknown as Record<string, unknown>), rolValido).first<{ id: number }>();
       await registrarCorreoDirectorio(rawDb, email, inqCod, rolValido, c.env as unknown as Record<string, unknown>);
       mapa[String(f.id)] = r!.id; nuevosUsuarios.push(r!.id); nuevosCorreos.push(email);
       continue;
@@ -259,6 +315,7 @@ restaurar.post("/terminar", async (c) => {
     db.prepare(`UPDATE compras SET modo = 'REAL' WHERE modo = 'PRACTICA'`), db.prepare(`UPDATE movimientos_stock SET modo = 'REAL' WHERE modo = 'PRACTICA'`),
     db.prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`));
   await db.batch(pasos); // una sola operación: o pasa todo a real, o nada
+  invalidarCacheRestauracion(db);
   await auditar(c, yo.id, "RESTAURAR_FIN", `${e.modo_origen}: ${Object.entries(e.cargadas).map(([k, v]) => `${k} ${v}`).join(", ")}`);
   return c.json({ ok: true, modo: e.modo_origen, cargadas: e.cargadas });
 });
@@ -286,6 +343,7 @@ restaurar.post("/cancelar", async (c) => {
   for (const f of previo.ajustes as Fila[]) pasos.push(db.prepare(`UPDATE ajustes SET valor = ? WHERE clave = ?`).bind(f.valor, f.clave));
   pasos.push(db.prepare(`DELETE FROM ajustes WHERE clave NOT IN (${clavesPrevias.map(() => "?").join(", ")})`).bind(...clavesPrevias)); // incluye los marcadores de la restauración
   await db.batch(pasos);
+  invalidarCacheRestauracion(db);
   if (Array.isArray(e.correos_creados) && e.correos_creados.length > 0) {
     await asegurarTablasMultiTenant(rawDb);
     for (const em of e.correos_creados as string[]) {

@@ -72,3 +72,26 @@ El envío de facturas, recibos, cierres contables y recuperación de claves oper
   - Cuotas diarias UTC opcionales: `BREVO_CUOTA_DIARIA` (300), `RESEND_CUOTA_DIARIA` (100), `ZEPTOMAIL_CUOTA_DIARIA` (10000).
 - **Identidad y privacidad:** los correos de documentos, recibos y cierre mensual salen como `<Nombre del negocio> (vía FacturaYa)` con `Reply-To` directo al correo del negocio. Los bloqueos globales (`_mt_correos_bloqueos`) se almacenan únicamente como HMAC-SHA256 con `MASTER_KEY`.
 
+---
+
+## 6. Cron Triggers, Silencio Diurno y Escala Multi-Inquilino (v5.6.0)
+
+`wrangler.toml` programa 3 expresiones Cron separando estrictamente la operación comercial diurna del mantenimiento nocturno:
+
+| Cron (UTC) | Horario Venezuela (VET, UTC-4) | Alcance exacto |
+| :--- | :--- | :--- |
+| `0 6 * * *` | **2:00 AM VET** | Inicio del mantenimiento nocturno: auto-bindings D1, primer lote de salud/sanación/optimización, respaldos R2 streaming `.json.gz`, archivado de retención (>12 meses) en R2, cierre mensual (días 1–5) y cobros SaaS (día 1). |
+| `15,30,45 6 * * *` | **2:15, 2:30 y 2:45 AM VET** | Continuación por lotes (hasta 4 tandas/noche) con **rotación circular multi-día** para 100+ empresas: las empresas que no alcanzan en una madrugada retoman al día siguiente desde el puntero persistido; si alguna pasa >2 días sin respaldo R2 se dispara alerta crítica. |
+| `0 12,17,22 * * *` | **8:00 AM, 1:00 PM y 6:00 PM VET** | **Silencio diurno estricto (6:00 AM – 9:00 PM VET):** ejecuta **únicamente** la consulta de tasa BCV oficial (1 fila global en la BD principal) y limpieza de `DB_DEMO` expirada. Cero respaldos R2, cero auditorías masivas y cero toques a bases de clientes en horario comercial. |
+
+---
+
+## 7. Novedades de la versión v5.6.0
+
+- **Aislamiento total de costos y ganancias (RBAC + DTOs explícitos):** `CAJERO`, `SUPERVISOR` y `BODEGA` nunca reciben `costo_centavos`, `valor_usd`, `valor_total_usd` ni costos unitarios de compra desde SQL ni en `GET /api/informes/ganancias` (403), respaldado además por el filtro central `sinCostos()`.
+- **Bloqueo fiscal de tasa BCV desactualizada en servidor (`REAL`):** emitir facturas, NC, ND o cobros en Bolívares con tasa vencida devuelve `409 TASA_DESACTUALIZADA`; soporte de feriados bancarios / días sin publicación (`POST /api/sistema/tasa-bcv/feriados`) y *override* auditado (`TASA_VIEJA_OVERRIDE`) exclusivo para `ADMIN` / `SUPER_ADMIN`.
+- **Tasa BCV oficial primero + guardia anti-anomalías:** prioriza `bcv.org.ve` con extracción real de `fecha_valor` (`fecha_valor_asumida = 0|1`), validación cruzada (>0.5% alerta priorizando BCV oficial) y retención en pendiente ante saltos >15% hasta aprobación explícita del Súper Administrador (`POST /api/sistema/tasa-bcv/aprobar-pendiente`).
+- **Respaldos R2 en streaming `.json.gz` con paginación keyset y firma `hmac:v2`:** compresión `CompressionStream("gzip")`, carga multipart en R2, hash SHA-256 streaming sin materializar la BD completa en RAM y compatibilidad transparente de restauración con respaldos legados `.json` (`hmac:v1`).
+- **Endurecimiento de seguridad y eficiencia:** CSRF estricto basado en `c.req.url` + `Sec-Fetch-Site`, *pepper* HMAC con `MASTER_KEY` en contraseñas (`pbkdf2p$`) con migración transparente al iniciar sesión, cachés cortas de *isolate* (15–20 s) para mantenimiento/inquilino/restauración, archivado en R2 de `auditoria`/`correo_envios` (>12 meses) y `Message-ID` RFC 5322 + registro `INTENTANDO`/`INDETERMINADO` en failover de correo.
+
+

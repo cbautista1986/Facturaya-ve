@@ -113,7 +113,15 @@ type PayloadAdaptador = {
   inquilinoCodigo: string;
   tipo: string;
   idempotencyKey?: string;
+  messageIdPropio?: string;
 };
+
+function construirMessageIdPropio(idempKey: string, remitente: string): string {
+  const dominioRaw = String(remitente.split("@")[1] || "mail.facturayave.com").trim().toLowerCase();
+  const dominio = /^[a-z0-9.-]+\.[a-z]{2,}$/.test(dominioRaw) ? dominioRaw : "mail.facturayave.com";
+  const local = idempKey.replace(/[^a-zA-Z0-9._-]/g, "").slice(0, 64) || crypto.randomUUID();
+  return `<${local}@${dominio}>`;
+}
 
 type ResultadoAdaptador =
   | { ok: true; messageId: string }
@@ -138,6 +146,7 @@ async function enviarPorBrevo(p: PayloadAdaptador): Promise<ResultadoAdaptador> 
         htmlContent: p.html,
         ...(p.texto ? { textContent: p.texto } : {}),
         ...(p.adjuntos?.length ? { attachment: p.adjuntos.map((a) => ({ name: a.filename, content: a.content })) } : {}),
+        ...(p.messageIdPropio ? { headers: { "Message-ID": p.messageIdPropio, "X-FacturaYa-Idempotency": p.idempotencyKey || "" } } : {}),
         tags: [`inq:${p.inquilinoCodigo}`, `tipo:${p.tipo}`],
       }),
     });
@@ -146,7 +155,7 @@ async function enviarPorBrevo(p: PayloadAdaptador): Promise<ResultadoAdaptador> 
       return { ok: false, status: r.status, error: `Brevo rechazó el envío (${r.status}): ${err.slice(0, 160)}` };
     }
     const json = (await r.json().catch(() => ({}))) as { messageId?: string };
-    return { ok: true, messageId: String(json?.messageId || "") };
+    return { ok: true, messageId: String(json?.messageId || p.messageIdPropio || "") };
   } catch (e) {
     return { ok: false, status: 0, error: `No se pudo conectar con Brevo: ${(e as Error).message}` };
   }
@@ -172,6 +181,7 @@ async function enviarPorResend(p: PayloadAdaptador): Promise<ResultadoAdaptador>
         html: p.html,
         ...(p.texto ? { text: p.texto } : {}),
         ...(p.adjuntos?.length ? { attachments: p.adjuntos.map((a) => ({ filename: a.filename, content: a.content })) } : {}),
+        ...(p.messageIdPropio ? { headers: { "Message-ID": p.messageIdPropio } } : {}),
         tags: [
           { name: "inq", value: p.inquilinoCodigo.replace(/[^a-zA-Z0-9_-]/g, "_") },
           { name: "tipo", value: p.tipo.replace(/[^a-zA-Z0-9_-]/g, "_") },
@@ -183,7 +193,7 @@ async function enviarPorResend(p: PayloadAdaptador): Promise<ResultadoAdaptador>
       return { ok: false, status: r.status, error: `Resend rechazó el envío (${r.status}): ${err.slice(0, 160)}` };
     }
     const json = (await r.json().catch(() => ({}))) as { id?: string };
-    return { ok: true, messageId: String(json?.id || "") };
+    return { ok: true, messageId: String(json?.id || p.messageIdPropio || "") };
   } catch (e) {
     return { ok: false, status: 0, error: `No se pudo conectar con Resend: ${(e as Error).message}` };
   }
@@ -208,6 +218,7 @@ async function enviarPorZeptoMail(p: PayloadAdaptador): Promise<ResultadoAdaptad
         subject: p.asunto,
         htmlbody: p.html,
         ...(p.texto ? { textbody: p.texto } : {}),
+        ...(p.messageIdPropio ? { mime_headers: { "Message-ID": p.messageIdPropio } } : {}),
         ...(p.adjuntos?.length
           ? {
               attachments: p.adjuntos.map((a) => ({
@@ -229,7 +240,7 @@ async function enviarPorZeptoMail(p: PayloadAdaptador): Promise<ResultadoAdaptad
       return { ok: false, status: r.status, error: `ZeptoMail rechazó el envío (${r.status}): ${err.slice(0, 160)}` };
     }
     const json = (await r.json().catch(() => ({}))) as { request_id?: string };
-    return { ok: true, messageId: String(json?.request_id || "") };
+    return { ok: true, messageId: String(json?.request_id || p.messageIdPropio || "") };
   } catch (e) {
     return { ok: false, status: 0, error: `No se pudo conectar con ZeptoMail: ${(e as Error).message}` };
   }
@@ -321,6 +332,16 @@ export async function enviarCorreo(
         error: "Falta configurar la clave API de correo electrónico en Ajustes → Servicio de Correo (o los secretos de plataforma en Cloudflare).",
       };
     }
+    const idempLegado = opc.idempotencyKey || `${inquilinoCodigo}-${tipo}-${Math.floor(Date.now() / 1000)}-${crypto.randomUUID().slice(0, 8)}`;
+    const messageIdLegado = construirMessageIdPropio(idempLegado, cfg.remitente);
+    await registrarEnvioInquilino(db, {
+      tipo,
+      destinatario: destinatarios.join(", "),
+      asunto: asuntoEfectivo,
+      proveedor: cfg.proveedor,
+      estado: "INTENTANDO",
+      message_id: messageIdLegado,
+    });
     const res = await despacharAdaptador(cfg.proveedor === "BREVO" ? "BREVO" : "RESEND", {
       clave: cfg.clave,
       remitente: cfg.remitente,
@@ -334,7 +355,8 @@ export async function enviarCorreo(
       adjuntos: opc.adjuntos,
       inquilinoCodigo,
       tipo,
-      idempotencyKey: opc.idempotencyKey,
+      idempotencyKey: idempLegado,
+      messageIdPropio: messageIdLegado,
     });
     if (!res.ok) {
       await registrarEnvioInquilino(db, {
@@ -470,13 +492,24 @@ export async function enviarCorreo(
   }
 
   // 5) Ejecutar intento + failover inmediato al siguiente proveedor sano en la misma petición
+  // v5.6: Message-ID propio RFC 5322 + Idempotency-Key compartidos entre proveedores para que el buzón destinatario deduplique ante timeouts de red.
   const idempKey = opc.idempotencyKey || `${inquilinoCodigo}-${tipo}-${ahoraSeg}-${crypto.randomUUID().slice(0, 8)}`;
+  const messageIdPropio = construirMessageIdPropio(idempKey, identidad.remitente);
   let ultimoError = "";
   let ultimoFueCuota = false;
   let ultimoProveedor: ProveedorPlataforma = plan.orden[0];
 
   for (const prov of plan.orden) {
     ultimoProveedor = prov;
+    // Registrar intento ANTES de invocar al proveedor externo (trazabilidad ante caídas o timeouts)
+    await registrarEnvioInquilino(db, {
+      tipo,
+      destinatario: destinatarios.join(", "),
+      asunto: asuntoEfectivo,
+      proveedor: prov,
+      estado: "INTENTANDO",
+      message_id: messageIdPropio,
+    });
     const res = await despacharAdaptador(prov, {
       clave: plat.claves[prov],
       remitente: identidad.remitente,
@@ -491,6 +524,7 @@ export async function enviarCorreo(
       inquilinoCodigo,
       tipo,
       idempotencyKey: idempKey,
+      messageIdPropio,
     });
 
     if (res.ok) {
@@ -513,7 +547,7 @@ export async function enviarCorreo(
         asunto: asuntoEfectivo,
         proveedor: prov,
         estado: "ENVIADO",
-        message_id: res.messageId,
+        message_id: res.messageId || messageIdPropio,
       });
       await evaluarAlertasDespuesEnvio(
         rawDb,
@@ -536,6 +570,18 @@ export async function enviarCorreo(
     const clas = clasificarFalloHttpProveedor(res.status);
     ultimoError = res.error;
     ultimoFueCuota = clas.esCuota;
+    if (res.status === 0) {
+      // Fallo de red/timeout tras enviar la solicitud: el estado remoto es indeterminado; se mantiene el mismo Message-ID en failover para deduplicación RFC 5322.
+      await registrarEnvioInquilino(db, {
+        tipo,
+        destinatario: destinatarios.join(", "),
+        asunto: asuntoEfectivo,
+        proveedor: prov,
+        estado: "INDETERMINADO",
+        message_id: messageIdPropio,
+        motivo: `${res.error} (failover con mismo Message-ID para deduplicación)`,
+      });
+    }
     if (clas.abrirCircuito) {
       await registrarFalloCircuito(rawDb, prov, res.status, res.error, clas.segundosEnfriamiento, ahoraSeg);
       if (clas.esCuota) {

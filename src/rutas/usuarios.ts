@@ -50,7 +50,7 @@ usuarios.post("/", async (c) => {
   const temporal = claveTemporal();
   try {
     const r = await db.prepare(`INSERT INTO usuarios (nombre, email, password_hash, rol, debe_cambiar_clave) VALUES (?, ?, ?, ?, 1) RETURNING id`)
-      .bind(nombre, email, await hashClave(temporal), rol).first<{ id: number }>();
+      .bind(nombre, email, await hashClave(temporal, envObj), rol).first<{ id: number }>();
     await registrarCorreoDirectorio(rawDb, email, inqCod, rol, envObj);
     await auditar(c, yo.id, "USUARIO_CREAR", `${email} ${rol}`);
     return c.json({ ok: true, id: r!.id, clave_temporal: temporal });
@@ -95,7 +95,7 @@ usuarios.post("/:id/reset-clave", async (c) => {
   if (directa && directa.length < 10) return falla(c, 400, "La contraseña nueva del empleado debe tener al menos 10 caracteres.");
   const claveFinal = directa || claveTemporal();
   const exigirCambio = directa ? 0 : 1;
-  await db.batch([db.prepare(`UPDATE usuarios SET password_hash = ?, debe_cambiar_clave = ? WHERE id = ?`).bind(await hashClave(claveFinal), exigirCambio, id), mata(db, id)]);
+  await db.batch([db.prepare(`UPDATE usuarios SET password_hash = ?, debe_cambiar_clave = ? WHERE id = ?`).bind(await hashClave(claveFinal, envObj), exigirCambio, id), mata(db, id)]);
   await auditar(c, yo.id, "USUARIO_RESET_CLAVE", `${id}${directa ? " (directa)" : " (temporal)"}`);
   return c.json({ ok: true, clave_temporal: claveFinal, directa: !!directa });
 });
@@ -108,8 +108,8 @@ cuenta.post("/clave", async (c) => {
   if (nueva.length < 10) return falla(c, 400, "La clave nueva debe tener al menos 10 caracteres.");
   if (nueva === actual) return falla(c, 400, "La clave nueva debe ser distinta de la actual.");
   const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(actual, u.password_hash))) return falla(c, 400, "La clave actual no es correcta.");
-  const mia = await sha256(getCookie(c, "sid") ?? ""), nuevoHash = await hashClave(nueva);
+  if (!u || !(await verificarClave(actual, u.password_hash, envObj))) return falla(c, 400, "La clave actual no es correcta.");
+  const mia = await sha256(getCookie(c, "sid") ?? ""), nuevoHash = await hashClave(nueva, envObj);
   await db.batch([db.prepare(`UPDATE usuarios SET password_hash = ?, debe_cambiar_clave = 0 WHERE id = ?`).bind(nuevoHash, yo.id), mata(db, yo.id, mia)]);
   if (esSuperAdmin(yo.rol, yo.email, envObj) && rawDb !== db) {
     const emailSuper = yo.email.trim().toLowerCase();
@@ -125,8 +125,8 @@ cuenta.post("/codigo-recuperacion", async (c) => {
   const envObj = c.env as unknown as Record<string, unknown>;
   if (!tiene(yo.rol, "admin", yo.email, envObj)) return falla(c, 403, "Solo el administrador tiene código de recuperación; si olvidas tu clave, pídele al administrador que la restablezca.");
   const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash))) return falla(c, 400, "La clave no es correcta.");
-  const codigo = codigoRecuperacion(), hashCod = await hashClave(codigo.replace(/-/g, ""));
+  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash, envObj))) return falla(c, 400, "La clave no es correcta.");
+  const codigo = codigoRecuperacion(), hashCod = await hashClave(codigo.replace(/-/g, ""), envObj);
   await db.prepare(`UPDATE usuarios SET codigo_recuperacion_hash = ? WHERE id = ?`).bind(hashCod, yo.id).run();
   if (esSuperAdmin(yo.rol, yo.email, envObj) && rawDb !== db) {
     const emailSuper = yo.email.trim().toLowerCase();
@@ -252,14 +252,14 @@ cuenta.post("/2fa/iniciar", async (c) => {
   const lim = await verificarBloqueo2fa(dbTotp, emailLimpio, ipCliente, t);
   if (lim.bloqueado) return falla(c, 429, "Demasiados intentos en verificación 2FA. Espera 15 minutos e inténtalo de nuevo.");
 
-  if (!(await verificarClave(String(b.clave ?? ""), u.password_hash))) {
+  const envObj = { ...(c.env as unknown as Record<string, unknown>), DB: dbTotp };
+  exigirLlaveMaestra(envObj);
+  if (!(await verificarClave(String(b.clave ?? ""), u.password_hash, envObj))) {
     await registrarFallo2fa(dbTotp, lim, t);
     return falla(c, 401, "Tu contraseña actual no es correcta.");
   }
   await limpiarIntentos2fa(dbTotp, lim.llave, lim.llaveCuenta);
 
-  const envObj = { ...(c.env as unknown as Record<string, unknown>), DB: dbTotp };
-  exigirLlaveMaestra(envObj);
   const secreto = generarSecretoTotp();
   const cifrado = await cifrarSecreto(secreto, envObj);
   await dbTotp.prepare(`UPDATE usuarios SET totp_pendiente = ? WHERE id = ?`).bind(cifrado, u.id).run();
@@ -318,14 +318,14 @@ cuenta.post("/2fa/desactivar", async (c) => {
   const lim = await verificarBloqueo2fa(dbTotp, emailLimpio, ipCliente, t);
   if (lim.bloqueado) return falla(c, 429, "Demasiados intentos en verificación 2FA. Espera 15 minutos e inténtalo de nuevo.");
 
-  if (!(await verificarClave(String(b.clave ?? ""), u.password_hash))) {
+  const envObj = { ...(c.env as unknown as Record<string, unknown>), DB: dbTotp };
+  if (!(await verificarClave(String(b.clave ?? ""), u.password_hash, envObj))) {
     await registrarFallo2fa(dbTotp, lim, t);
     return falla(c, 401, "Tu contraseña actual no es correcta.");
   }
   if (Number(u.totp_activo ?? 0) === 1 && u.totp_secreto) {
     const codigo = String(b.codigo ?? "").trim();
     if (!codigo) return falla(c, 400, "Escribe un código de 6 dígitos de tu autenticador (o un código de respaldo) para desactivar el 2FA.");
-    const envObj = { ...(c.env as unknown as Record<string, unknown>), DB: dbTotp };
     const secretoPlano = await descifrarSecreto(u.totp_secreto, envObj);
     const verTotp = secretoPlano
       ? await verificarCodigoTotp(secretoPlano, codigo, { ultimoPaso: Number(u.totp_ultimo_paso ?? 0) })

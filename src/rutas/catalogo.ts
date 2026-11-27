@@ -2,12 +2,15 @@
 import { Hono } from "hono";
 import { aCantidadMilli } from "../../public/dinero.js";
 import { aCentavos, auditar, comodin, esForanea, esUnico, falla, idParam, leerJson, requiereSesion, texto, type Env } from "../comun";
+import { veCostos } from "../permisos";
 import { leerTipoContribuyente, type TipoContribuyente } from "../regimen";
 
 const catalogo = new Hono<Env>();
 catalogo.use("*", requiereSesion);
 
-const COLUMNAS = "id, codigo, nombre, tipo, costo_centavos, precio_centavos, alicuota_iva, activo, controla_stock, stock_minimo_milli, " +
+const COLUMNAS_CON_COSTO = "id, codigo, nombre, tipo, costo_centavos, precio_centavos, alicuota_iva, activo, controla_stock, stock_minimo_milli, " +
+  "(SELECT COALESCE(SUM(m.cantidad_milli), 0) FROM movimientos_stock m WHERE m.producto_id = catalogo.id) AS stock_milli";
+const COLUMNAS_SIN_COSTO = "id, codigo, nombre, tipo, precio_centavos, alicuota_iva, activo, controla_stock, stock_minimo_milli, " +
   "(SELECT COALESCE(SUM(m.cantidad_milli), 0) FROM movimientos_stock m WHERE m.producto_id = catalogo.id) AS stock_milli";
 const TIPOS = ["SERVICIO", "PRODUCTO"], IVAS = [0, 8, 16];
 
@@ -34,9 +37,11 @@ function validar(b: Record<string, unknown>, regimen: TipoContribuyente) {
 }
 
 catalogo.get("/", async (c) => {
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const cols = veCostos(u.rol, u.email, envObj) ? COLUMNAS_CON_COSTO : COLUMNAS_SIN_COSTO;
   const q = texto(c.req.query("q"), 60), like = `%${comodin(q)}%`, tipo = texto(c.req.query("tipo"), 10);
   const { results } = await c.env.DB.prepare(
-    `SELECT ${COLUMNAS} FROM catalogo
+    `SELECT ${cols} FROM catalogo
      WHERE (? = '' OR nombre LIKE ? ESCAPE '\\' OR codigo LIKE ? ESCAPE '\\') AND (? = '' OR tipo = ?)
      ORDER BY activo DESC, nombre COLLATE NOCASE LIMIT 200`
   ).bind(q, like, like, tipo, tipo).all();
@@ -44,19 +49,23 @@ catalogo.get("/", async (c) => {
 });
 
 catalogo.get("/:id", async (c) => {
-  const f = await c.env.DB.prepare(`SELECT ${COLUMNAS} FROM catalogo WHERE id = ?`).bind(idParam(c)).first();
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const cols = veCostos(u.rol, u.email, envObj) ? COLUMNAS_CON_COSTO : COLUMNAS_SIN_COSTO;
+  const f = await c.env.DB.prepare(`SELECT ${cols} FROM catalogo WHERE id = ?`).bind(idParam(c)).first();
   return f ? c.json({ ok: true, item: f }) : falla(c, 404, "No encontrado.");
 });
 
 catalogo.post("/", async (c) => {
+  const u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
   const regimen = await leerTipoContribuyente(c.env.DB);
   const v = validar(await leerJson(c), regimen);
   if (typeof v === "string") return falla(c, 400, v);
   try {
     const r = await c.env.DB.prepare(
       `INSERT INTO catalogo (codigo, nombre, tipo, costo_centavos, precio_centavos, alicuota_iva, activo, controla_stock, stock_minimo_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(v.codigo, v.nombre, v.tipo, v.costo, v.precio, v.iva, v.activo, v.controla ?? 0, v.minimo).run();
-    await auditar(c, c.get("usuario").id, "CATALOGO_CREAR", v.nombre);
+    ).bind(v.codigo, v.nombre, v.tipo, puedeVerCostos ? v.costo : null, v.precio, v.iva, v.activo, v.controla ?? 0, v.minimo).run();
+    await auditar(c, u.id, "CATALOGO_CREAR", v.nombre);
     return c.json({ ok: true, id: r.meta.last_row_id });
   } catch (e) {
     if (esUnico(e)) return falla(c, 409, "Ya existe algo con ese código.");
@@ -65,17 +74,24 @@ catalogo.post("/", async (c) => {
 });
 
 catalogo.put("/:id", async (c) => {
-  const id = idParam(c), regimen = await leerTipoContribuyente(c.env.DB), v = validar(await leerJson(c), regimen);
+  const id = idParam(c), u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const puedeVerCostos = veCostos(u.rol, u.email, envObj);
+  const regimen = await leerTipoContribuyente(c.env.DB), v = validar(await leerJson(c), regimen);
   if (typeof v === "string") return falla(c, 400, v);
   const mov = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM movimientos_stock WHERE producto_id = ?`).bind(id).first<{ n: number }>();
   if (mov && mov.n > 0 && (v.controla === 0 || v.tipo !== "PRODUCTO")) return falla(c, 409, "Este producto ya tiene movimientos de existencias: no se puede apagar el control ni convertirlo en servicio.");
   try {
-    const r = await c.env.DB.prepare(
-      `UPDATE catalogo SET codigo = ?, nombre = ?, tipo = ?, costo_centavos = ?, precio_centavos = ?, alicuota_iva = ?, activo = ?,
-         controla_stock = COALESCE(?, controla_stock), stock_minimo_milli = ? WHERE id = ?`
-    ).bind(v.codigo, v.nombre, v.tipo, v.costo, v.precio, v.iva, v.activo, v.controla ?? null, v.minimo, id).run();
+    const r = puedeVerCostos
+      ? await c.env.DB.prepare(
+          `UPDATE catalogo SET codigo = ?, nombre = ?, tipo = ?, costo_centavos = ?, precio_centavos = ?, alicuota_iva = ?, activo = ?,
+             controla_stock = COALESCE(?, controla_stock), stock_minimo_milli = ? WHERE id = ?`
+        ).bind(v.codigo, v.nombre, v.tipo, v.costo, v.precio, v.iva, v.activo, v.controla ?? null, v.minimo, id).run()
+      : await c.env.DB.prepare(
+          `UPDATE catalogo SET codigo = ?, nombre = ?, tipo = ?, precio_centavos = ?, alicuota_iva = ?, activo = ?,
+             controla_stock = COALESCE(?, controla_stock), stock_minimo_milli = ? WHERE id = ?`
+        ).bind(v.codigo, v.nombre, v.tipo, v.precio, v.iva, v.activo, v.controla ?? null, v.minimo, id).run();
     if (!r.meta.changes) return falla(c, 404, "No encontrado.");
-    await auditar(c, c.get("usuario").id, "CATALOGO_EDITAR", `${id} ${v.nombre}`);
+    await auditar(c, u.id, "CATALOGO_EDITAR", `${id} ${v.nombre}`);
     return c.json({ ok: true });
   } catch (e) {
     if (esUnico(e)) return falla(c, 409, "Ya existe otra cosa con ese código.");

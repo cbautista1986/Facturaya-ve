@@ -16,7 +16,7 @@ import {
 import { migrar } from "./migraciones";
 import { emailSuperAdminConfig } from "./permisos";
 import { recifrarSecretosHeredados } from "./recifrado";
-import { ejecutarRespaldoR2, intentarArchivoMensualR2, intentarRespaldoDiarioR2, obtenerBucketR2 } from "./respaldos-r2";
+import { archivarRetencionR2, ejecutarRespaldoR2, intentarArchivoMensualR2, intentarRespaldoDiarioR2, obtenerBucketR2 } from "./respaldos-r2";
 import { diagnosticarInquilino, repararInquilino } from "./salud-bd";
 import { ejecutarCobroAutomaticoDia1 } from "./suscripciones";
 import { intentarCierreMensualAutomatico, mesAnteriorCaracas, obtenerTasaBcvGlobal } from "./tasa-bcv";
@@ -26,7 +26,10 @@ export const HORA_FIN_DIURNO_VET = 21;    // 9:00 PM Caracas (exclusive -> 06:00
 export const CRON_MANTENIMIENTO_NOCTURNO = "0 6 * * *"; // 2:00 AM hora Venezuela (UTC-4)
 export const CRON_MANTENIMIENTO_NOCTURNO_LOTES = "15,30,45 6 * * *"; // Continuación por lotes 2:15/2:30/2:45 AM VET (escala 100+ empresas)
 export const MAX_EMPRESAS_LOTE_NOCTURNO = 25;
+export const MAX_LOTES_NOCTURNO_DIA = 4; // 4 ticks/noche × 25 = 100 empresas/noche con rotación circular multi-día
 const CLAVE_CURSOR_NOCTURNO = "mant_nocturno_cursor";
+const CLAVE_ROTACION_NOCTURNA = "mant_nocturno_rotacion";
+export const MAX_DIAS_SIN_RESPALDO_ALERTA = 2;
 export const MENSAJE_MANTENIMIENTO_DEFECTO =
   "Estamos realizando una actualización programada de FacturaYa Venezuela para mantener el sistema rápido y al día. Volvemos en unos minutos; tus facturas y datos están 100% seguros.";
 
@@ -92,8 +95,8 @@ export function esCronMantenimientoNocturno(cronExpr?: string, fecha: Date = new
   return h >= 1 && h < 5;
 }
 
-// Micro-caché en memoria de Isolate (4 segundos) para validar Modo Mantenimiento en el middleware con latencia ~0ms
-const CACHE_MANT_TTL_MS = 4_000;
+// Micro-caché en memoria de Isolate (15 segundos, v5.6 · Sección 9.3) para validar Modo Mantenimiento en el middleware con latencia ~0ms
+const CACHE_MANT_TTL_MS = 15_000;
 const cacheMantPorDb = new WeakMap<D1Database, { ts: number; estado: EstadoMantenimientoDespliegue }>();
 
 export function invalidarCacheMantenimiento(rawDb?: D1Database) {
@@ -456,13 +459,17 @@ export type ResultadoMantenimientoNocturno = {
   resumen: string;
   lote_parcial?: boolean;
   pendientes_lote?: number;
+  pendientes_codigos?: string[];
   omitido_ya_completado?: boolean;
+  retencion_archivados?: number;
 };
 
 type CursorMantenimientoNocturno = {
   fecha: string;
   offset: number;
   completado: boolean;
+  lotes_ejecutados?: number;
+  procesadas_hoy?: string[];
   empresas_revisadas: number;
   empresas_sanas: number;
   bindings_sanados: number;
@@ -473,6 +480,12 @@ type CursorMantenimientoNocturno = {
   estado_despliegue_cf: string;
   alertas: string[];
   acciones_sanacion: string[];
+};
+
+type RotacionNocturna = {
+  proximo_offset: number;
+  ultimo_respaldo_por_empresa: Record<string, string>;
+  primera_vista_por_empresa: Record<string, string>;
 };
 
 async function leerCursorNocturno(rawDb: D1Database): Promise<CursorMantenimientoNocturno | null> {
@@ -501,6 +514,93 @@ async function guardarCursorNocturno(rawDb: D1Database, cursor: CursorMantenimie
     .catch(() => {});
 }
 
+async function leerRotacionNocturna(rawDb: D1Database): Promise<RotacionNocturna> {
+  const fila = await rawDb
+    .prepare(`SELECT valor FROM integraciones WHERE clave = ?`)
+    .bind(CLAVE_ROTACION_NOCTURNA)
+    .first<{ valor: string }>()
+    .catch(() => null);
+  if (!fila?.valor) return { proximo_offset: 0, ultimo_respaldo_por_empresa: {}, primera_vista_por_empresa: {} };
+  try {
+    const p = JSON.parse(fila.valor) as Partial<RotacionNocturna>;
+    return {
+      proximo_offset: Number.isInteger(p?.proximo_offset) && (p.proximo_offset as number) >= 0 ? (p.proximo_offset as number) : 0,
+      ultimo_respaldo_por_empresa:
+        p?.ultimo_respaldo_por_empresa && typeof p.ultimo_respaldo_por_empresa === "object"
+          ? { ...p.ultimo_respaldo_por_empresa }
+          : {},
+      primera_vista_por_empresa:
+        p?.primera_vista_por_empresa && typeof p.primera_vista_por_empresa === "object"
+          ? { ...p.primera_vista_por_empresa }
+          : {},
+    };
+  } catch {
+    return { proximo_offset: 0, ultimo_respaldo_por_empresa: {}, primera_vista_por_empresa: {} };
+  }
+}
+
+async function guardarRotacionNocturna(rawDb: D1Database, rot: RotacionNocturna): Promise<void> {
+  const ahoraIso = new Date().toISOString();
+  await rawDb
+    .prepare(
+      `INSERT INTO integraciones (clave, valor, actualizado_en) VALUES (?, ?, ?)
+       ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`
+    )
+    .bind(CLAVE_ROTACION_NOCTURNA, JSON.stringify(rot), ahoraIso)
+    .run()
+    .catch(() => {});
+}
+
+function diasEntreFechasIso(desdeIso: string, hastaIso: string): number {
+  const t1 = Date.parse(`${desdeIso.slice(0, 10)}T12:00:00Z`);
+  const t2 = Date.parse(`${hastaIso.slice(0, 10)}T12:00:00Z`);
+  if (!Number.isFinite(t1) || !Number.isFinite(t2)) return 999;
+  return Math.round((t2 - t1) / 86_400_000);
+}
+
+function fechaHaceMesesIso(hoyIso: string, meses: number): string {
+  const d = new Date(`${hoyIso.slice(0, 10)}T12:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() - meses);
+  return d.toISOString().slice(0, 10);
+}
+
+// Archiva en R2 (gzip) auditoria y correo_envios > 12 meses antes de purgar en D1 (v5.6 · Sección 9.4).
+// Si R2 no está vinculado o falla la subida, jamás borra registros.
+async function archivarRetencionEmpresa(
+  dbInq: D1Database,
+  envObj: Record<string, unknown>,
+  codigo: string,
+  hoyIso: string
+): Promise<number> {
+  const bucket = obtenerBucketR2(envObj);
+  if (!bucket) return 0;
+  const corte12m = `${fechaHaceMesesIso(hoyIso, 12)} 00:00:00`;
+  let totalArchivadas = 0;
+
+  for (const tabla of ["auditoria", "correo_envios"] as const) {
+    try {
+      const { results: viejas } = await dbInq
+        .prepare(`SELECT * FROM ${tabla} WHERE creado_en < ? ORDER BY id ASC LIMIT 1000`)
+        .bind(corte12m)
+        .all<Record<string, unknown>>();
+      if (!viejas?.length) continue;
+      await archivarRetencionR2(bucket, codigo, tabla, viejas, hoyIso);
+      const ids = viejas.map((r) => Number(r.id)).filter((id) => Number.isInteger(id) && id > 0);
+      for (let i = 0; i < ids.length; i += 80) {
+        const chunk = ids.slice(i, i + 80);
+        await dbInq
+          .prepare(`DELETE FROM ${tabla} WHERE id IN (${chunk.map(() => "?").join(",")})`)
+          .bind(...chunk)
+          .run();
+      }
+      totalArchivadas += ids.length;
+    } catch {
+      // Fall-safe: si falla el archivado en R2 o la tabla no existe aún, no borramos nada
+    }
+  }
+  return totalArchivadas;
+}
+
 export async function ejecutarMantenimientoNocturno(
   rawDb: D1Database,
   envObj: Record<string, unknown>,
@@ -510,6 +610,7 @@ export async function ejecutarMantenimientoNocturno(
     forzarRespaldo?: boolean;
     fetchFn?: typeof fetch;
     maxEmpresasLote?: number;
+    maxLotesDia?: number;
   }
 ): Promise<ResultadoMantenimientoNocturno> {
   const t0 = Date.now();
@@ -570,26 +671,54 @@ export async function ejecutarMantenimientoNocturno(
       : [{ codigo: "principal", tipo_db: "PRINCIPAL", nombre_negocio: "Negocio Principal", rif: "", activo: 1 }]
   ).filter((emp) => emp.codigo !== CODIGO_DEMO);
 
+  const totalOp = listaOperativa.length;
+  const rotacion = await leerRotacionNocturna(rawDb);
   const continuarLote =
     tipo === "NOCTURNO_AUTO" &&
     cursorPrev?.fecha === hoyIso &&
     cursorPrev.completado === false &&
-    Number.isInteger(cursorPrev.offset) &&
-    cursorPrev.offset > 0 &&
-    cursorPrev.offset < listaOperativa.length;
+    Number.isInteger(cursorPrev.offset);
 
-  const offset = continuarLote ? cursorPrev!.offset : 0;
+  const lotesEjecutadosAntes = continuarLote ? Number(cursorPrev!.lotes_ejecutados || 1) : 0;
+  const lotesEjecutadosAhora = lotesEjecutadosAntes + 1;
+  const maxLotesDia =
+    opts?.maxLotesDia && opts.maxLotesDia > 0
+      ? Math.trunc(opts.maxLotesDia)
+      : MAX_LOTES_NOCTURNO_DIA;
+
+  const procesadasSet = new Set<string>(continuarLote && Array.isArray(cursorPrev!.procesadas_hoy) ? cursorPrev!.procesadas_hoy : []);
+  const offsetInicial = continuarLote
+    ? ((cursorPrev!.offset % totalOp) + totalOp) % totalOp
+    : tipo === "NOCTURNO_AUTO"
+      ? ((rotacion.proximo_offset % totalOp) + totalOp) % totalOp
+      : 0;
+
   const tamLote =
     opts?.maxEmpresasLote && opts.maxEmpresasLote > 0
       ? Math.trunc(opts.maxEmpresasLote)
       : tipo === "NOCTURNO_AUTO"
         ? MAX_EMPRESAS_LOTE_NOCTURNO
-        : Math.max(1, listaOperativa.length);
+        : Math.max(1, totalOp);
 
-  const sliceEmpresas = listaOperativa.slice(offset, offset + tamLote);
-  const siguienteOffset = offset + sliceEmpresas.length;
-  const esUltimoLote = siguienteOffset >= listaOperativa.length;
-  const modoLotes = listaOperativa.length > tamLote;
+  // Selección circular multi-día (Opción B · Sección 4): nunca repite empresas ya procesadas hoy y retoma mañana donde quedó
+  const sliceEmpresas: typeof listaOperativa = [];
+  let cursorCircular = offsetInicial;
+  let pasosExplorados = 0;
+  while (sliceEmpresas.length < tamLote && pasosExplorados < totalOp && procesadasSet.size + sliceEmpresas.length < totalOp) {
+    const cand = listaOperativa[cursorCircular];
+    cursorCircular = (cursorCircular + 1) % totalOp;
+    pasosExplorados++;
+    if (procesadasSet.has(cand.codigo)) continue;
+    sliceEmpresas.push(cand);
+  }
+  for (const e of sliceEmpresas) procesadasSet.add(e.codigo);
+
+  const siguienteOffsetCircular = cursorCircular % totalOp;
+  const todasProcesadasHoy = procesadasSet.size >= totalOp;
+  const alcanzoTopeDiario = tipo === "NOCTURNO_AUTO" && lotesEjecutadosAhora >= maxLotesDia;
+  const esUltimoLote = todasProcesadasHoy || alcanzoTopeDiario;
+  const modoLotes = totalOp > tamLote || continuarLote;
+  const pendientesCodigos = listaOperativa.filter((e) => !procesadasSet.has(e.codigo)).map((e) => e.codigo);
 
   const alertas: string[] = continuarLote ? [...(cursorPrev!.alertas || [])] : [];
   const accionesSanacion: string[] = continuarLote ? [...(cursorPrev!.acciones_sanacion || [])] : [];
@@ -598,14 +727,15 @@ export async function ejecutarMantenimientoNocturno(
   let empresasRevisadas = continuarLote ? Number(cursorPrev!.empresas_revisadas || 0) : 0;
   let empresasSanas = continuarLote ? Number(cursorPrev!.empresas_sanas || 0) : 0;
   let respaldosDiariosOk = continuarLote ? Number(cursorPrev!.respaldos_diarios_ok || 0) : 0;
+  let retencionArchivados = 0;
   let respaldoMensualOk = false;
   let demoLimpiada = false;
   let tasaBcvActualizada: number | null = continuarLote ? (cursorPrev!.tasa_bcv_actualizada ?? null) : null;
   let tasaBcvActualizadoEn: string | null = continuarLote ? (cursorPrev!.tasa_bcv_actualizado_en ?? null) : null;
   let estadoDespliegueCf = continuarLote ? (cursorPrev!.estado_despliegue_cf || "SIN_CONECTAR") : "SIN_CONECTAR";
 
-  // 1) Sincronizar Bindings Nativos D1 y revisar builds en Cloudflare (solo en el primer lote)
-  if (offset === 0) {
+  // 1) Sincronizar Bindings Nativos D1 y revisar builds en Cloudflare (solo en el primer lote de la noche)
+  if (!continuarLote) {
     const cfgCf = await leerConfigCloudflare(rawDb, envObj);
     if (cfgCf.configurado) {
       const syncRes = await sincronizarBindingsD1Cloudflare(rawDb, envObj, undefined, fetchFn).catch((e) => ({
@@ -687,6 +817,9 @@ export async function ejecutarMantenimientoNocturno(
       // Optimizar índices SQLite/D1 de madrugada para máxima velocidad diurna
       await dbInq.prepare(`PRAGMA optimize`).run().catch(() => {});
 
+      // Retención > 12 meses: archivar auditoria y correo_envios en R2 antes de purgar en D1 (Sección 9.4)
+      retencionArchivados += await archivarRetencionEmpresa(dbInq, envObj, emp.codigo, hoyIso);
+
       // Cierre mensual automático (solo días 1–5 en empresas activas, exclusivamente de madrugada)
       if (emp.activo === 1 && diaMes >= 1 && diaMes <= 5) {
         await intentarCierreMensualAutomatico(
@@ -713,6 +846,11 @@ export async function ejecutarMantenimientoNocturno(
           omitirPoda: !esUltimoLote,
         });
         respaldosDiariosOk += rSlice.claves.length;
+        // Registrar fecha de respaldo exitoso por empresa (excluyendo las que reportaron error)
+        const fallidasSet = new Set((rSlice.errores_empresas || []).map((err) => err.split(":")[0].trim()));
+        for (const codOk of codigosLote) {
+          if (!fallidasSet.has(codOk)) rotacion.ultimo_respaldo_por_empresa[codOk] = hoyIso;
+        }
         if (rSlice.errores_empresas?.length) {
           alertas.push(`Respaldo diario R2 parcial en lote: ${rSlice.errores_empresas.join(" | ")}`);
         }
@@ -731,18 +869,24 @@ export async function ejecutarMantenimientoNocturno(
           );
         }
       } catch (e) {
-        alertas.push(`Error en respaldo diario R2 (lote ${offset + 1}-${siguienteOffset}): ${(e as Error).message}`);
+        alertas.push(`Error en respaldo diario R2 (lote ${lotesEjecutadosAhora}): ${(e as Error).message}`);
       }
-    } else if (offset === 0) {
+    } else if (!continuarLote) {
       alertas.push("Respaldo R2 omitido: el bucket RESPALDOS_R2 no está vinculado.");
     }
 
-    // Si aún quedan empresas pendientes para los próximos ticks (2:15/2:30/2:45 AM VET), persistir cursor y concluir este lote
+    // Persistir avance circular para evitar pérdida de progreso entre ticks
+    rotacion.proximo_offset = siguienteOffsetCircular;
+    await guardarRotacionNocturna(rawDb, rotacion);
+
+    // Si aún quedan empresas pendientes Y no llegamos al tope diario de ticks, continuar en el siguiente tick de hoy
     if (!esUltimoLote) {
       await guardarCursorNocturno(rawDb, {
         fecha: hoyIso,
-        offset: siguienteOffset,
+        offset: siguienteOffsetCircular,
         completado: false,
+        lotes_ejecutados: lotesEjecutadosAhora,
+        procesadas_hoy: [...procesadasSet],
         empresas_revisadas: empresasRevisadas,
         empresas_sanas: empresasSanas,
         bindings_sanados: bindingsSanados,
@@ -754,7 +898,7 @@ export async function ejecutarMantenimientoNocturno(
         alertas,
         acciones_sanacion: accionesSanacion,
       });
-      const pendientes = Math.max(0, listaOperativa.length - siguienteOffset);
+      const pendientes = pendientesCodigos.length;
       const finalizadoEn = new Date().toISOString();
       return {
         ok: true,
@@ -777,7 +921,9 @@ export async function ejecutarMantenimientoNocturno(
         correo_resumen_enviado: false,
         lote_parcial: true,
         pendientes_lote: pendientes,
-        resumen: `Lote nocturno parcial (${empresasRevisadas}/${listaOperativa.length} empresas procesadas; ${pendientes} pendiente(s) para el siguiente tick).`,
+        pendientes_codigos: pendientesCodigos,
+        retencion_archivados: retencionArchivados,
+        resumen: `Lote nocturno parcial (${empresasRevisadas}/${totalOp} empresas procesadas; ${pendientes} pendiente(s) para el siguiente tick).`,
       };
     }
   }
@@ -802,6 +948,10 @@ export async function ejecutarMantenimientoNocturno(
       const rDiario = await intentarRespaldoDiarioR2(rawDb, envObj, hoyIso);
       if (rDiario.ejecutado && rDiario.resultado) {
         respaldosDiariosOk = rDiario.resultado.claves.length;
+        const fallidasSet = new Set((rDiario.resultado.errores_empresas || []).map((err) => err.split(":")[0].trim()));
+        for (const emp of sliceEmpresas) {
+          if (!fallidasSet.has(emp.codigo)) rotacion.ultimo_respaldo_por_empresa[emp.codigo] = hoyIso;
+        }
         if (rDiario.resultado.errores_empresas?.length) {
           alertas.push(`Respaldo diario R2 parcial: ${rDiario.resultado.errores_empresas.join(" | ")}`);
         }
@@ -816,6 +966,43 @@ export async function ejecutarMantenimientoNocturno(
     } catch (e) {
       alertas.push(`Error en respaldo diario R2: ${(e as Error).message}`);
     }
+  }
+
+  // Verificar cobertura de respaldos R2: alertar si alguna empresa activa lleva > 2 días sin respaldo R2 (Sección 4)
+  if (obtenerBucketR2(envObj)) {
+    const atrasadas: string[] = [];
+    for (const emp of listaOperativa) {
+      if (emp.activo !== 1) continue;
+      if (!rotacion.primera_vista_por_empresa[emp.codigo]) {
+        rotacion.primera_vista_por_empresa[emp.codigo] = hoyIso;
+      }
+      const ult = rotacion.ultimo_respaldo_por_empresa[emp.codigo];
+      if (ult) {
+        if (diasEntreFechasIso(ult, hoyIso) > MAX_DIAS_SIN_RESPALDO_ALERTA) {
+          atrasadas.push(`${emp.codigo} (último: ${ult})`);
+        }
+      } else {
+        const vista = rotacion.primera_vista_por_empresa[emp.codigo];
+        if (vista && diasEntreFechasIso(vista, hoyIso) >= MAX_DIAS_SIN_RESPALDO_ALERTA) {
+          atrasadas.push(`${emp.codigo} (sin respaldo desde ${vista})`);
+        }
+      }
+    }
+    if (atrasadas.length > 0) {
+      alertas.push(
+        `Empresas activas con más de ${MAX_DIAS_SIN_RESPALDO_ALERTA} días sin respaldo R2 (${atrasadas.length}): ${atrasadas.slice(0, 10).join(", ")}`
+      );
+    }
+  }
+
+  // Persistir rotación circular para la próxima noche (si quedaron pendientes hoy, mañana inicia justo donde quedó)
+  rotacion.proximo_offset = todasProcesadasHoy ? 0 : siguienteOffsetCircular;
+  await guardarRotacionNocturna(rawDb, rotacion);
+
+  if (pendientesCodigos.length > 0) {
+    accionesSanacion.push(
+      `Rotación multi-día: ${pendientesCodigos.length} empresa(s) diferida(s) para continuar automáticamente en la próxima ventana nocturna desde offset ${rotacion.proximo_offset}.`
+    );
   }
 
   try {
@@ -835,12 +1022,14 @@ export async function ejecutarMantenimientoNocturno(
     .run()
     .catch(() => {});
 
-  // Marcar cursor diario como completado para que los ticks de continuación (2:15/2:30/2:45 AM) salgan inmediatamente
+  // Marcar cursor diario como completado para que los ticks de continuación salgan inmediatamente
   if (tipo === "NOCTURNO_AUTO") {
     await guardarCursorNocturno(rawDb, {
       fecha: hoyIso,
-      offset: listaOperativa.length,
+      offset: rotacion.proximo_offset,
       completado: true,
+      lotes_ejecutados: lotesEjecutadosAhora,
+      procesadas_hoy: [...procesadasSet],
       empresas_revisadas: empresasRevisadas,
       empresas_sanas: empresasSanas,
       bindings_sanados: bindingsSanados,
@@ -870,6 +1059,9 @@ export async function ejecutarMantenimientoNocturno(
     tasa_bcv_actualizada: tasaBcvActualizada,
     demo_limpiada: demoLimpiada,
     respaldo_mensual_ok: respaldoMensualOk,
+    retencion_archivados: retencionArchivados,
+    proximo_offset_rotacion: rotacion.proximo_offset,
+    pendientes_codigos: pendientesCodigos,
     acciones_sanacion: accionesSanacion,
     alertas,
   };
@@ -948,6 +1140,8 @@ export async function ejecutarMantenimientoNocturno(
     alertas,
     acciones_sanacion: accionesSanacion,
     correo_resumen_enviado: correoResumenEnviado,
+    pendientes_codigos: pendientesCodigos,
+    retencion_archivados: retencionArchivados,
     resumen,
   };
 }

@@ -269,7 +269,7 @@ export async function registrarEnvioInquilino(
     destinatario: string;
     asunto: string;
     proveedor: string;
-    estado: "ENVIADO" | "ENTREGADO" | "FALLIDO" | "REBOTADO" | "QUEJA" | "BLOQUEADO";
+    estado: "ENVIADO" | "ENTREGADO" | "FALLIDO" | "REBOTADO" | "QUEJA" | "BLOQUEADO" | "INTENTANDO" | "INDETERMINADO";
     motivo?: string;
     message_id?: string | null;
   }

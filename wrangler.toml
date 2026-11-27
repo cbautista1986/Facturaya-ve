@@ -33,10 +33,10 @@ EMAIL_NOMBRE_PLATAFORMA = "FacturaYa Venezuela"
 # WHATSAPP_CONTACTO -> configurar SOLO como Secreto en Cloudflare (nunca en este archivo)
 # SUPER_ADMIN_EMAIL -> configurar SOLO como Secreto en Cloudflare (nunca en este archivo)
 
-# Ventana de Mantenimiento Nocturno (2:00 AM VET = "0 6 * * *": auto-bindings D1, salud/optimización BD, respaldos R2, limpieza y reporte)
+# Ventana de Mantenimiento Nocturno (2:00 AM VET = "0 6 * * *" + lotes 2:15/2:30/2:45 AM VET = "15,30,45 6 * * *" para 100+ empresas sin tope de CPU/subrequests)
 # + Sincronización ultraliviana de Tasa BCV en horario laboral (8:00 AM, 1:00 PM y 6:00 PM VET = "0 12,17,22 * * *"; cero tareas pesadas de 6 AM a 9 PM)
 [triggers]
-crons = ["0 6 * * *", "0 12,17,22 * * *"]
+crons = ["0 6 * * *", "15,30,45 6 * * *", "0 12,17,22 * * *"]
 
 # Respaldo automático diario (30 días) y archivo mensual fiscal (10 años) en Cloudflare R2 (bucket privado, gratis hasta 10 GB/mes):
 [[r2_buckets]]

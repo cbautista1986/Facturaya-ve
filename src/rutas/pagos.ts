@@ -307,7 +307,8 @@ pagos.get("/:id", async (c) => {
 });
 
 pagos.post("/:id/enviar-correo", async (c) => {
-  const id = idParam(c), db = c.env.DB, b = await leerJson(c), u = c.get("usuario");
+  const id = idParam(c), db = c.env.DB, b = await leerJson(c, 1_500_000), u = c.get("usuario");
+  if (b.__demasiadoGrande) return falla(c, 413, "El adjunto PDF excede el tamaño máximo permitido (1,5 MB).");
   const p = await db.prepare(`SELECT * FROM pagos WHERE id = ?`).bind(id).first<Fila>();
   if (!p) return falla(c, 404, "Recibo de pago no encontrado.");
   const d = await db.prepare(

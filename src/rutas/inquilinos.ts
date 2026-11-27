@@ -180,9 +180,20 @@ inquilinos.get("/", async (c) => {
   const alicuotaPrin = reglasRegimen(perfilPrin?.tipo_contribuyente, perfilPrin?.igtf_activo).cobraIva ? 1600 : 0;
 
   const { results: todosCobros } = await rawDb
-    .prepare(`SELECT * FROM _mt_cobros_saas ORDER BY periodo_ym DESC, id DESC LIMIT 400`)
+    .prepare(
+      `SELECT * FROM (
+         SELECT *, ROW_NUMBER() OVER (PARTITION BY inquilino_codigo ORDER BY periodo_ym DESC, id DESC) AS _rn
+         FROM _mt_cobros_saas
+       ) WHERE _rn <= 6
+       ORDER BY periodo_ym DESC, id DESC`
+    )
     .all<FilaCobroSaas>()
-    .catch(() => ({ results: [] as FilaCobroSaas[] }));
+    .catch(async () =>
+      rawDb
+        .prepare(`SELECT * FROM _mt_cobros_saas ORDER BY periodo_ym DESC, id DESC LIMIT 1200`)
+        .all<FilaCobroSaas>()
+        .catch(() => ({ results: [] as FilaCobroSaas[] }))
+    );
   const cobrosPorInq = new Map<string, FilaCobroSaas[]>();
   for (const cb of todosCobros || []) {
     const arr = cobrosPorInq.get(cb.inquilino_codigo) || [];

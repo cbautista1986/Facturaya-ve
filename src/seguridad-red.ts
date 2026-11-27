@@ -90,6 +90,7 @@ export async function limpiarLimiteIp(rawDb: D1Database, politica: PoliticaLimit
 
 export function limitePayloadPorRuta(ruta: string): number {
   if (ruta === "/api/config" || ruta === "/api/inquilinos") return 380_000; // permite logo_base64 optimizado
+  if (/^\/api\/(?:documentos|pagos)\/\d+\/enviar-correo$/.test(ruta)) return 1_500_000; // permite PDF Base64 con logotipo
   if (ruta.startsWith("/api/sistema/restaurar/")) return 2_097_152; // hasta 2 MB por lote de respaldo
   return 262_144; // 256 KB por defecto
 }

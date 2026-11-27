@@ -187,11 +187,35 @@ function mensajeSuspension(motivo?: string): string {
   return "⚠️ El servicio de facturación de este negocio está temporalmente suspendido. Escribe a soporte@facturayave.com o pagos@facturayave.com.";
 }
 
-// CONTROL CENTRAL DE PERMISOS (Fase 7.1 + Multi-Tenant): toda petición a /api pasa por aquí antes de llegar a su módulo.
+// CONTROL CENTRAL DE PERMISOS (Fase 7.1 + Multi-Tenant + CSRF Same-Origin v5.5): toda petición a /api pasa por aquí antes de llegar a su módulo.
 const PUBLICAS = new Set(["/api/estado", "/api/contacto/whatsapp", "/api/instalar", "/api/login", "/api/logout", "/api/recuperar", "/api/recuperar-correo"]);
+const METODOS_MUTANTES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 app.use("/api/*", async (c, next) => {
   const ruta = c.req.path;
-  if (PUBLICAS.has(ruta) || ruta.startsWith("/api/correo/eventos/")) return next();
+  if (ruta.startsWith("/api/correo/eventos/")) return next();
+  // Protección Same-Origin (CSRF) en mutaciones con cabecera Origin presente
+  if (METODOS_MUTANTES.has(c.req.method.toUpperCase())) {
+    const origin = c.req.header("origin");
+    if (origin !== undefined) {
+      let originHost = "";
+      try {
+        const uOrig = new URL(origin);
+        if (uOrig.protocol === "http:" || uOrig.protocol === "https:") {
+          originHost = uOrig.host.toLowerCase();
+        }
+      } catch {
+        originHost = "";
+      }
+      const reqHost = (c.req.header("x-forwarded-host") || c.req.header("host") || new URL(c.req.url).host)
+        .split(",")[0]
+        .trim()
+        .toLowerCase();
+      if (!originHost || originHost !== reqHost) {
+        return falla(c, 403, "Solicitud rechazada por validación de origen de seguridad.");
+      }
+    }
+  }
+  if (PUBLICAS.has(ruta)) return next();
   const u = await usuarioActual(c).catch(() => null);
   if (!u) {
     const rawDbMant = c.get("rawDb") || c.env.DB;

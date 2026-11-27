@@ -16,7 +16,7 @@ import {
 import { migrar } from "./migraciones";
 import { emailSuperAdminConfig } from "./permisos";
 import { recifrarSecretosHeredados } from "./recifrado";
-import { intentarArchivoMensualR2, intentarRespaldoDiarioR2 } from "./respaldos-r2";
+import { ejecutarRespaldoR2, intentarArchivoMensualR2, intentarRespaldoDiarioR2, obtenerBucketR2 } from "./respaldos-r2";
 import { diagnosticarInquilino, repararInquilino } from "./salud-bd";
 import { ejecutarCobroAutomaticoDia1 } from "./suscripciones";
 import { intentarCierreMensualAutomatico, mesAnteriorCaracas, obtenerTasaBcvGlobal } from "./tasa-bcv";
@@ -24,6 +24,9 @@ import { intentarCierreMensualAutomatico, mesAnteriorCaracas, obtenerTasaBcvGlob
 export const HORA_INICIO_DIURNO_VET = 6;  // 6:00 AM Caracas
 export const HORA_FIN_DIURNO_VET = 21;    // 9:00 PM Caracas (exclusive -> 06:00..20:59 es horario diurno protegido)
 export const CRON_MANTENIMIENTO_NOCTURNO = "0 6 * * *"; // 2:00 AM hora Venezuela (UTC-4)
+export const CRON_MANTENIMIENTO_NOCTURNO_LOTES = "15,30,45 6 * * *"; // Continuación por lotes 2:15/2:30/2:45 AM VET (escala 100+ empresas)
+export const MAX_EMPRESAS_LOTE_NOCTURNO = 25;
+const CLAVE_CURSOR_NOCTURNO = "mant_nocturno_cursor";
 export const MENSAJE_MANTENIMIENTO_DEFECTO =
   "Estamos realizando una actualización programada de FacturaYa Venezuela para mantener el sistema rápido y al día. Volvemos en unos minutos; tus facturas y datos están 100% seguros.";
 
@@ -79,11 +82,11 @@ export function esHorarioDiurnoCaracas(fecha: Date = new Date()): boolean {
   return h >= HORA_INICIO_DIURNO_VET && h < HORA_FIN_DIURNO_VET;
 }
 
-// Determina si una invocación de Cron corresponde a la ventana de mantenimiento nocturno (2:00 AM VET = "0 6 * * *")
+// Determina si una invocación de Cron corresponde a la ventana de mantenimiento nocturno (2:00..2:45 AM VET)
 export function esCronMantenimientoNocturno(cronExpr?: string, fecha: Date = new Date()): boolean {
   const c = String(cronExpr || "").trim();
-  if (c === CRON_MANTENIMIENTO_NOCTURNO) return true;
-  if (c && c !== CRON_MANTENIMIENTO_NOCTURNO) return false;
+  if (c === CRON_MANTENIMIENTO_NOCTURNO || c === CRON_MANTENIMIENTO_NOCTURNO_LOTES) return true;
+  if (c) return false;
   // Fallback por hora Caracas (ventana contractual 1:00 AM - 4:59 AM VET)
   const h = horaCaracas(fecha);
   return h >= 1 && h < 5;
@@ -451,7 +454,52 @@ export type ResultadoMantenimientoNocturno = {
   acciones_sanacion: string[];
   correo_resumen_enviado: boolean;
   resumen: string;
+  lote_parcial?: boolean;
+  pendientes_lote?: number;
+  omitido_ya_completado?: boolean;
 };
+
+type CursorMantenimientoNocturno = {
+  fecha: string;
+  offset: number;
+  completado: boolean;
+  empresas_revisadas: number;
+  empresas_sanas: number;
+  bindings_sanados: number;
+  respaldos_diarios_ok: number;
+  sesiones_purgadas: number;
+  tasa_bcv_actualizada: number | null;
+  tasa_bcv_actualizado_en: string | null;
+  estado_despliegue_cf: string;
+  alertas: string[];
+  acciones_sanacion: string[];
+};
+
+async function leerCursorNocturno(rawDb: D1Database): Promise<CursorMantenimientoNocturno | null> {
+  const fila = await rawDb
+    .prepare(`SELECT valor FROM integraciones WHERE clave = ?`)
+    .bind(CLAVE_CURSOR_NOCTURNO)
+    .first<{ valor: string }>()
+    .catch(() => null);
+  if (!fila?.valor) return null;
+  try {
+    return JSON.parse(fila.valor) as CursorMantenimientoNocturno;
+  } catch {
+    return null;
+  }
+}
+
+async function guardarCursorNocturno(rawDb: D1Database, cursor: CursorMantenimientoNocturno): Promise<void> {
+  const ahoraIso = new Date().toISOString();
+  await rawDb
+    .prepare(
+      `INSERT INTO integraciones (clave, valor, actualizado_en) VALUES (?, ?, ?)
+       ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`
+    )
+    .bind(CLAVE_CURSOR_NOCTURNO, JSON.stringify(cursor), ahoraIso)
+    .run()
+    .catch(() => {});
+}
 
 export async function ejecutarMantenimientoNocturno(
   rawDb: D1Database,
@@ -461,6 +509,7 @@ export async function ejecutarMantenimientoNocturno(
     hoyIso?: string;
     forzarRespaldo?: boolean;
     fetchFn?: typeof fetch;
+    maxEmpresasLote?: number;
   }
 ): Promise<ResultadoMantenimientoNocturno> {
   const t0 = Date.now();
@@ -474,60 +523,38 @@ export async function ejecutarMantenimientoNocturno(
 
   await migrar(rawDb);
   await asegurarTablasMultiTenant(rawDb);
+
+  // En invocaciones automáticas (2:15/2:30/2:45 AM VET), si el mantenimiento de hoy ya terminó, salir en <5ms sin trabajo redundante.
+  const cursorPrev = tipo === "NOCTURNO_AUTO" ? await leerCursorNocturno(rawDb) : null;
+  if (tipo === "NOCTURNO_AUTO" && cursorPrev?.fecha === hoyIso && cursorPrev.completado === true) {
+    const finalizadoEn = new Date().toISOString();
+    return {
+      ok: true,
+      estado: "OK",
+      tipo,
+      iniciado_en: iniciadoEn,
+      finalizado_en: finalizadoEn,
+      duracion_ms: Date.now() - t0,
+      empresas_revisadas: 0,
+      empresas_sanas: 0,
+      bindings_sanados: 0,
+      respaldos_diarios_ok: 0,
+      respaldo_mensual_ok: false,
+      sesiones_purgadas: 0,
+      demo_limpiada: false,
+      tasa_bcv_actualizada: cursorPrev.tasa_bcv_actualizada ?? null,
+      estado_despliegue_cf: cursorPrev.estado_despliegue_cf || "SIN_CONECTAR",
+      alertas: [],
+      acciones_sanacion: [],
+      correo_resumen_enviado: false,
+      omitido_ya_completado: true,
+      resumen: `Mantenimiento nocturno del ${hoyIso} ya completado; lote adicional omitido.`,
+    };
+  }
+
   await recifrarSecretosHeredados(rawDb, envObj, rawDb).catch(() => {});
   await hidratarBindingsCloudflare(rawDb, envObj, true);
 
-  const alertas: string[] = [];
-  const accionesSanacion: string[] = [];
-  let bindingsSanados = 0;
-  let sesionesPurgadas = 0;
-  let empresasRevisadas = 0;
-  let empresasSanas = 0;
-  let respaldosDiariosOk = 0;
-  let respaldoMensualOk = false;
-  let demoLimpiada = false;
-  let tasaBcvActualizada: number | null = null;
-  let estadoDespliegueCf = "SIN_CONECTAR";
-
-  // 1) Sincronizar Bindings Nativos D1 en Cloudflare (revincula clientes nuevos diurnos o tras despliegues GitHub)
-  const cfgCf = await leerConfigCloudflare(rawDb, envObj);
-  if (cfgCf.configurado) {
-    const syncRes = await sincronizarBindingsD1Cloudflare(rawDb, envObj, undefined, fetchFn).catch((e) => ({
-      ok: false as const,
-      cambios: 0,
-      enlazados: [] as string[],
-      error: (e as Error).message,
-    }));
-    if (syncRes.ok) {
-      bindingsSanados = syncRes.cambios;
-      if (syncRes.cambios > 0) {
-        accionesSanacion.push(`Auto-enlace Nativo D1 conectado en Cloudflare: ${syncRes.enlazados.join(", ")}`);
-      }
-    } else if (syncRes.error) {
-      alertas.push(`Bindings Cloudflare: ${syncRes.error}`);
-    }
-
-    // Revisar salud del último build/despliegue en Cloudflare
-    const buildsRes = await consultarDesplieguesYBuilds(rawDb, envObj, fetchFn).catch(() => null);
-    if (buildsRes?.configurado) {
-      estadoDespliegueCf = buildsRes.estado_general || "SIN_BUILDS";
-      if (buildsRes.estado_general === "ERROR_BUILD") {
-        const ultimo = buildsRes.builds?.[0];
-        if (ultimo && (ultimo.branch || "main") === "main") {
-          alertas.push(`Última compilación de producción (main) falló: ${ultimo.commit_message || ultimo.build_uuid}`);
-        }
-      }
-    }
-  }
-
-  // 2) Tasa BCV oficial global (1 consulta externa)
-  const bcvGlobal = await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true }).catch(() => null);
-  if (bcvGlobal?.tasa_bcv) {
-    const nTasa = Number(bcvGlobal.tasa_bcv);
-    tasaBcvActualizada = Number.isFinite(nTasa) && nTasa > 0 ? nTasa : null;
-  }
-
-  // 3) Diagnóstico, auto-sanación NO DESTRUCTIVA, purga de sesiones y PRAGMA optimize en cada BD
   const { results: filasInq } = await rawDb
     .prepare(
       `SELECT codigo, tipo_db, nombre_negocio, rif, activo
@@ -537,12 +564,89 @@ export async function ejecutarMantenimientoNocturno(
     .all<{ codigo: string; tipo_db: string; nombre_negocio: string; rif: string; activo: number }>()
     .catch(() => ({ results: [{ codigo: "principal", tipo_db: "PRINCIPAL", nombre_negocio: "Negocio Principal", rif: "", activo: 1 }] }));
 
-  const listaEmpresas = filasInq.length
-    ? filasInq
-    : [{ codigo: "principal", tipo_db: "PRINCIPAL", nombre_negocio: "Negocio Principal", rif: "", activo: 1 }];
+  const listaOperativa = (
+    filasInq.length
+      ? filasInq
+      : [{ codigo: "principal", tipo_db: "PRINCIPAL", nombre_negocio: "Negocio Principal", rif: "", activo: 1 }]
+  ).filter((emp) => emp.codigo !== CODIGO_DEMO);
 
-  for (const emp of listaEmpresas) {
-    if (emp.codigo === CODIGO_DEMO) continue;
+  const continuarLote =
+    tipo === "NOCTURNO_AUTO" &&
+    cursorPrev?.fecha === hoyIso &&
+    cursorPrev.completado === false &&
+    Number.isInteger(cursorPrev.offset) &&
+    cursorPrev.offset > 0 &&
+    cursorPrev.offset < listaOperativa.length;
+
+  const offset = continuarLote ? cursorPrev!.offset : 0;
+  const tamLote =
+    opts?.maxEmpresasLote && opts.maxEmpresasLote > 0
+      ? Math.trunc(opts.maxEmpresasLote)
+      : tipo === "NOCTURNO_AUTO"
+        ? MAX_EMPRESAS_LOTE_NOCTURNO
+        : Math.max(1, listaOperativa.length);
+
+  const sliceEmpresas = listaOperativa.slice(offset, offset + tamLote);
+  const siguienteOffset = offset + sliceEmpresas.length;
+  const esUltimoLote = siguienteOffset >= listaOperativa.length;
+  const modoLotes = listaOperativa.length > tamLote;
+
+  const alertas: string[] = continuarLote ? [...(cursorPrev!.alertas || [])] : [];
+  const accionesSanacion: string[] = continuarLote ? [...(cursorPrev!.acciones_sanacion || [])] : [];
+  let bindingsSanados = continuarLote ? Number(cursorPrev!.bindings_sanados || 0) : 0;
+  let sesionesPurgadas = continuarLote ? Number(cursorPrev!.sesiones_purgadas || 0) : 0;
+  let empresasRevisadas = continuarLote ? Number(cursorPrev!.empresas_revisadas || 0) : 0;
+  let empresasSanas = continuarLote ? Number(cursorPrev!.empresas_sanas || 0) : 0;
+  let respaldosDiariosOk = continuarLote ? Number(cursorPrev!.respaldos_diarios_ok || 0) : 0;
+  let respaldoMensualOk = false;
+  let demoLimpiada = false;
+  let tasaBcvActualizada: number | null = continuarLote ? (cursorPrev!.tasa_bcv_actualizada ?? null) : null;
+  let tasaBcvActualizadoEn: string | null = continuarLote ? (cursorPrev!.tasa_bcv_actualizado_en ?? null) : null;
+  let estadoDespliegueCf = continuarLote ? (cursorPrev!.estado_despliegue_cf || "SIN_CONECTAR") : "SIN_CONECTAR";
+
+  // 1) Sincronizar Bindings Nativos D1 y revisar builds en Cloudflare (solo en el primer lote)
+  if (offset === 0) {
+    const cfgCf = await leerConfigCloudflare(rawDb, envObj);
+    if (cfgCf.configurado) {
+      const syncRes = await sincronizarBindingsD1Cloudflare(rawDb, envObj, undefined, fetchFn).catch((e) => ({
+        ok: false as const,
+        cambios: 0,
+        enlazados: [] as string[],
+        error: (e as Error).message,
+      }));
+      if (syncRes.ok) {
+        bindingsSanados = syncRes.cambios;
+        if (syncRes.cambios > 0) {
+          accionesSanacion.push(`Auto-enlace Nativo D1 conectado en Cloudflare: ${syncRes.enlazados.join(", ")}`);
+        }
+      } else if (syncRes.error) {
+        alertas.push(`Bindings Cloudflare: ${syncRes.error}`);
+      }
+
+      // Revisar salud del último build/despliegue en Cloudflare
+      const buildsRes = await consultarDesplieguesYBuilds(rawDb, envObj, fetchFn).catch(() => null);
+      if (buildsRes?.configurado) {
+        estadoDespliegueCf = buildsRes.estado_general || "SIN_BUILDS";
+        if (buildsRes.estado_general === "ERROR_BUILD") {
+          const ultimo = buildsRes.builds?.[0];
+          if (ultimo && (ultimo.branch || "main") === "main") {
+            alertas.push(`Última compilación de producción (main) falló: ${ultimo.commit_message || ultimo.build_uuid}`);
+          }
+        }
+      }
+    }
+
+    // 2) Tasa BCV oficial global (1 consulta externa al inicio de la ventana)
+    const bcvGlobal = await obtenerTasaBcvGlobal(rawDb, { forzar: true, permitirRed: true }).catch(() => null);
+    if (bcvGlobal?.tasa_bcv) {
+      const nTasa = Number(bcvGlobal.tasa_bcv);
+      tasaBcvActualizada = Number.isFinite(nTasa) && nTasa > 0 ? nTasa : null;
+      tasaBcvActualizadoEn = bcvGlobal.actualizado_en || new Date().toISOString();
+    }
+  }
+
+  // 3) Diagnóstico, auto-sanación NO DESTRUCTIVA, purga de sesiones y PRAGMA optimize en cada BD del lote
+  for (const emp of sliceEmpresas) {
     empresasRevisadas++;
     try {
       const dbInq = emp.codigo === "principal" ? rawDb : obtenerDbInquilino({ ...envObj, DB: rawDb }, emp.codigo);
@@ -555,10 +659,10 @@ export async function ejecutarMantenimientoNocturno(
       await dbInq.prepare(`DELETE FROM intentos_login WHERE bloqueado_hasta > 0 AND bloqueado_hasta < ?`).bind(tAhora - 86400).run().catch(() => {});
 
       // Actualizar tasa BCV en empresas en modo AUTOMATICO
-      if (bcvGlobal?.tasa_bcv && emp.activo === 1) {
+      if (tasaBcvActualizada && emp.activo === 1) {
         await dbInq
           .prepare(`UPDATE perfil_emisor SET tasa_bcv = ?, tasa_bcv_fecha = ? WHERE id = 1 AND COALESCE(tasa_bcv_modo, 'AUTOMATICO') = 'AUTOMATICO'`)
-          .bind(bcvGlobal.tasa_bcv, bcvGlobal.actualizado_en)
+          .bind(tasaBcvActualizada, tasaBcvActualizadoEn || new Date().toISOString())
           .run()
           .catch(() => {});
       }
@@ -596,6 +700,88 @@ export async function ejecutarMantenimientoNocturno(
     }
   }
 
+  // En modo por lotes (>25 empresas), respaldamos en R2 únicamente el lote actual para mantener CPU/subrequests acotados
+  if (modoLotes) {
+    const bucketR2 = obtenerBucketR2(envObj);
+    if (bucketR2) {
+      try {
+        const codigosLote = sliceEmpresas.map((e) => e.codigo);
+        const rSlice = await ejecutarRespaldoR2(rawDb, envObj, {
+          tipo: "diario",
+          hoyIso,
+          codigos: codigosLote,
+          omitirPoda: !esUltimoLote,
+        });
+        respaldosDiariosOk += rSlice.claves.length;
+        if (rSlice.errores_empresas?.length) {
+          alertas.push(`Respaldo diario R2 parcial en lote: ${rSlice.errores_empresas.join(" | ")}`);
+        }
+        if (esUltimoLote) {
+          const ahoraIso = new Date().toISOString();
+          await rawDb
+            .prepare(
+              `INSERT INTO integraciones (clave, valor, actualizado_en) VALUES ('ultimo_respaldo_r2_fecha', ?, ?)
+               ON CONFLICT(clave) DO UPDATE SET valor = excluded.valor, actualizado_en = excluded.actualizado_en`
+            )
+            .bind(hoyIso, ahoraIso)
+            .run()
+            .catch(() => {});
+          accionesSanacion.push(
+            `Respaldo diario R2 por lotes completado: ${respaldosDiariosOk} archivo(s)${rSlice.podados ? ` · ${rSlice.podados} vencido(s) podado(s)` : ""}.`
+          );
+        }
+      } catch (e) {
+        alertas.push(`Error en respaldo diario R2 (lote ${offset + 1}-${siguienteOffset}): ${(e as Error).message}`);
+      }
+    } else if (offset === 0) {
+      alertas.push("Respaldo R2 omitido: el bucket RESPALDOS_R2 no está vinculado.");
+    }
+
+    // Si aún quedan empresas pendientes para los próximos ticks (2:15/2:30/2:45 AM VET), persistir cursor y concluir este lote
+    if (!esUltimoLote) {
+      await guardarCursorNocturno(rawDb, {
+        fecha: hoyIso,
+        offset: siguienteOffset,
+        completado: false,
+        empresas_revisadas: empresasRevisadas,
+        empresas_sanas: empresasSanas,
+        bindings_sanados: bindingsSanados,
+        respaldos_diarios_ok: respaldosDiariosOk,
+        sesiones_purgadas: sesionesPurgadas,
+        tasa_bcv_actualizada: tasaBcvActualizada,
+        tasa_bcv_actualizado_en: tasaBcvActualizadoEn,
+        estado_despliegue_cf: estadoDespliegueCf,
+        alertas,
+        acciones_sanacion: accionesSanacion,
+      });
+      const pendientes = Math.max(0, listaOperativa.length - siguienteOffset);
+      const finalizadoEn = new Date().toISOString();
+      return {
+        ok: true,
+        estado: alertas.length > 0 ? "ADVERTENCIA" : "OK",
+        tipo,
+        iniciado_en: iniciadoEn,
+        finalizado_en: finalizadoEn,
+        duracion_ms: Date.now() - t0,
+        empresas_revisadas: empresasRevisadas,
+        empresas_sanas: empresasSanas,
+        bindings_sanados: bindingsSanados,
+        respaldos_diarios_ok: respaldosDiariosOk,
+        respaldo_mensual_ok: false,
+        sesiones_purgadas: sesionesPurgadas,
+        demo_limpiada: false,
+        tasa_bcv_actualizada: tasaBcvActualizada,
+        estado_despliegue_cf: estadoDespliegueCf,
+        alertas,
+        acciones_sanacion: accionesSanacion,
+        correo_resumen_enviado: false,
+        lote_parcial: true,
+        pendientes_lote: pendientes,
+        resumen: `Lote nocturno parcial (${empresasRevisadas}/${listaOperativa.length} empresas procesadas; ${pendientes} pendiente(s) para el siguiente tick).`,
+      };
+    }
+  }
+
   // 4) Cobro automático SaaS (SOLO día 1 hora Caracas y SOLO empresas con cobro_auto_dia1 = 1; NUNCA suspende)
   if (diaMes === 1) {
     await ejecutarCobroAutomaticoDia1(rawDb, envObj, hoyIso).catch((e) => {
@@ -610,21 +796,26 @@ export async function ejecutarMantenimientoNocturno(
     accionesSanacion.push("Entorno Demo expirado limpiado automáticamente.");
   }
 
-  // 6) Respaldos automáticos en Cloudflare R2 (General + por cada cliente activo, diario 30d + mensual 10 años)
-  try {
-    const rDiario = await intentarRespaldoDiarioR2(rawDb, envObj, hoyIso);
-    if (rDiario.ejecutado && rDiario.resultado) {
-      respaldosDiariosOk = rDiario.resultado.claves.length;
-      accionesSanacion.push(
-        `Respaldo diario R2 completado: ${rDiario.resultado.claves.length} archivo(s) (${Math.round(rDiario.resultado.bytes_totales / 1024)} KB)${rDiario.resultado.podados ? ` · ${rDiario.resultado.podados} vencido(s) podado(s)` : ""}.`
-      );
-    } else if (rDiario.motivo === "YA_RESPALDADO_HOY") {
-      respaldosDiariosOk = empresasRevisadas;
-    } else if (rDiario.motivo === "SIN_BUCKET_R2") {
-      alertas.push("Respaldo R2 omitido: el bucket RESPALDOS_R2 no está vinculado.");
+  // 6) Respaldos automáticos en Cloudflare R2 (flujo estándar en 1 pasada para <=25 empresas + archivo mensual 10 años)
+  if (!modoLotes) {
+    try {
+      const rDiario = await intentarRespaldoDiarioR2(rawDb, envObj, hoyIso);
+      if (rDiario.ejecutado && rDiario.resultado) {
+        respaldosDiariosOk = rDiario.resultado.claves.length;
+        if (rDiario.resultado.errores_empresas?.length) {
+          alertas.push(`Respaldo diario R2 parcial: ${rDiario.resultado.errores_empresas.join(" | ")}`);
+        }
+        accionesSanacion.push(
+          `Respaldo diario R2 completado: ${rDiario.resultado.claves.length} archivo(s) (${Math.round(rDiario.resultado.bytes_totales / 1024)} KB)${rDiario.resultado.podados ? ` · ${rDiario.resultado.podados} vencido(s) podado(s)` : ""}.`
+        );
+      } else if (rDiario.motivo === "YA_RESPALDADO_HOY") {
+        respaldosDiariosOk = empresasRevisadas;
+      } else if (rDiario.motivo === "SIN_BUCKET_R2") {
+        alertas.push("Respaldo R2 omitido: el bucket RESPALDOS_R2 no está vinculado.");
+      }
+    } catch (e) {
+      alertas.push(`Error en respaldo diario R2: ${(e as Error).message}`);
     }
-  } catch (e) {
-    alertas.push(`Error en respaldo diario R2: ${(e as Error).message}`);
   }
 
   try {
@@ -637,8 +828,31 @@ export async function ejecutarMantenimientoNocturno(
     alertas.push(`Error en archivo fiscal mensual R2: ${(e as Error).message}`);
   }
 
-  // 7) Limpieza de registros de rate-limit vencidos en base principal
-  await rawDb.prepare(`DELETE FROM _limites_ip WHERE expira_en < ?`).bind(tAhora - 3600).run().catch(() => {});
+  // 7) Limpieza de registros de rate-limit vencidos en base principal (_mt_rate_limit)
+  await rawDb
+    .prepare(`DELETE FROM _mt_rate_limit WHERE bloqueado_hasta <= ? AND (? - ventana_inicio) > 1800`)
+    .bind(tAhora, tAhora)
+    .run()
+    .catch(() => {});
+
+  // Marcar cursor diario como completado para que los ticks de continuación (2:15/2:30/2:45 AM) salgan inmediatamente
+  if (tipo === "NOCTURNO_AUTO") {
+    await guardarCursorNocturno(rawDb, {
+      fecha: hoyIso,
+      offset: listaOperativa.length,
+      completado: true,
+      empresas_revisadas: empresasRevisadas,
+      empresas_sanas: empresasSanas,
+      bindings_sanados: bindingsSanados,
+      respaldos_diarios_ok: respaldosDiariosOk,
+      sesiones_purgadas: sesionesPurgadas,
+      tasa_bcv_actualizada: tasaBcvActualizada,
+      tasa_bcv_actualizado_en: tasaBcvActualizadoEn,
+      estado_despliegue_cf: estadoDespliegueCf,
+      alertas: [],
+      acciones_sanacion: [],
+    });
+  }
 
   const finalizadoEn = new Date().toISOString();
   const duracionMs = Date.now() - t0;

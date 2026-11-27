@@ -448,13 +448,40 @@ sistema.get("/imprenta/estado", async (c) => {
   return c.json({ ok: true, ...estado });
 });
 
+async function verificarClaveOperador(
+  rawDb: D1Database,
+  db: D1Database,
+  yo: { id: number; email: string; rol: string },
+  envObj: Record<string, unknown>,
+  password: string
+): Promise<boolean> {
+  if (esSuperAdmin(yo.rol, yo.email, envObj)) {
+    const emailLow = String(yo.email || "").trim().toLowerCase();
+    const filaRaw = emailLow
+      ? await rawDb
+          .prepare(`SELECT password_hash FROM usuarios WHERE lower(email) = ? AND activo = 1 LIMIT 1`)
+          .bind(emailLow)
+          .first<{ password_hash: string }>()
+          .catch(() => null)
+      : null;
+    if (filaRaw?.password_hash) {
+      return verificarClave(password, filaRaw.password_hash);
+    }
+  }
+  const filaLocal = await db
+    .prepare(`SELECT password_hash FROM usuarios WHERE id = ? AND activo = 1`)
+    .bind(yo.id)
+    .first<{ password_hash: string }>()
+    .catch(() => null);
+  return Boolean(filaLocal?.password_hash && (await verificarClave(password, filaLocal.password_hash)));
+}
+
 sistema.post("/imprenta", async (c) => {
-  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const db = c.env.DB, rawDb = c.get("rawDb") || db, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla «Estoy seguro» para guardar la configuración de la API de Imprenta Digital.");
   }
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
+  if (!(await verificarClaveOperador(rawDb, db, yo, envObj, String(b.password ?? "")))) return falla(c, 400, "La contraseña no es correcta.");
 
   const provTipoRaw = texto(b.proveedor_tipo, 24).toUpperCase();
   const proveedorTxt = texto(b.proveedor, 60);
@@ -597,12 +624,11 @@ sistema.post("/imprenta", async (c) => {
 });
 
 sistema.post("/imprenta/recarga", async (c) => {
-  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const db = c.env.DB, rawDb = c.get("rawDb") || db, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla de confirmación para registrar la recarga de lote.");
   }
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
+  if (!(await verificarClaveOperador(rawDb, db, yo, envObj, String(b.password ?? "")))) return falla(c, 400, "La contraseña no es correcta.");
 
   const cantidad = Math.trunc(Number(b.cantidad_numeros));
   if (!Number.isInteger(cantidad) || cantidad < 1 || cantidad > 10_000_000) {
@@ -715,29 +741,6 @@ sistema.post("/imprenta/numeraciones", async (c) => {
   return c.json({ ok: true, numeraciones: num });
 });
 
-async function verificarClaveSuperCert(
-  rawDb: D1Database,
-  db: D1Database,
-  yo: { id: number; email: string },
-  password: string
-): Promise<boolean> {
-  const emailLow = String(yo.email || "").trim().toLowerCase();
-  const filaRaw = emailLow
-    ? await rawDb
-        .prepare(`SELECT password_hash FROM usuarios WHERE lower(email) = ? AND activo = 1 LIMIT 1`)
-        .bind(emailLow)
-        .first<{ password_hash: string }>()
-        .catch(() => null)
-    : null;
-  if (filaRaw?.password_hash) return verificarClave(password, filaRaw.password_hash);
-  const filaLocal = await db
-    .prepare(`SELECT password_hash FROM usuarios WHERE id = ?`)
-    .bind(yo.id)
-    .first<{ password_hash: string }>()
-    .catch(() => null);
-  return Boolean(filaLocal?.password_hash && (await verificarClave(password, filaLocal.password_hash)));
-}
-
 sistema.post("/imprenta/certificar-tfhka", async (c) => {
   const db = c.env.DB, rawDb = c.get("rawDb") || db, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
   if (!esSuperAdmin(yo.rol, yo.email, envObj)) {
@@ -746,7 +749,7 @@ sistema.post("/imprenta/certificar-tfhka", async (c) => {
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla de confirmación para ejecutar la suite de certificación Demo en The Factory HKA.");
   }
-  if (!(await verificarClaveSuperCert(rawDb, db, yo, String(b.password ?? "")))) {
+  if (!(await verificarClaveOperador(rawDb, db, yo, envObj, String(b.password ?? "")))) {
     return falla(c, 400, "La contraseña no es correcta.");
   }
 
@@ -796,7 +799,7 @@ sistema.post("/imprenta/certificar-cg", async (c) => {
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla de confirmación para ejecutar la suite de certificación en CG La Imprenta Digital (Calidad).");
   }
-  if (!(await verificarClaveSuperCert(rawDb, db, yo, String(b.password ?? "")))) {
+  if (!(await verificarClaveOperador(rawDb, db, yo, envObj, String(b.password ?? "")))) {
     return falla(c, 400, "La contraseña no es correcta.");
   }
 
@@ -865,15 +868,14 @@ sistema.get("/correo", async (c) => {
 });
 
 sistema.post("/correo", async (c) => {
-  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const db = c.env.DB, rawDb = c.get("rawDb") || db, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
   if (!esSuperAdmin(yo.rol, yo.email, envObj)) {
     return falla(c, 403, "El envío de correos es gestionado por FacturaYa Venezuela (Correo de Plataforma). No necesitas configurar API Keys propias.");
   }
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla «Estoy seguro» para guardar la configuración de la API de Correo.");
   }
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
+  if (!(await verificarClaveOperador(rawDb, db, yo, envObj, String(b.password ?? "")))) return falla(c, 400, "La contraseña no es correcta.");
   const proveedor = texto(b.proveedor, 20).toUpperCase() === "BREVO" ? "BREVO" : "RESEND";
   const remitente = texto(b.remitente, 120).toLowerCase();
   const nombre_remitente = texto(b.nombre_remitente, 80);
@@ -920,11 +922,10 @@ sistema.post("/correo/probar", async (c) => {
 });
 
 sistema.post("/medio", async (c) => {
-  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario");
+  const db = c.env.DB, rawDb = c.get("rawDb") || db, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
   const medio = texto(b.medio, 20), motivo = texto(b.motivo, 300);
   if (!MEDIOS.includes(medio)) return falla(c, 400, "Elige Aplicación Digital SENIAT o Imprenta Digital.");
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash))) return falla(c, 400, "La contraseña no es correcta.");
+  if (!(await verificarClaveOperador(rawDb, db, yo, envObj, String(b.clave ?? "")))) return falla(c, 400, "La contraseña no es correcta.");
   if (motivo.length < 5) return falla(c, 400, "Escribe el motivo del cambio (mínimo 5 letras).");
   if (b.confirmo !== true) return falla(c, 400, "Confirma que entiendes el cambio.");
   const actual = (await db.prepare(`SELECT medio_facturacion AS m FROM perfil_emisor WHERE id = 1`).first<{ m: string }>())?.m ?? "APP_SENIAT";
@@ -986,8 +987,7 @@ sistema.post("/reiniciar-fabrica", async (c) => {
       );
     }
   }
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.clave ?? ""), u.password_hash))) return falla(c, 400, "La contraseña del Súper Administrador no es correcta.");
+  if (!(await verificarClaveOperador(rawDb, db, yo, envObj, String(b.clave ?? "")))) return falla(c, 400, "La contraseña del Súper Administrador no es correcta.");
 
   let d1UuidRemota: string | null = null;
   if (inqCod !== "principal") {

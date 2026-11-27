@@ -172,13 +172,22 @@ export type ResultadoRespaldoR2 = {
   total_empresas: number;
   firmado: boolean;
   podados: number;
+  errores_empresas?: string[];
 };
 
 // Genera y sube a R2 un archivo JSON independiente por cada empresa para mantener el consumo de memoria acotado en Workers.
+// Aísla fallos por empresa con try/catch: si una BD falla, las restantes completan su respaldo sin abortar el lote.
 export async function ejecutarRespaldoR2(
   rawDb: D1Database,
   envObj: Record<string, unknown>,
-  opts?: { tipo?: "diario" | "manual" | "mensual"; hoyIso?: string; mesIso?: string; retencionDias?: number }
+  opts?: {
+    tipo?: "diario" | "manual" | "mensual";
+    hoyIso?: string;
+    mesIso?: string;
+    retencionDias?: number;
+    codigos?: string[];
+    omitirPoda?: boolean;
+  }
 ): Promise<ResultadoRespaldoR2> {
   const bucket = obtenerBucketR2(envObj);
   if (!bucket) {
@@ -193,51 +202,66 @@ export async function ejecutarRespaldoR2(
   const stamp = generadoEn.replace(/[:.]/g, "-").slice(0, 19) + "Z";
 
   await asegurarTablasMultiTenant(rawDb);
-  const { results: filasInq } = await rawDb
-    .prepare(`SELECT codigo FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en ASC`)
-    .all<{ codigo: string }>()
-    .catch(() => ({ results: [] as { codigo: string }[] }));
-  const codigos = (filasInq.length ? filasInq.map((r) => String(r.codigo)) : ["principal"]).filter((c) => c !== "DB_DEMO");
+  let codigos: string[];
+  if (Array.isArray(opts?.codigos) && opts.codigos.length > 0) {
+    codigos = opts.codigos.map((c) => String(c || "").trim()).filter((c) => c && c !== "DB_DEMO");
+  } else {
+    const { results: filasInq } = await rawDb
+      .prepare(`SELECT codigo FROM _mt_inquilinos ORDER BY CASE WHEN codigo = 'principal' THEN 0 ELSE 1 END, creado_en ASC`)
+      .all<{ codigo: string }>()
+      .catch(() => ({ results: [] as { codigo: string }[] }));
+    codigos = (filasInq.length ? filasInq.map((r) => String(r.codigo)) : ["principal"]).filter((c) => c !== "DB_DEMO");
+  }
 
   const claves: string[] = [];
+  const erroresEmpresas: string[] = [];
   let bytesTotales = 0;
   const totalEmpresas = codigos.length;
   let firmado = true;
 
   for (const cod of codigos) {
-    const maestro = await generarRespaldoMaestro(rawDb, envObj, { codigo: cod });
-    if (!maestro.firma_hmac) firmado = false;
-    const codSeguro = sanitizarCodigo(cod);
-    const key =
-      tipo === "mensual"
-        ? `${PREFIJO_R2_MENSUALES}${mesIso}/respaldo-fiscal-${mesIso}-${codSeguro}.json`
-        : tipo === "diario"
-          ? `${PREFIJO_R2_DIARIOS}${hoyIso}/respaldo-${hoyIso}-${codSeguro}.json`
-          : `${PREFIJO_R2_MANUALES}${hoyIso}/respaldo-${stamp}-${codSeguro}.json`;
+    try {
+      const maestro = await generarRespaldoMaestro(rawDb, envObj, { codigo: cod });
+      if (!maestro.firma_hmac) firmado = false;
+      const codSeguro = sanitizarCodigo(cod);
+      const key =
+        tipo === "mensual"
+          ? `${PREFIJO_R2_MENSUALES}${mesIso}/respaldo-fiscal-${mesIso}-${codSeguro}.json`
+          : tipo === "diario"
+            ? `${PREFIJO_R2_DIARIOS}${hoyIso}/respaldo-${hoyIso}-${codSeguro}.json`
+            : `${PREFIJO_R2_MANUALES}${hoyIso}/respaldo-${stamp}-${codSeguro}.json`;
 
-    const cuerpo = JSON.stringify(maestro);
-    const tamBytes = new TextEncoder().encode(cuerpo).length;
-    await bucket.put(key, cuerpo, {
-      httpMetadata: { contentType: "application/json; charset=utf-8" },
-      customMetadata: {
-        tipo,
-        fecha: etiquetaFecha,
-        empresa: cod,
-        generado_en: maestro.generado_en,
-        total_empresas: String(totalEmpresas),
-        empresas_en_archivo: "1",
-        firmado: maestro.firma_hmac ? "1" : "0",
-        conservacion: tipo === "mensual" ? `${CONSERVACION_FISCAL_ANIOS}_anios` : `${RETENCION_DIAS_R2}_dias`,
-        huella: String(maestro.huella || "").slice(0, 64),
-        version: "4.5",
-      },
-    });
-    claves.push(key);
-    bytesTotales += tamBytes;
+      const cuerpo = JSON.stringify(maestro);
+      const tamBytes = new TextEncoder().encode(cuerpo).length;
+      await bucket.put(key, cuerpo, {
+        httpMetadata: { contentType: "application/json; charset=utf-8" },
+        customMetadata: {
+          tipo,
+          fecha: etiquetaFecha,
+          empresa: cod,
+          generado_en: maestro.generado_en,
+          total_empresas: String(totalEmpresas),
+          empresas_en_archivo: "1",
+          firmado: maestro.firma_hmac ? "1" : "0",
+          conservacion: tipo === "mensual" ? `${CONSERVACION_FISCAL_ANIOS}_anios` : `${RETENCION_DIAS_R2}_dias`,
+          huella: String(maestro.huella || "").slice(0, 64),
+          version: "5.5",
+        },
+      });
+      claves.push(key);
+      bytesTotales += tamBytes;
+    } catch (errEmp) {
+      const msg = String((errEmp as Error)?.message || errEmp || "Error en respaldo").slice(0, 180);
+      erroresEmpresas.push(`${cod}: ${msg}`);
+    }
+  }
+
+  if (claves.length === 0 && erroresEmpresas.length > 0) {
+    throw new Error(`Ninguna empresa pudo respaldarse en R2 (${erroresEmpresas.slice(0, 3).join(" | ")})`);
   }
 
   const podados =
-    tipo === "diario"
+    tipo === "diario" && !opts?.omitirPoda
       ? await podarRespaldosDiariosAntiguos(bucket, hoyIso, opts?.retencionDias ?? RETENCION_DIAS_R2).catch(() => 0)
       : 0;
 
@@ -250,6 +274,7 @@ export async function ejecutarRespaldoR2(
     total_empresas: totalEmpresas,
     firmado,
     podados,
+    ...(erroresEmpresas.length ? { errores_empresas: erroresEmpresas } : {}),
   };
   await rawDb
     .prepare(
@@ -259,7 +284,12 @@ export async function ejecutarRespaldoR2(
     .bind(CLAVE_META_AUTO, JSON.stringify(meta), generadoEn)
     .run()
     .catch(() => {});
-  await limpiarErrorR2(rawDb);
+
+  if (erroresEmpresas.length > 0) {
+    await registrarErrorR2(rawDb, tipo, etiquetaFecha, new Error(`Respaldo parcial (${claves.length}/${totalEmpresas}): ${erroresEmpresas.slice(0, 3).join(" | ")}`));
+  } else {
+    await limpiarErrorR2(rawDb);
+  }
 
   return { ok: true, ...meta };
 }

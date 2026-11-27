@@ -123,8 +123,15 @@ export async function consultarEstadoCloudflare(
   const cfg = await leerConfigCloudflare(rawDb, env);
   const bindingsLocales: string[] = [];
   if (env) {
-    for (let i = 1; i <= 20; i++) {
-      const k = `DB_${i}`;
+    const nums = Object.keys(env)
+      .map((k) => {
+        const m = /^DB_(\d+)$/.exec(k);
+        return m ? Number(m[1]) : 0;
+      })
+      .filter((n) => n > 0)
+      .sort((a, b) => a - b);
+    for (const n of nums) {
+      const k = `DB_${n}`;
       if (env[k] && typeof (env[k] as D1Database).prepare === "function") bindingsLocales.push(k);
     }
   }

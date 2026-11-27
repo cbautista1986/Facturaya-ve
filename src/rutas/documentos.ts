@@ -1276,7 +1276,8 @@ async function obtenerPdfOficialImprenta(
 
 // Enviar factura, nota de crédito, nota de débito o presupuesto por correo electrónico al cliente (con detalle HTML y PDF adjunto)
 documentos.post("/:id/enviar-correo", async (c) => {
-  const id = idParam(c), db = c.env.DB, b = await leerJson(c), u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const id = idParam(c), db = c.env.DB, b = await leerJson(c, 1_500_000), u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (b.__demasiadoGrande) return falla(c, 413, "El adjunto PDF excede el tamaño máximo permitido (1,5 MB).");
   const cargado = await cargar(c, id);
   if (!cargado) return falla(c, 404, "Documento no encontrado.");
   const { doc, lineas } = cargado;

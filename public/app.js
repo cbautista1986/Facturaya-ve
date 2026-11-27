@@ -65,16 +65,16 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.4.2)</span>
-  <p class="suave">Descarga el paquete completo <b>v5.4.2 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>correo estricto del cliente en facturas CG/HKA (jamás usa el correo del emisor)</b>, <b>Suite de Certificación exclusiva Súper Admin</b>, <b>semáforo de Tasa BCV</b>, panel de Inicio limpio, <b>entrega exclusiva del PDF Fiscal Oficial</b> y <b>Libros Contables SENIAT auditados al centavo</b>:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.4.2)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.5.0)</span>
+  <p class="suave">Descarga el paquete completo <b>v5.5.0 — Escala 100 Empresas &amp; Blindaje Operativo (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>mantenimiento nocturno por lotes (100+ empresas)</b>, <b>aislamiento de fallos en respaldos R2</b>, <b>envío de PDFs con logo hasta 1,5 MB</b>, <b>timeouts + failover de correo</b>, <b>validación de clave Súper Admin en cualquier BD</b> y <b>escaneo dinámico ilimitado de ranuras D1</b>:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.5.0)</button>
   <div class="dos-botones">
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-tfhka.ts">⬇️ src/imprenta-tfhka.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-cg.ts">⬇️ src/imprenta-cg.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="documentos.ts">⬇️ src/rutas/documentos.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="mantenimiento.ts">⬇️ src/mantenimiento.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="respaldos-r2.ts">⬇️ src/respaldos-r2.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="sistema.ts">⬇️ src/rutas/sistema.ts</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="medio.js">⬇️ public/medio.js</button>
-    <button type="button" class="boton chico contorno-azul" data-dl-cf="factura.js">⬇️ public/factura.js</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="seguridad-red.ts">⬇️ src/seguridad-red.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="correo.ts">⬇️ src/correo.ts</button>
+    <button type="button" class="boton chico contorno-azul" data-dl-cf="index.ts">⬇️ src/index.ts</button>
   </div>
 </section>` : "";
 

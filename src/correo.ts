@@ -128,6 +128,7 @@ async function enviarPorBrevo(p: PayloadAdaptador): Promise<ResultadoAdaptador> 
         "Content-Type": "application/json",
         Accept: "application/json",
       },
+      signal: AbortSignal.timeout(12_000),
       body: JSON.stringify({
         sender: { name: p.nombreRemitente, email: p.remitente },
         to: p.para.map((email) => ({ email })),
@@ -161,6 +162,7 @@ async function enviarPorResend(p: PayloadAdaptador): Promise<ResultadoAdaptador>
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers,
+      signal: AbortSignal.timeout(12_000),
       body: JSON.stringify({
         from: `${p.nombreRemitente} <${p.remitente}>`,
         to: p.para,
@@ -197,6 +199,7 @@ async function enviarPorZeptoMail(p: PayloadAdaptador): Promise<ResultadoAdaptad
         "Content-Type": "application/json",
         Accept: "application/json",
       },
+      signal: AbortSignal.timeout(12_000),
       body: JSON.stringify({
         from: { address: p.remitente, name: p.nombreRemitente },
         to: p.para.map((address) => ({ email_address: { address } })),

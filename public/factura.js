@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261126v531";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261126v531";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261126v540";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261126v540";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -406,10 +406,19 @@ async function ver(estado, id) {
 
   const esImprentaSellada = esImprenta && D.modo === "REAL" && Boolean(D.control_fiscal);
   const provEtiqueta = impEnv?.proveedor || (impEnv?.proveedor_tipo === "THE_FACTORY_HKA" ? "The Factory HKA Venezuela" : "Imprenta Digital");
+  const urlPdfOficialImprenta = esImprentaSellada && (pdfOficialCg || impEnv?.proveedor_tipo === "THE_FACTORY_HKA" || D.control_fiscal)
+    ? `/api/documentos/${encodeURIComponent(D.id)}/imprenta-pdf`
+    : "";
+  const tienePdfOficialImprenta = esImprentaSellada && Boolean(urlPdfOficialImprenta);
+  const nombrePdfOficial = `${esNc ? "Nota-Credito" : esNd ? "Nota-Debito" : "Factura"}-${String(D.numero ?? 1).padStart(8, "0")}${D.estado === "ANULADO" ? "-ANULADA" : ""}-Oficial.pdf`;
   const botones = D.estado === "BORRADOR"
     ? [["editar", "✏️ Editar", ""], ["emitir", `EMITIR ${nom.toUpperCase()}`, "verde"], ["borrar", "Eliminar borrador", "contorno"]]
     : [
-      ...(!imprentaPendiente ? [["pdf", "📄 Descargar PDF", ""], ["compartir", "📤 Compartir PDF", "verde"], ["correo", "✉️ Enviar por correo al cliente", "contorno-azul"]] : []),
+      ...(!imprentaPendiente
+        ? (esImprentaSellada
+            ? [["pdf", "🏛️ Descargar PDF Fiscal Oficial", "verde"], ["compartir", "📤 Compartir PDF Fiscal Oficial", ""], ["correo", "✉️ Enviar PDF Oficial por correo", "contorno-azul"]]
+            : [["pdf", "📄 Descargar PDF", ""], ["compartir", "📤 Compartir PDF", "verde"], ["correo", "✉️ Enviar por correo al cliente", "contorno-azul"]])
+        : []),
       ...(esAppSeniat ? [["clonar_seniat", "📋 Copiar resumen fiscal SENIAT", "contorno-azul"]] : []),
       ...(D.tipo === "FACTURA" && D.estado === "EMITIDO" && !esNc && saldo_usd > 0 ? [["pagar", "💵 Registrar pago", "verde"]] : []),
       ...(!imprentaPendiente ? [["whatsapp", "💬 Enviar por WhatsApp", ""]] : []),
@@ -438,16 +447,16 @@ async function ver(estado, id) {
       ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>${esc(nroControlEtiqueta)}</b></div>
         <div class="tot"><span>Modalidad digital</span><b>${esImprenta ? "🌐 Imprenta Digital (SNAT/2024/000102)" : "📱 Sistema Digital SENIAT (SNAT/2024/000102)"}</b></div>` : ""}
       ${impEnv ? `<div class="tot"><span>Estado Imprenta (${esc(provEtiqueta)})</span><b><span class="insignia ${impEnv.estado === "ENVIADO_OK" ? "verde" : impEnv.estado === "ANULADO_OK" ? "gris" : "rojo"}">${impEnv.estado === "ENVIADO_OK" ? "✅ Retornado OK" : impEnv.estado === "ANULADO_OK" ? "⛔ Anulado en Imprenta" : "⏳ Pendiente"}</span></b></div>` : ""}
-      ${pdfOficialCg ? `<div style="margin-top:8px"><a class="boton chico morado" href="${esc(pdfOficialCg)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ Ver PDF oficial firmado (${esc(provEtiqueta)})</a></div>` : impEnv?.proveedor_tipo === "THE_FACTORY_HKA" && D.control_fiscal ? `<div style="margin-top:8px"><a class="boton chico morado" href="/api/documentos/${encodeURIComponent(D.id)}/imprenta-pdf" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ PDF Oficial (The Factory HKA)</a></div>` : ""}
       ${impEnv?.ultimo_error && !D.control_fiscal ? `<p class="error" style="margin:6px 0 0">Último error imprenta: ${esc(impEnv.ultimo_error)}</p>` : ""}
       ${emitido ? `<div class="tot"><span>Tasa BCV (Art. 128 Ley BCV)</span><b>Bs. ${bs(D.tasa_e8 / 1e8)}</b></div>` : ""}
     </section>
     ${esImprentaSellada ? `<section class="tarjeta" id="sello-legal-imprenta">
-      <span class="etiqueta">🏛️ SELLO LEGAL INMUTABLE · IMPRENTA DIGITAL (SNAT/2024/000102)</span>
+      <span class="etiqueta">🏛️ DOCUMENTO FISCAL LEGAL · IMPRENTA DIGITAL (SNAT/2024/000102)</span>
       <div class="tot"><span>Imprenta Digital Autorizada</span><b>${esc(impEnv?.imprenta_razon_social || provEtiqueta)}</b></div>
       <div class="tot"><span>N.º de Control Fiscal</span><b><code>${esc(D.control_fiscal)}</code></b></div>
       ${impEnv?.fecha_asignacion ? `<div class="tot"><span>Fecha y hora de asignación</span><b>${esc(impEnv.fecha_asignacion)}${impEnv.hora_asignacion ? ` · ${esc(impEnv.hora_asignacion)}` : ""}</b></div>` : ""}
-      <small class="suave" style="display:block;margin-top:6px">${esc(impEnv?.imprenta_autorizacion || "Imprenta Digital Autorizada por el SENIAT · Providencia SNAT/2024/000102")}. Datos fiscales certificados e inmutables.</small>
+      ${urlPdfOficialImprenta ? `<div style="margin-top:10px"><a class="boton verde" id="btn-pdf-oficial-imprenta" href="${esc(urlPdfOficialImprenta)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;height:auto;padding:12px 20px;line-height:1.3;border-radius:18px;text-align:center">🏛️ Ver PDF Fiscal Oficial (${esc(provEtiqueta)})</a></div>` : ""}
+      <small class="suave" style="display:block;margin-top:6px">${esc(impEnv?.imprenta_autorizacion || "Imprenta Digital Autorizada por el SENIAT · Providencia SNAT/2024/000102")}. Descargar, compartir y enviar por correo entregan exclusivamente este PDF oficial con código QR y pie de imprenta.</small>
     </section>` : ""}
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span>${lineas.map((l) => `<div class="reng-ver"><div><b>${esc(l.descripcion)}</b><br><small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.precio_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : "Exento"}${l.devuelto_milli > 0 ? ` · ↩️ Devuelto: ${cantidadTexto(l.devuelto_milli)}` : ""}</small></div><b>${usd(l.monto_usd)}</b></div>`).join("")}</section>
     <section class="tarjeta"><span class="etiqueta">💰 TOTALES</span>
@@ -480,10 +489,12 @@ async function ver(estado, id) {
     <p class="error" id="error" role="alert" hidden></p>
     ${botones.map(([id2, txt, clase]) => `<button type="button" class="boton ${clase}" data-acc="${id2}">${txt}</button>`).join("")}
     <form id="correo-form" class="tarjeta" hidden>
-      <h2>✉️ Enviar ${esc(titulo.toLowerCase())} + PDF por correo</h2>
-      <p class="pista">Envía el detalle en Bolívares y USD con el PDF adjunto.</p>
+      <h2>✉️ Enviar ${esc(titulo.toLowerCase())} + PDF ${esImprentaSellada ? "Fiscal Oficial " : ""}por correo</h2>
+      <p class="pista">${esImprentaSellada
+        ? `Se adjuntará automáticamente el <b>PDF Fiscal Oficial con código QR</b> emitido por ${esc(provEtiqueta)}.`
+        : "Envía el detalle en Bolívares y USD con el PDF adjunto."}</p>
       ${campo("email_destino", "✉️ Correo del cliente", D.cliente_email || cliente?.email || "", "email", 'required placeholder="cliente@correo.com"')}
-      ${ERROR}<button class="boton verde" type="submit">ENVIAR CORREO CON PDF ➔</button>
+      ${ERROR}<button class="boton verde" type="submit">${esImprentaSellada ? "ENVIAR PDF FISCAL OFICIAL ➔" : "ENVIAR CORREO CON PDF ➔"}</button>
     </form>
     <form id="devolver-form" class="tarjeta" hidden>
       <h2>↩️ Emitir Nota de Crédito (LIVA Art. 58 · SNAT/2011/0071)</h2>
@@ -586,6 +597,15 @@ async function ver(estado, id) {
     } catch (e) { caja.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
   };
 
+  const blobPdfOficialImprenta = async () => {
+    const res = await fetch(urlPdfOficialImprenta, { credentials: "same-origin" });
+    if (!res.ok) {
+      let msg = `No se pudo descargar el PDF Fiscal Oficial (HTTP ${res.status}).`;
+      try { const j = await res.json(); if (j?.error) msg = j.error; } catch {}
+      throw new Error(msg);
+    }
+    return await res.blob();
+  };
   const accion = {
     editar: () => (location.hash = `#/factura/${id}/editar`),
     emitir: () => pedir(async () => {
@@ -597,10 +617,18 @@ async function ver(estado, id) {
     borrar: () => pedir(async () => { if (!confirm("¿Eliminar este borrador?")) return; await api(`documentos/${id}`, "DELETE"); aviso("Borrador eliminado"); location.hash = "#/factura"; }),
     pdf: () => pedir(async () => {
       if (imprentaPendiente) throw new Error("Este documento requiere primero el N.º de Control oficial de la Imprenta Digital.");
+      if (tienePdfOficialImprenta) {
+        descargar(await blobPdfOficialImprenta(), nombrePdfOficial);
+        return;
+      }
       descargar(await blobPdf(), nombreArchivo(D, esDemo));
     }),
     compartir: () => pedir(async () => {
       if (imprentaPendiente) throw new Error("Este documento requiere primero el N.º de Control oficial de la Imprenta Digital.");
+      if (tienePdfOficialImprenta) {
+        compartir(await blobPdfOficialImprenta(), nombrePdfOficial);
+        return;
+      }
       compartir(await blobPdf(), nombreArchivo(D, esDemo));
     }),
     correo: () => {
@@ -673,19 +701,24 @@ async function ver(estado, id) {
     aviso("N.º de Control guardado ✅"); await ver(estado, id);
   });
   if ($("#correo-form")) enviar($("#correo-form"), async (v) => {
-    const bytes = await bytesPdf();
-    let bin = "";
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    const pdf_base64 = btoa(bin);
-    const r = await api(`documentos/${id}/enviar-correo`, "POST", {
-      email: v.email_destino,
-      pdf_base64,
-      nombre_archivo: nombreArchivo(D, esDemo),
-    });
+    let payloadCorreo = { email: v.email_destino };
+    if (!esImprentaSellada) {
+      const bytes = await bytesPdf();
+      let bin = "";
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      payloadCorreo = {
+        email: v.email_destino,
+        pdf_base64: btoa(bin),
+        nombre_archivo: nombreArchivo(D, esDemo),
+      };
+    }
+    const r = await api(`documentos/${id}/enviar-correo`, "POST", payloadCorreo);
     aviso(
       r?.demo_redirigido_a
         ? `🧪 Correo de prueba enviado a ${r.demo_redirigido_a} (quedan ${r.demo_restantes ?? 0} de ${estado?.demo?.max_correos ?? 5}) ✅`
-        : `Correo enviado a ${v.email_destino} ✅`
+        : r?.pdf_origen === "IMPRENTA_OFICIAL"
+          ? `PDF Fiscal Oficial enviado por correo a ${v.email_destino} ✅`
+          : `Correo enviado a ${v.email_destino} ✅`
     );
     $("#correo-form").hidden = true;
     await ver(estado, id);

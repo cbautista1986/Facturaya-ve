@@ -267,14 +267,20 @@ export function alicuotaATipoImpuestoCg(alicuotaCent: number): "G" | "R" | "A" |
   return "E";
 }
 
-export function codigoProductoCg(catalogoId: number | null | undefined, orden: number | undefined): string {
+export function codigoProductoCg(
+  catalogoId: number | null | undefined,
+  orden: number | undefined,
+  tipoImpuesto?: "G" | "R" | "A" | "E"
+): string {
   const id = Number(catalogoId);
+  const sufijo = tipoImpuesto && /^[GRAE]$/.test(tipoImpuesto) ? `-${tipoImpuesto}` : "";
+  const maxBase = 13 - sufijo.length;
   if (Number.isInteger(id) && id > 0) {
-    return `PROD-${id}`.slice(0, 13);
+    return `${`PROD-${id}`.slice(0, maxBase)}${sufijo}`;
   }
   const ord = Number(orden);
   const idx = Number.isInteger(ord) && ord > 0 ? ord : 1;
-  return `ITEM-${idx}`.slice(0, 13);
+  return `${`ITEM-${idx}`.slice(0, maxBase)}${sufijo}`;
 }
 
 export function limpiarDocumentoIdentidadCg(rif: string): string {
@@ -325,12 +331,13 @@ export function construirPayloadFacturaCg(
     const precioUsdSeguro = Math.max(0, Math.round(Number(r.precio_usd ?? 0) || 0));
     const precioBsCent = tasaSegura > 0 ? Math.max(1, usdABs(precioUsdSeguro, tasaSegura)) : Math.max(1, precioUsdSeguro);
     const desc = limpiarTextoCg(r.descripcion, 120, `Renglón ${i + 1}`);
+    const tipoImp = alicuotaATipoImpuestoCg(Number(r.alicuota_cent ?? 0));
     return {
-      codigoProducto: codigoProductoCg(r.catalogo_id, r.orden ?? i + 1),
+      codigoProducto: codigoProductoCg(r.catalogo_id, r.orden ?? i + 1, tipoImp),
       nombreProducto: desc.slice(0, 60),
       descripcionProducto: desc,
       product_note: "",
-      tipoImpuesto: alicuotaATipoImpuestoCg(Number(r.alicuota_cent ?? 0)),
+      tipoImpuesto: tipoImp,
       cantidadAdquirida: formatearCantidadMilliCg(Number(r.cantidad_milli ?? 1000)),
       precioProducto: formatearCentavosCg(precioBsCent),
       discount: 0,
@@ -377,7 +384,11 @@ export function construirPayloadNcParcialCg(payload: PayloadImprentaDocumento): 
     numeroNotaCredito: numeroDocumentoCg(payload.numero),
     descripcion: limpiarTextoCg(payload.motivo_nc || payload.nota, 50, "Devolución parcial de mercancía"),
     productos: rengs.map((r, i) => ({
-      codigo: codigoProductoCg(r.catalogo_id, r.orden ?? i + 1),
+      codigo: codigoProductoCg(
+        r.catalogo_id,
+        r.orden ?? i + 1,
+        r.alicuota_cent !== undefined ? alicuotaATipoImpuestoCg(Number(r.alicuota_cent)) : undefined
+      ),
       descripcion: limpiarTextoCg(r.descripcion, 120, `Renglón ${i + 1}`),
       cantidad: formatearCantidadMilliCg(Number(r.cantidad_milli ?? 1000)),
     })),
@@ -1723,7 +1734,7 @@ export async function ejecutarSuiteCertificacionCg(
       construir: () =>
         construirPayloadFacturaCg(
           baseComun(numFac16, {
-            renglones: [{ orden: 1, catalogo_id: 1, descripcion: "Servicio de soporte técnico 16%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600 }],
+            renglones: [{ orden: 1, catalogo_id: 9001, descripcion: "Servicio de soporte técnico 16%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600 }],
           }),
           serieLimpia,
           { incluirDescripcion: false }
@@ -1743,7 +1754,7 @@ export async function ejecutarSuiteCertificacionCg(
           baseComun(numFac8, {
             subtotal_bs: 500000, iva_bs: 40000, total_bs: 540000,
             subtotal_usd: 10000, iva_usd: 800, total_usd: 10800,
-            renglones: [{ orden: 1, catalogo_id: 2, descripcion: "Servicio gravado alícuota reducida 8%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 800 }],
+            renglones: [{ orden: 1, catalogo_id: 9002, descripcion: "Servicio gravado alícuota reducida 8%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 800 }],
           }),
           serieLimpia,
           { incluirDescripcion: false }
@@ -1763,7 +1774,7 @@ export async function ejecutarSuiteCertificacionCg(
           baseComun(numFac31, {
             subtotal_bs: 500000, iva_bs: 155000, total_bs: 655000,
             subtotal_usd: 10000, iva_usd: 3100, total_usd: 13100,
-            renglones: [{ orden: 1, catalogo_id: 3, tipo: "PRODUCTO", descripcion: "Artículo suntuario 31%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 3100 }],
+            renglones: [{ orden: 1, catalogo_id: 9003, tipo: "PRODUCTO", descripcion: "Artículo suntuario 31%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 3100 }],
           }),
           serieLimpia,
           { incluirDescripcion: false }
@@ -1783,7 +1794,7 @@ export async function ejecutarSuiteCertificacionCg(
           baseComun(numFacExenta, {
             subtotal_bs: 250000, iva_bs: 0, total_bs: 250000,
             subtotal_usd: 5000, iva_usd: 0, total_usd: 5000,
-            renglones: [{ orden: 1, catalogo_id: 4, descripcion: "Servicio exento de IVA", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 0 }],
+            renglones: [{ orden: 1, catalogo_id: 9004, descripcion: "Servicio exento de IVA", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 0 }],
           }),
           serieLimpia,
           { incluirDescripcion: false }
@@ -1804,10 +1815,10 @@ export async function ejecutarSuiteCertificacionCg(
             subtotal_bs: 400000, iva_bs: 55000, total_bs: 455000,
             subtotal_usd: 8000, iva_usd: 1100, total_usd: 9100,
             renglones: [
-              { orden: 1, catalogo_id: 11, descripcion: "Ítem gravado 16%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 1600 },
-              { orden: 2, catalogo_id: 12, descripcion: "Ítem reducido 8%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 800 },
-              { orden: 3, catalogo_id: 13, tipo: "PRODUCTO", descripcion: "Ítem adicional 31%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 3100 },
-              { orden: 4, catalogo_id: 14, descripcion: "Ítem exento 0%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 0 },
+              { orden: 1, catalogo_id: 9011, descripcion: "Ítem gravado 16%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 1600 },
+              { orden: 2, catalogo_id: 9012, descripcion: "Ítem reducido 8%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 800 },
+              { orden: 3, catalogo_id: 9013, tipo: "PRODUCTO", descripcion: "Ítem adicional 31%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 3100 },
+              { orden: 4, catalogo_id: 9014, descripcion: "Ítem exento 0%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 0 },
             ],
           }),
           serieLimpia,
@@ -1829,8 +1840,8 @@ export async function ejecutarSuiteCertificacionCg(
             subtotal_bs: 750000, iva_bs: 120000, total_bs: 870000,
             subtotal_usd: 15000, iva_usd: 2400, total_usd: 17400,
             renglones: [
-              { orden: 1, catalogo_id: 101, tipo: "PRODUCTO", descripcion: "Repuesto certificado A", cantidad_milli: 2000, precio_usd: 5000, alicuota_cent: 1600 },
-              { orden: 2, catalogo_id: 102, tipo: "SERVICIO", descripcion: "Instalación técnica B", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 1600 },
+              { orden: 1, catalogo_id: 9101, tipo: "PRODUCTO", descripcion: "Repuesto certificado A", cantidad_milli: 2000, precio_usd: 5000, alicuota_cent: 1600 },
+              { orden: 2, catalogo_id: 9102, tipo: "SERVICIO", descripcion: "Instalación técnica B", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 1600 },
             ],
           }),
           serieLimpia,
@@ -1873,7 +1884,7 @@ export async function ejecutarSuiteCertificacionCg(
             factura_afectada_numero: numFacMulti,
             motivo_nc: "Devolucion parcial 1 unidad repuesto A",
             renglones: [
-              { orden: 1, catalogo_id: 101, descripcion: "Repuesto certificado A", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 1600 },
+              { orden: 1, catalogo_id: 9101, descripcion: "Repuesto certificado A", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 1600 },
             ],
           })
         ),
@@ -1941,7 +1952,7 @@ export async function ejecutarSuiteCertificacionCg(
         construir: () =>
           construirPayloadFacturaCg(
             baseComun(numFac16, {
-              renglones: [{ orden: 1, catalogo_id: 1, descripcion: "Intento duplicado controlado", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600 }],
+              renglones: [{ orden: 1, catalogo_id: 9001, descripcion: "Intento duplicado controlado", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600 }],
             }),
             serieLimpia,
             { incluirDescripcion: false }
@@ -2092,7 +2103,7 @@ export async function ejecutarSuiteCertificacionCg(
   const fechaEjec = new Date().toISOString();
 
   const lineasReporte = [
-    `REPORTE DE CERTIFICACIÓN CALIDAD — CG LA IMPRENTA DIGITAL (FacturaYa Venezuela v5.3.1)`,
+    `REPORTE DE CERTIFICACIÓN CALIDAD — CG LA IMPRENTA DIGITAL (FacturaYa Venezuela v5.3.2)`,
     `Fecha: ${fechaEjec} | Ambiente: PRUEBAS (Calidad) | Host: ${host}`,
     `Emisor: ${emisorDemo.nombre_razon_social} (${emisorDemo.rif}) | Serie: "${serieLimpia}"`,
     `Resultado: ${aprobados + erroresControladosOk}/${resultados.length} OK (${aprobados} operaciones + ${erroresControladosOk} errores controlados, ${fallidos} fallidos)`,

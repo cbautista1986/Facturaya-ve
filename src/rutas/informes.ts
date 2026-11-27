@@ -155,8 +155,10 @@ informes.get("/resumen-iva", async (c) => {
         WHERE c.estado = 'REGISTRADA' AND c.modo = ? AND c.fecha BETWEEN ? AND ? GROUP BY mes`).bind(modo, r.desde, r.hasta).all<Fila>(),
     db.prepare(`SELECT substr(fecha, 1, 7) AS mes, COUNT(*) AS n FROM compras WHERE estado = 'REGISTRADA' AND tasa_e8 IS NULL AND modo = ? AND fecha BETWEEN ? AND ? GROUP BY mes`)
       .bind(modo, r.desde, r.hasta).all<Fila>(),
-    db.prepare(`SELECT substr(fecha_pago, 1, 7) AS mes, COALESCE(SUM(monto_recibido), 0) AS retenido_bs
-        FROM pagos WHERE estado = 'VIGENTE' AND es_retencion_iva = 1 AND modo = ? AND fecha_pago BETWEEN ? AND ? GROUP BY mes`)
+    db.prepare(`SELECT substr(p.fecha_pago, 1, 7) AS mes,
+        COALESCE(SUM(CASE WHEN p.moneda = 'BS' THEN p.monto_recibido ELSE (p.monto_usd * p.tasa_e8 + 50000000) / 100000000 END), 0) AS retenido_bs
+        FROM pagos p JOIN documentos d ON d.id = p.documento_id
+        WHERE p.estado = 'VIGENTE' AND p.es_retencion_iva = 1 AND d.tipo = 'FACTURA' AND d.modo = ? AND p.fecha_pago BETWEEN ? AND ? GROUP BY mes`)
       .bind(modo, r.desde, r.hasta).all<Fila>(),
   ]);
   const V = new Map(ventas.results.map((x) => [x.mes, x])), C = new Map(compras.results.map((x) => [x.mes, x]));
@@ -297,6 +299,12 @@ informes.get("/cierre-caja", async (c) => {
   const [nd_desde, nd_hasta] = minMax(notasDebito);
   const [nc_desde, nc_hasta] = minMax(notasCredito);
   const [control_desde, control_hasta] = minMax(docFiscales, "control_interno");
+  const controlesFiscales = docFiscales
+    .map((x) => (typeof x.control_fiscal === "string" ? x.control_fiscal.trim() : ""))
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const control_fiscal_desde = controlesFiscales.length ? controlesFiscales[0] : null;
+  const control_fiscal_hasta = controlesFiscales.length ? controlesFiscales[controlesFiscales.length - 1] : null;
 
   const pagos = pagosRes.results;
   const pagosVig = pagos.filter((p) => p.estado === "VIGENTE");
@@ -347,6 +355,8 @@ informes.get("/cierre-caja", async (c) => {
       nc_anuladas: notasCredito.length - ncVig.length,
       control_desde,
       control_hasta,
+      control_fiscal_desde,
+      control_fiscal_hasta,
       recibo_desde,
       recibo_hasta,
       recibos_vigentes: pagosVig.length,

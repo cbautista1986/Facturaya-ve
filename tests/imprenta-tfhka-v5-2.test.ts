@@ -379,7 +379,7 @@ test("2. Flujo E2E TFHKA emisionv2: config cifrada, emitir/NC/ND/anular, 401 ref
 
   // Mock globalThis.fetch para TFHKA emisionv2 y Resend
   const llamadas: { url: string; method: string; body: any; auth: string | null }[] = [];
-  const correosEnviados: { to: string[]; subject: string; html: string }[] = [];
+  const correosEnviados: { to: string[]; subject: string; html: string; attachments?: any[] }[] = [];
   let tokenNum = 0;
   let forzar401UnaVez = false;
   let modoEmision: "OK" | "TIMEOUT_PERO_REMOTO_OK" | "CAIDO_TOTAL" = "OK";
@@ -397,7 +397,7 @@ test("2. Flujo E2E TFHKA emisionv2: config cifrada, emitir/NC/ND/anular, 401 ref
 
     // Resend mock
     if (url === "https://api.resend.com/emails") {
-      correosEnviados.push({ to: body.to, subject: body.subject, html: body.html });
+      correosEnviados.push({ to: body.to, subject: body.subject, html: body.html, attachments: body.attachments });
       return new Response(JSON.stringify({ id: "email-tfhka-1" }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
 
@@ -500,6 +500,16 @@ test("2. Flujo E2E TFHKA emisionv2: config cifrada, emitir/NC/ND/anular, 401 ref
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    if (url.endsWith("/DescargaArchivo")) {
+      const pdfBytes = new TextEncoder().encode("%PDF-1.4\n%TFHKA-OFICIAL-TEST\n1 0 obj<<>>endobj\n%%EOF\n");
+      let bin = "";
+      for (const b of pdfBytes) bin += String.fromCharCode(b);
+      return new Response(
+        JSON.stringify({ codigo: "200", mensaje: "OK", archivo: btoa(bin) }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     return new Response("Not Found", { status: 404 });
@@ -610,12 +620,15 @@ test("2. Flujo E2E TFHKA emisionv2: config cifrada, emitir/NC/ND/anular, 401 ref
     assert.equal(reintento.data.fecha_asignacion, "26/11/2026");
     assert.equal(reintento.data.imprenta_razon_social, TFHKA_RAZON_SOCIAL_DEFECTO);
 
-    // (d) Ya con control_fiscal oficial, el envío por correo SÍ procede e incluye el Sello Digital Autorizado
+    // (d) Ya con control_fiscal oficial, el envío por correo SÍ procede, incluye Sello Digital Autorizado y adjunta el PDF oficial de TFHKA
     const correoOk = await reqJson(env, jarAdmin, `/api/documentos/${fac3Borr.data.id}/enviar-correo`, "POST", {
       email: "pagos@andina.ve",
     });
     assert.equal(correoOk.status, 200, `Envío correo tras sello falló: ${JSON.stringify(correoOk.data)}`);
+    assert.equal(correoOk.data.pdf_origen, "IMPRENTA_OFICIAL");
     assert.equal(correosEnviados.length, 1);
+    assert.ok(Array.isArray(correosEnviados[0].attachments) && correosEnviados[0].attachments.length === 1);
+    assert.ok(Buffer.from(correosEnviados[0].attachments[0].content, "base64").toString("utf8").includes("TFHKA-OFICIAL-TEST"));
     assert.ok(correosEnviados[0].html.includes("00-00000505"));
     assert.ok(correosEnviados[0].html.includes("Sello Digital Autorizado"));
     assert.ok(correosEnviados[0].html.includes(TFHKA_RAZON_SOCIAL_DEFECTO));

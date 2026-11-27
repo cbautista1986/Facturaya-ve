@@ -264,7 +264,7 @@ function base64Utf8(textoCsv: string): string {
 
 function celdaCsv(v: unknown): string {
   let s = String(v ?? "");
-  if (/^[=+\-@\t]/.test(s)) s = `'${s}`;
+  if (/^[=+\-@\t]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = `'${s}`;
   return /[",\n\r;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -327,21 +327,38 @@ export async function enviarCierreMensualInquilino(
   const desde = `${mes}-01`;
   const hasta = `${mes}-31`;
 
-  // 1) Ventas del mes (Facturas, Notas de Débito +, Notas de Crédito -)
-  const { results: docsVentas } = await db
-    .prepare(
-      `SELECT d.id, d.numero, d.es_nota_credito, COALESCE(d.es_nota_debito, 0) AS es_nota_debito,
-              d.control_interno, d.control_fiscal, d.fecha_emision, d.estado,
-              d.cliente_rif, d.cliente_nombre, d.subtotal_bs, d.iva_bs, d.igtf_bs, d.total_bs,
-              d.subtotal_usd, d.iva_usd, d.igtf_usd, d.total_usd,
-              (SELECT fa.numero FROM documentos fa WHERE fa.id = d.factura_afectada_id) AS factura_afectada_numero
-       FROM documentos d
-       WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO')
-         AND d.fecha_emision >= ? AND d.fecha_emision <= ?
-       ORDER BY d.fecha_emision ASC, d.id ASC`
-    )
-    .bind(modo, desde, hasta)
-    .all<Record<string, any>>();
+  // 1) Ventas del mes (Facturas, Notas de Débito +, Notas de Crédito -) + desglose exacto exento/gravado desde documento_impuestos
+  const [{ results: docsVentas }, { results: impVentas }] = await Promise.all([
+    db
+      .prepare(
+        `SELECT d.id, d.numero, d.es_nota_credito, COALESCE(d.es_nota_debito, 0) AS es_nota_debito,
+                d.control_interno, d.control_fiscal, d.medio, d.fecha_emision, d.estado,
+                d.cliente_rif, d.cliente_nombre, d.subtotal_bs, d.iva_bs, d.igtf_bs, d.total_bs,
+                d.subtotal_usd, d.iva_usd, d.igtf_usd, d.total_usd,
+                (SELECT fa.numero FROM documentos fa WHERE fa.id = d.factura_afectada_id) AS factura_afectada_numero
+         FROM documentos d
+         WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO')
+           AND d.fecha_emision >= ? AND d.fecha_emision <= ?
+         ORDER BY d.fecha_emision ASC, d.id ASC`
+      )
+      .bind(modo, desde, hasta)
+      .all<Record<string, any>>(),
+    db
+      .prepare(
+        `SELECT i.documento_id,
+                SUM(CASE WHEN i.alicuota_cent = 0 THEN i.base_bs ELSE 0 END) AS exenta_bs,
+                SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs ELSE 0 END) AS gravada_bs
+         FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
+         WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO')
+           AND d.fecha_emision >= ? AND d.fecha_emision <= ?
+         GROUP BY i.documento_id`
+      )
+      .bind(modo, desde, hasta)
+      .all<Record<string, any>>(),
+  ]);
+  const impPorDoc = new Map<number, { exenta_bs: number; gravada_bs: number }>(
+    impVentas.map((x) => [Number(x.documento_id), { exenta_bs: Number(x.exenta_bs || 0), gravada_bs: Number(x.gravada_bs || 0) }])
+  );
 
   let baseVentasBs = 0, debitoIvaBs = 0, igtfVentasBs = 0, totalVentasBs = 0;
   let baseVentasUsd = 0, igtfVentasUsd = 0;
@@ -350,6 +367,9 @@ export async function enviarCierreMensualInquilino(
   for (const d of docsVentas) {
     const anulado = d.estado === "ANULADO";
     const signo = anulado ? 0 : d.es_nota_credito ? -1 : 1;
+    const impDoc = impPorDoc.get(Number(d.id));
+    const exentaBs = signo * (impDoc ? impDoc.exenta_bs : 0);
+    const gravadaBs = signo * (impDoc ? impDoc.gravada_bs : Number(d.subtotal_bs || 0));
     const subBs = signo * Number(d.subtotal_bs || 0);
     const ivaBs = signo * Number(d.iva_bs || 0);
     const igtfBs = signo * Number(d.igtf_bs || 0);
@@ -367,7 +387,9 @@ export async function enviarCierreMensualInquilino(
       : d.es_nota_debito
         ? `ND-${String(d.numero).padStart(8, "0")}`
         : String(d.numero).padStart(8, "0");
-    const ctrl = d.control_fiscal || `00-${String(d.control_interno ?? d.numero).padStart(8, "0")}`;
+    const ctrl =
+      d.control_fiscal ||
+      (d.medio === "IMPRENTA_DIGITAL" && modo === "REAL" ? "PENDIENTE" : `00-${String(d.control_interno ?? d.numero).padStart(8, "0")}`);
     filasCsvVentas.push([
       d.fecha_emision,
       tipoDoc,
@@ -376,7 +398,8 @@ export async function enviarCierreMensualInquilino(
       d.factura_afectada_numero ? String(d.factura_afectada_numero).padStart(8, "0") : "",
       anulado ? "ANULADO" : d.cliente_rif,
       anulado ? "ANULADO" : d.cliente_nombre,
-      fmtDec(subBs),
+      fmtDec(exentaBs),
+      fmtDec(gravadaBs),
       fmtDec(ivaBs),
       fmtDec(igtfBs),
       fmtDec(totBs),
@@ -414,14 +437,16 @@ export async function enviarCierreMensualInquilino(
     ]);
   }
 
-  // 3) Retenciones de IVA e ISLR recibidas en el mes
+  // 3) Retenciones de IVA e ISLR recibidas en el mes (conversión exacta a centavos enteros de Bs.)
   const { results: retenciones } = await db
     .prepare(
       `SELECT p.fecha_pago, p.numero AS recibo_numero, p.es_retencion_iva, COALESCE(p.es_retencion_islr, 0) AS es_retencion_islr,
-              p.comprobante_retencion, p.referencia, p.monto_recibido AS retenido_bs, p.monto_usd AS retenido_usd,
+              p.comprobante_retencion, p.referencia,
+              CASE WHEN p.moneda = 'BS' THEN p.monto_recibido ELSE (p.monto_usd * p.tasa_e8 + 50000000) / 100000000 END AS retenido_bs,
+              p.monto_usd AS retenido_usd,
               d.numero AS factura_numero, COALESCE(d.es_nota_debito, 0) AS es_nota_debito, d.cliente_rif, d.cliente_nombre
        FROM pagos p JOIN documentos d ON d.id = p.documento_id
-       WHERE p.modo = ? AND p.estado = 'VIGENTE'
+       WHERE p.modo = ? AND p.estado = 'VIGENTE' AND d.tipo = 'FACTURA'
          AND (p.es_retencion_iva = 1 OR COALESCE(p.es_retencion_islr, 0) = 1)
          AND p.fecha_pago >= ? AND p.fecha_pago <= ?
        ORDER BY p.fecha_pago ASC, p.id ASC`
@@ -452,7 +477,7 @@ export async function enviarCierreMensualInquilino(
   const excedenteCreditoBs = cuotaNetaIvaBs < 0 ? -cuotaNetaIvaBs : 0;
 
   const csvVentas = armarCsv(
-    ["Fecha", "Tipo", "Numero", "Control", "Factura_Afectada", "RIF_Cliente", "Cliente", "Base_Bs", "IVA_Bs", "IGTF_Bs", "Total_Bs", "Estado"],
+    ["Fecha", "Tipo", "Numero", "Control", "Factura_Afectada", "RIF_Cliente", "Cliente", "Base_Exenta_Bs", "Base_Gravada_Bs", "IVA_Bs", "IGTF_Bs", "Total_Bs", "Estado"],
     filasCsvVentas
   );
   const csvCompras = armarCsv(

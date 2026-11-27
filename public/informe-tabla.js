@@ -66,7 +66,7 @@ function modeloVentas(r, opts = {}) {
     const anulada = f.estado === "ANULADO", esNc = !!f.es_nota_credito, esNd = !!f.es_nota_debito;
     const nro = esNc ? `NC-${nroFactura(f.numero)}` : esNd ? `ND-${nroFactura(f.numero)}` : nroFactura(f.numero);
     const afectada = (esNc || esNd) && f.factura_afectada_numero != null ? nroFactura(f.factura_afectada_numero) : "";
-    const nroCtrl = f.control_fiscal || (f.control_interno == null ? "" : `00-${nroFactura(f.control_interno)}`);
+    const nroCtrl = f.control_fiscal || (f.medio === "IMPRENTA_DIGITAL" && r.modo === "REAL" ? "PENDIENTE" : (f.control_interno == null ? "" : `00-${nroFactura(f.control_interno)}`));
     const tipoTxt = esNc ? "Nota de crédito" : esNd ? "Nota de débito" : "Factura";
     return [fecha(f.fecha_emision), tipoTxt, nro, afectada, nroCtrl, MEDIO[f.medio] || "App Digital SENIAT", f.cliente_rif || "", f.cliente_nombre || "",
       anulada ? "ANULADA" : "Emitida",
@@ -87,6 +87,7 @@ function modeloVentas(r, opts = {}) {
     notas: [esFormal
       ? "Relación de ventas para Contribuyente Formal del IVA (Art. 8 Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102). Operaciones exentas en Bolívares a tasa oficial BCV."
       : "Conforme al Art. 72 del Reglamento de la Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102. Montos expresados en Bolívares a tasa oficial BCV.",
+      ...(r.n_sin_fiscal ? [`⚠️ Hay ${r.n_sin_fiscal} documento(s) vigente(s) pendiente(s) de N.º de Control fiscal definitivo.`] : []),
       ...(r.iva_retenido_otros_periodos_bs ? [`Incluye ${num(r.iva_retenido_otros_periodos_bs)} Bs de retenciones de IVA recibidas en este período por facturas de otros meses; se detallan en la sección de retenciones.`] : [])],
     secciones: [{ titulo: "Facturas, Notas de Crédito y Notas de Débito", columnas, filas, totales },
       ...(r.retenciones_periodo?.length ? [{
@@ -154,6 +155,7 @@ function modeloResumenIva(r) {
 
 function modeloIslr(r) {
   const filas = (r.filas || []).map((f) => {
+    const anulado = f.estado === "ANULADO";
     const docNro = f.es_nota_debito ? `ND-${nroFactura(f.factura_numero)}` : nroFactura(f.factura_numero);
     const ctrl = f.control_fiscal || (f.control_interno == null ? "" : `00-${nroFactura(f.control_interno)}`);
     return [
@@ -164,21 +166,23 @@ function modeloIslr(r) {
       f.cliente_nombre || "",
       docNro,
       ctrl,
-      `${f.porcentaje_retencion || 0}%`,
-      num(f.base_imponible_bs),
-      num(f.retenido_bs),
-      num(f.retenido_usd),
+      anulado ? "ANULADA" : "Vigente",
+      anulado ? "" : `${f.porcentaje_retencion || 0}%`,
+      anulado ? "" : num(f.base_imponible_bs),
+      anulado ? "" : num(f.retenido_bs),
+      anulado ? "" : num(f.retenido_usd),
     ];
   });
   const totales = filas.length
-    ? [["TOTAL", "", `${r.n_retenciones} comp.`, "", "", "", "", "", num(r.base_imponible_bs), num(r.total_retenido_bs), num(r.total_retenido_usd)]]
+    ? [["TOTAL", "", `${r.n_retenciones} comp.`, "", "", "", "", "", "", num(r.base_imponible_bs), num(r.total_retenido_bs), num(r.total_retenido_usd)]]
     : [];
   return {
     clave: "islr",
     titulo: "Retenciones de ISLR Recibidas (Decreto 1.808 / Relación ARC)",
     periodo: periodo(r),
     resumen: [
-      ["Comprobantes recibidos", String(r.n_retenciones ?? 0)],
+      ["Comprobantes vigentes", String(r.n_retenciones ?? 0)],
+      ...(r.n_anulados ? [["Anulados (no suman)", String(r.n_anulados)]] : []),
       ["Base imponible sujeta (Bs)", num(r.base_imponible_bs ?? 0)],
       ["ISLR retenido total (Bs)", num(r.total_retenido_bs ?? 0)],
       ["ISLR retenido equiv. (USD)", num(r.total_retenido_usd ?? 0)],
@@ -197,6 +201,7 @@ function modeloIslr(r) {
           izq("Cliente / Agente de Retención"),
           izq("Factura / ND"),
           izq("N.º Control"),
+          izq("Estado"),
           der("% Ret."),
           der("Base Imponible (Bs)"),
           der("ISLR Retenido (Bs)"),
@@ -211,23 +216,36 @@ function modeloIslr(r) {
 
 function modeloIgtf(r) {
   const filas = r.filas.map((f) => {
-    const esNc = !!f.es_nota_credito, esNd = !!f.es_nota_debito;
+    const anulada = f.estado === "ANULADO", esNc = !!f.es_nota_credito, esNd = !!f.es_nota_debito;
     const nro = esNc ? `NC-${nroFactura(f.numero)}` : esNd ? `ND-${nroFactura(f.numero)}` : nroFactura(f.numero);
-    const nroCtrl = f.control_fiscal || (f.control_interno == null ? "" : `00-${nroFactura(f.control_interno)}`);
-    return [fecha(f.fecha_emision), esNc ? "Nota de crédito" : esNd ? "Nota de débito" : "Factura", nro, nroCtrl, f.cliente_rif || "", f.cliente_nombre || "",
-      tasaTxt(f.tasa_e8), num(f.base_divisas_bs), num(f.base_divisas_usd), num(f.igtf_bs), num(f.igtf_usd)];
+    const nroCtrl = f.control_fiscal || (f.medio === "IMPRENTA_DIGITAL" && r.modo === "REAL" ? "PENDIENTE" : (f.control_interno == null ? "" : `00-${nroFactura(f.control_interno)}`));
+    return [
+      fecha(f.fecha_emision),
+      esNc ? "Nota de crédito" : esNd ? "Nota de débito" : "Factura",
+      nro,
+      nroCtrl,
+      f.cliente_rif || "",
+      f.cliente_nombre || "",
+      anulada ? "ANULADA" : "Emitida",
+      anulada ? "" : tasaTxt(f.tasa_e8),
+      anulada ? "" : num(f.base_divisas_bs),
+      anulada ? "" : num(f.base_divisas_usd),
+      anulada ? "" : num(f.igtf_bs),
+      anulada ? "" : num(f.igtf_usd),
+    ];
   });
-  const totales = r.filas.length ? [["TOTAL", "", "", "", "", `${r.n_documentos} doc(s)`, "", num(r.base_divisas_bs), num(r.base_divisas_usd), num(r.igtf_bs), num(r.igtf_usd)]] : [];
+  const totales = r.filas.length ? [["TOTAL", "", "", "", "", `${r.n_documentos} doc(s)`, "", "", num(r.base_divisas_bs), num(r.base_divisas_usd), num(r.igtf_bs), num(r.igtf_usd)]] : [];
   return { clave: "igtf", titulo: "Declaración de IGTF (3% SENIAT)", periodo: periodo(r),
     resumen: [
       ["Documentos con IGTF", String(r.n_documentos)],
+      ...(r.n_anuladas ? [["Anuladas (no suman)", String(r.n_anuladas)]] : []),
       ["Base cobrada en divisas (USD)", num(r.base_divisas_usd)],
       ["IGTF 3% percibido (Bs)", num(r.igtf_bs)],
       ["IGTF 3% percibido (USD)", num(r.igtf_usd)],
     ],
     notas: ["Auxiliar para la declaración y enteramiento quincenal/mensual del Impuesto a las Grandes Transacciones Financieras (IGTF 3%) percibido por pagos en moneda extranjera o criptoactivos distintos al Bolívar, conforme a la Providencia SENIAT SNAT/2022/000013."],
     secciones: [{ titulo: "Documentos con percepción de IGTF (3%)",
-      columnas: [izq("Fecha"), izq("Tipo"), izq("N.º doc."), izq("N.º Control"), izq("RIF / Cédula"), izq("Cliente"), der("Tasa BCV"), der("Base divisas (Bs)"), der("Base divisas (USD)"), der("IGTF 3% (Bs)"), der("IGTF 3% (USD)")],
+      columnas: [izq("Fecha"), izq("Tipo"), izq("N.º doc."), izq("N.º Control"), izq("RIF / Cédula"), izq("Cliente"), izq("Estado"), der("Tasa BCV"), der("Base divisas (Bs)"), der("Base divisas (USD)"), der("IGTF 3% (Bs)"), der("IGTF 3% (USD)")],
       filas, totales }] };
 }
 
@@ -235,9 +253,11 @@ function modeloCierreCaja(r) {
   const esDia = r.desde === r.hasta;
   const n = r.numeracion, fac = r.facturacion, rec = r.recaudacion;
   const rangoNro = (d, h, pref = "") => (d == null ? "Sin emisiones" : `${pref}${nroFactura(d)} al ${pref}${nroFactura(h)}`);
+  const ctrlDesde = n.control_fiscal_desde || (n.control_desde ? `00-${nroFactura(n.control_desde)}` : "-");
+  const ctrlHasta = n.control_fiscal_hasta || (n.control_hasta ? `00-${nroFactura(n.control_hasta)}` : "-");
   const filasNum = [
     ["Facturas", n.factura_desde ? nroFactura(n.factura_desde) : "-", n.factura_hasta ? nroFactura(n.factura_hasta) : "-", String(n.facturas_vigentes), String(n.facturas_anuladas)],
-    ["Números de Control Fiscal", n.control_desde ? `00-${nroFactura(n.control_desde)}` : "-", n.control_hasta ? `00-${nroFactura(n.control_hasta)}` : "-", String(n.facturas_vigentes + n.nc_vigentes + (n.nd_vigentes ?? 0)), String(n.facturas_anuladas + n.nc_anuladas + (n.nd_anuladas ?? 0))],
+    ["Números de Control Fiscal", ctrlDesde, ctrlHasta, String(n.facturas_vigentes + n.nc_vigentes + (n.nd_vigentes ?? 0)), String(n.facturas_anuladas + n.nc_anuladas + (n.nd_anuladas ?? 0))],
     ["Notas de Crédito", n.nc_desde ? `NC-${nroFactura(n.nc_desde)}` : "-", n.nc_hasta ? `NC-${nroFactura(n.nc_hasta)}` : "-", String(n.nc_vigentes), String(n.nc_anuladas)],
     ["Notas de Débito", n.nd_desde ? `ND-${nroFactura(n.nd_desde)}` : "-", n.nd_hasta ? `ND-${nroFactura(n.nd_hasta)}` : "-", String(n.nd_vigentes ?? 0), String(n.nd_anuladas ?? 0)],
     ["Recibos de Cobro", n.recibo_desde ? nroFactura(n.recibo_desde) : "-", n.recibo_hasta ? nroFactura(n.recibo_hasta) : "-", String(n.recibos_vigentes), String(n.recibos_anuladas)],

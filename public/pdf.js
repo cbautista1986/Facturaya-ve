@@ -1,11 +1,21 @@
 // PDF de presupuestos y facturas. Se genera en el navegador con pdf-lib (incluida en /vendor, sin internet).
 // construirPdf(PDFLib, { doc, lineas, impuestos }) -> Uint8Array. Los datos son los que devuelve GET /api/documentos/:id.
 // Solo depende de dinero.js, para poder probarlo fuera del navegador.
-import { tasaTexto, cantidadTexto, aRifSeniat } from "./dinero.js";
+import { tasaTexto, cantidadTexto, aRifSeniat, usdABs } from "./dinero.js";
 
 const ANCHO = 595.28, ALTO = 841.89, M = 40;
 const num = (c) => (c / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fecha = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
+const horaCaracas = (iso) => {
+  if (!iso) return "";
+  const ms = Date.parse(String(iso));
+  if (!Number.isFinite(ms)) return "";
+  const ccs = new Date(ms - 4 * 3600 * 1000);
+  let h = ccs.getUTCHours();
+  const ampm = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${String(h).padStart(2, "0")}:${String(ccs.getUTCMinutes()).padStart(2, "0")}:${String(ccs.getUTCSeconds()).padStart(2, "0")} ${ampm}`;
+};
 export const numeroDoc = (d) => (d.numero == null ? "" : d.tipo === "PRESUPUESTO" ? `P-${String(d.numero).padStart(6, "0")}` : d.es_nota_credito ? `NC-${String(d.numero).padStart(8, "0")}` : d.es_nota_debito ? `ND-${String(d.numero).padStart(8, "0")}` : String(d.numero).padStart(8, "0"));
 const bonito = (t) => { const d = String(t ?? "").replace(/\D/g, ""); return /^584\d{9}$/.test(d) ? `+58 ${d.slice(2, 5)} ${d.slice(5, 8)} ${d.slice(8)}` : String(t ?? ""); };
 const masDias = (iso, dias) => { const f = new Date(`${iso}T12:00:00Z`); f.setUTCDate(f.getUTCDate() + dias); return f.toISOString().slice(0, 10); };
@@ -108,6 +118,8 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
     }
   }
   T(`Fecha de emisión: ${fecha(D.fecha_emision)}`, R, dy, { s: 9, der: true }); dy += 13;
+  const horaEmi = impEnv?.hora_asignacion || horaCaracas(D.emitido_en);
+  if (esFactura && horaEmi) { T(`Hora de emisión: ${horaEmi}`, R, dy, { s: 9, der: true }); dy += 13; }
   if (!esFactura) { T(`Válido hasta: ${fecha(masDias(D.fecha_emision, Number(reglas.validez_presupuesto_dias ?? 15)))}`, R, dy, { s: 9, der: true }); dy += 13; }
   y = Math.max(ey, dy) + 8;
 
@@ -153,23 +165,25 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   caja(y, hc, [0.95, 0.96, 0.98]); textoCliente.forEach(([k, v], i) => { T(k, M + 8, y + 6 + i * 14, { s: 9, c: [0.4, 0.4, 0.4] }); T(v, M + 80, y + 6 + i * 14, { s: 10, b: k === "Cliente" }); });
   y += hc + 12;
 
-  // ---- renglones
-  const col = { cant: M + 4, desc: M + 48, pu: 370, iva: 418, usd: 488, bs: R - 2 };
+  // ---- renglones (Art. 13 SNAT/2011/0071: valor unitario expresado en Bs. cuando existe tasa BCV)
+  const mostrarPuBs = esFactura && Number(D.tasa_e8) > 0;
+  const col = { cant: M + 4, desc: M + 48, pu: 374, iva: 422, usd: 488, bs: R - 2 };
   const encabezadoTabla = () => {
     caja(y, 18, [0.16, 0.34, 0.66]);
     const c = [1, 1, 1];
     T("Cant.", col.cant, y + 4, { s: 8.5, b: true, c }); T("Descripción", col.desc, y + 4, { s: 8.5, b: true, c });
-    T("P. unit. USD", col.pu, y + 4, { s: 8.5, b: true, c, der: true }); T("IVA", col.iva, y + 4, { s: 8.5, b: true, c, der: true });
+    T(mostrarPuBs ? "P. unit. Bs." : "P. unit. USD", col.pu, y + 4, { s: 8.5, b: true, c, der: true }); T("IVA", col.iva, y + 4, { s: 8.5, b: true, c, der: true });
     T("Monto USD", col.usd, y + 4, { s: 8.5, b: true, c, der: true }); T("Monto Bs.", col.bs, y + 4, { s: 8.5, b: true, c, der: true });
     y += 22;
   };
   encabezadoTabla();
   for (const l of lineas) {
-    const ds = envolver(l.descripcion, col.pu - col.desc - 70, 9.5), h = ds.length * 12 + 6;
+    const ds = envolver(l.descripcion, col.pu - col.desc - 72, 9.5), h = ds.length * 12 + 6;
     if (y + h > ALTO - M - 30) { nueva(); encabezadoTabla(); }
+    const puMostrar = mostrarPuBs ? usdABs(l.precio_usd, D.tasa_e8) : l.precio_usd;
     T(cantidadTexto(l.cantidad_milli), col.cant, y + 3, { s: 9.5 });
     ds.forEach((t, i) => T(t, col.desc, y + 3 + i * 12, { s: 9.5 }));
-    T(num(l.precio_usd), col.pu, y + 3, { s: 9.5, der: true }); T(l.alicuota_cent === 0 ? "Exento" : `${l.alicuota_cent / 100}%`, col.iva, y + 3, { s: 9.5, der: true });
+    T(num(puMostrar), col.pu, y + 3, { s: 9.5, der: true }); T(l.alicuota_cent === 0 ? "Exento" : `${l.alicuota_cent / 100}%`, col.iva, y + 3, { s: 9.5, der: true });
     T(num(l.monto_usd), col.usd, y + 3, { s: 9.5, der: true }); T(num(l.monto_bs), col.bs, y + 3, { s: 9.5, der: true });
     pag.drawLine({ start: { x: M, y: ALTO - y - h }, end: { x: R, y: ALTO - y - h }, thickness: 0.4, color: rgb(0.85, 0.85, 0.85) });
     y += h;
@@ -205,8 +219,8 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
       const razonImp = impEnv?.imprenta_razon_social || impEnv?.proveedor || "Imprenta Digital Autorizada";
       const fechaHoraImp = impEnv?.fecha_asignacion ? ` · Asignado: ${impEnv.fecha_asignacion}${impEnv.hora_asignacion ? ` ${impEnv.hora_asignacion}` : ""}` : "";
       const autImp = impEnv?.imprenta_autorizacion || "Imprenta Digital Autorizada por el SENIAT · Providencia SNAT/2024/000102";
-      T(`Imprenta Digital: ${razonImp} · Control: ${D.control_fiscal}${fechaHoraImp}`, M, ALTO - 49, { s: 7, b: true, c: [0.22, 0.28, 0.38], p });
-      T(autImp, M, ALTO - 39, { s: 6.8, c: [0.42, 0.46, 0.52], p });
+      T(`COPIA INTERNA DE RESPALDO · Imprenta Digital: ${razonImp} · Control: ${D.control_fiscal}${fechaHoraImp}`, M, ALTO - 49, { s: 6.8, b: true, c: [0.22, 0.28, 0.38], p });
+      T(`${autImp} · El documento fiscal legal con QR es el PDF emitido por la Imprenta Digital.`, M, ALTO - 39, { s: 6.6, c: [0.42, 0.46, 0.52], p });
     } else if (esAppSeniatInterno) {
       T("Control interno de facturación · Emisión fiscal oficial vía Sistema Digital SENIAT (SNAT/2024/000102)", R, ALTO - 39, { s: 7, c: [0.45, 0.45, 0.45], der: true, p });
     }

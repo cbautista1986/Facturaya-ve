@@ -1189,9 +1189,94 @@ documentos.post("/:id/copiar", async (c) => {
   return c.json({ ok: true, id: nuevo });
 });
 
+function bytesABase64(bytes: Uint8Array): string {
+  let bin = "";
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    const sub = bytes.subarray(i, i + chunk);
+    for (let j = 0; j < sub.length; j++) bin += String.fromCharCode(sub[j]);
+  }
+  return btoa(bin);
+}
+
+function esPdfValido(bytes: Uint8Array): boolean {
+  return (
+    bytes.length >= 5 &&
+    bytes[0] === 0x25 && // %
+    bytes[1] === 0x50 && // P
+    bytes[2] === 0x44 && // D
+    bytes[3] === 0x46 && // F
+    bytes[4] === 0x2d    // -
+  );
+}
+
+function nombrePdfOficialDoc(doc: { es_nota_credito?: unknown; es_nota_debito?: unknown; numero?: unknown; estado?: unknown }): string {
+  const num = String(doc.numero ?? 1).padStart(8, "0");
+  const pref = doc.es_nota_credito ? "Nota-Credito" : doc.es_nota_debito ? "Nota-Debito" : "Factura";
+  const sufAnul = doc.estado === "ANULADO" ? "-ANULADA" : "";
+  return `${pref}-${num}${sufAnul}-Oficial.pdf`;
+}
+
+async function obtenerPdfOficialImprenta(
+  db: D1Database,
+  envObj: Record<string, unknown>,
+  doc: Fila,
+  impEnv: { proveedor_tipo: string | null; numero_serie: string | null; pdf_url: string | null } | null
+): Promise<{ ok: true; bytes: Uint8Array; filename: string } | { ok: false; status: number; error: string }> {
+  const cfg = await leerConfigImprentaCompleta(db, envObj);
+  const esTfhka = impEnv?.proveedor_tipo === PROVEEDOR_TFHKA || (!impEnv?.proveedor_tipo && cfg.proveedor_tipo === PROVEEDOR_TFHKA);
+
+  if (esTfhka) {
+    const tipoDoc = doc.es_nota_credito ? "NOTA_CREDITO" : doc.es_nota_debito ? "NOTA_DEBITO" : "FACTURA";
+    const pdfRes = await descargarPdfTfhka(db, envObj, cfg, {
+      tipo_documento: tipoDoc,
+      numero_documento: Number(doc.numero ?? 1),
+      serie: impEnv?.numero_serie !== null && impEnv?.numero_serie !== undefined ? impEnv.numero_serie : cfg.serie,
+    });
+    if (!pdfRes.ok) {
+      return { ok: false, status: 502, error: pdfRes.error };
+    }
+    return { ok: true, bytes: pdfRes.bytes, filename: pdfRes.filename || nombrePdfOficialDoc(doc) };
+  }
+
+  const pdfSeguro = validarUrlPdfSegura(impEnv?.pdf_url);
+  if (!pdfSeguro) {
+    return { ok: false, status: 404, error: "Este documento no cuenta con un enlace PDF oficial remoto en la Imprenta Digital." };
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(pdfSeguro, {
+      method: "GET",
+      headers: { Accept: "application/pdf,*/*" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(12_000),
+    });
+  } catch (e) {
+    return { ok: false, status: 502, error: `No se pudo conectar con la Imprenta Digital para descargar el PDF oficial (${String((e as Error)?.message || e).slice(0, 120)}).` };
+  }
+
+  if (res.url && !validarUrlPdfSegura(res.url)) {
+    return { ok: false, status: 502, error: "La redirección del PDF de la Imprenta Digital apunta a una URL no permitida." };
+  }
+  if (!res.ok) {
+    return { ok: false, status: 502, error: `La Imprenta Digital respondió HTTP ${res.status} al descargar el PDF oficial.` };
+  }
+  const ct = String(res.headers.get("content-type") || "").toLowerCase();
+  const ab = await res.arrayBuffer();
+  const bytes = new Uint8Array(ab);
+  if (bytes.length < 32 || bytes.length > 8_000_000) {
+    return { ok: false, status: 502, error: "El archivo devuelto por la Imprenta Digital tiene un tamaño inválido." };
+  }
+  if (!esPdfValido(bytes) && !ct.includes("pdf")) {
+    return { ok: false, status: 502, error: "La Imprenta Digital no devolvió un archivo PDF válido." };
+  }
+  return { ok: true, bytes, filename: nombrePdfOficialDoc(doc) };
+}
+
 // Enviar factura, nota de crédito, nota de débito o presupuesto por correo electrónico al cliente (con detalle HTML y PDF adjunto)
 documentos.post("/:id/enviar-correo", async (c) => {
-  const id = idParam(c), db = c.env.DB, b = await leerJson(c), u = c.get("usuario");
+  const id = idParam(c), db = c.env.DB, b = await leerJson(c), u = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
   const cargado = await cargar(c, id);
   if (!cargado) return falla(c, 404, "Documento no encontrado.");
   const { doc, lineas } = cargado;
@@ -1237,19 +1322,50 @@ documentos.post("/:id/enviar-correo", async (c) => {
     <td style="padding:8px;border-bottom:1px solid #e5e7eb;text-align:right">${fmtBs(l.monto_bs)}<br><small style="color:#6b7280">${fmtUsd(l.monto_usd)}</small></td>
   </tr>`).join("");
 
-  const impLegal =
-    doc.tipo === "FACTURA" && doc.medio === "IMPRENTA_DIGITAL" && doc.modo === "REAL" && doc.control_fiscal
-      ? await db
-          .prepare(`SELECT fecha_asignacion, hora_asignacion, imprenta_razon_social, imprenta_autorizacion FROM imprenta_envios WHERE documento_id = ?`)
-          .bind(id)
-          .first<Fila>()
-          .catch(() => null)
-      : null;
+  const esImprentaSellada = doc.tipo === "FACTURA" && doc.medio === "IMPRENTA_DIGITAL" && doc.modo === "REAL" && Boolean(doc.control_fiscal);
+  const impLegal = esImprentaSellada
+    ? await db
+        .prepare(
+          `SELECT proveedor_tipo, numero_serie, pdf_url, fecha_asignacion, hora_asignacion, imprenta_razon_social, imprenta_autorizacion
+           FROM imprenta_envios WHERE documento_id = ?`
+        )
+        .bind(id)
+        .first<Fila>()
+        .catch(() => null)
+    : null;
+
+  // v5.4.0: En modalidad Imprenta Digital REAL, el adjunto enviado al cliente es EXCLUSIVAMENTE el PDF Fiscal Oficial
+  // de la Imprenta Digital (CG La Imprenta Digital o The Factory HKA) con código QR y pie de imprenta.
+  let pdfBase64: string | null = null;
+  let nombrePdf = texto(b.nombre_archivo, 80) || `${tituloDoc.replace(/\s+/g, "-")}-${nroDoc}.pdf`;
+  let pdfOrigen: "IMPRENTA_OFICIAL" | "FACTURAYA" = "FACTURAYA";
+
+  if (esImprentaSellada) {
+    const pdfOficial = await obtenerPdfOficialImprenta(db, envObj, doc, {
+      proveedor_tipo: impLegal?.proveedor_tipo ?? null,
+      numero_serie: impLegal?.numero_serie ?? null,
+      pdf_url: impLegal?.pdf_url ?? null,
+    });
+    if (!pdfOficial.ok) {
+      return falla(
+        c,
+        pdfOficial.status === 404 ? 409 : 502,
+        `No se pudo obtener el PDF Fiscal Oficial desde la Imprenta Digital (${pdfOficial.error}). Reintenta en unos segundos para enviar el comprobante legal con código QR al cliente.`
+      );
+    }
+    pdfBase64 = bytesABase64(pdfOficial.bytes);
+    nombrePdf = pdfOficial.filename;
+    pdfOrigen = "IMPRENTA_OFICIAL";
+  } else {
+    pdfBase64 = typeof b.pdf_base64 === "string" && b.pdf_base64.length > 50 && b.pdf_base64.length < 4_000_000 ? b.pdf_base64 : null;
+  }
+
   const pieLegalHtml = impLegal
     ? `<div style="margin-top:16px;padding:10px 12px;border-top:1px dashed #cbd5e1;font-size:12px;color:#475569;line-height:1.5">
          <b>Sello Digital Autorizado (SNAT/2024/000102):</b> ${escHtml(impLegal.imprenta_razon_social || "Imprenta Digital Autorizada")}<br>
          N.º de Control Fiscal: <b>${escHtml(doc.control_fiscal)}</b>${impLegal.fecha_asignacion ? ` · Asignado: ${escHtml(impLegal.fecha_asignacion)} ${escHtml(impLegal.hora_asignacion || "")}` : ""}<br>
-         ${impLegal.imprenta_autorizacion ? escHtml(impLegal.imprenta_autorizacion) : ""}
+         ${impLegal.imprenta_autorizacion ? `${escHtml(impLegal.imprenta_autorizacion)}<br>` : ""}
+         Se adjunta el <b>PDF Fiscal Oficial</b> con código QR verificable emitido por la Imprenta Digital Autorizada.
        </div>`
     : "";
 
@@ -1258,7 +1374,7 @@ documentos.post("/:id/enviar-correo", async (c) => {
       <h2 style="margin:0;color:#1A73E8">${escHtml(nombreNegocio)}</h2>
       <p style="margin:4px 0 0;font-size:13px;color:#5f6b7a">RIF: ${escHtml(rifNegocio)}${perfil?.telefono ? ` · Tel: ${escHtml(perfil.telefono)}` : ""}</p>
     </div>
-    <h3 style="margin:0 0 8px">${tituloDoc} N.º ${escHtml(nroDoc)}${nroControl ? ` <span style="font-weight:normal;color:#5f6b7a">(Control: ${escHtml(nroControl)})</span>` : ""}</h3>
+    <h3 style="margin:0 0 8px">${tituloDoc} N.º ${escHtml(nroDoc)}${doc.estado === "ANULADO" ? " [ANULADA]" : ""}${nroControl ? ` <span style="font-weight:normal;color:#5f6b7a">(Control: ${escHtml(nroControl)})</span>` : ""}</h3>
     <p style="margin:0 0 16px;font-size:14px;color:#4b5563">
       <b>Cliente:</b> ${escHtml(doc.cliente_nombre)} (${escHtml(doc.cliente_rif)})<br>
       <b>Fecha de emisión:</b> ${escHtml(doc.fecha_emision)} · <b>Tasa BCV:</b> Bs. ${(Number(doc.tasa_e8 || 0) / 1e8).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1281,30 +1397,30 @@ documentos.post("/:id/enviar-correo", async (c) => {
     ${pieLegalHtml}
   </div>`;
 
-  const textoPlano = `${nombreNegocio} (RIF ${rifNegocio})\n${tituloDoc} N.º ${nroDoc}${nroControl ? ` | Control: ${nroControl}` : ""}\nCliente: ${doc.cliente_nombre} (${doc.cliente_rif})\nTotal: ${fmtBs(doc.total_bs)} (${fmtUsd(doc.total_usd)})`;
-  const pdfBase64 = typeof b.pdf_base64 === "string" && b.pdf_base64.length > 50 && b.pdf_base64.length < 4_000_000 ? b.pdf_base64 : null;
-  const nombrePdf = texto(b.nombre_archivo, 80) || `${tituloDoc.replace(/\s+/g, "-")}-${nroDoc}.pdf`;
+  const textoPlano = `${nombreNegocio} (RIF ${rifNegocio})\n${tituloDoc} N.º ${nroDoc}${doc.estado === "ANULADO" ? " [ANULADA]" : ""}${nroControl ? ` | Control: ${nroControl}` : ""}\nCliente: ${doc.cliente_nombre} (${doc.cliente_rif})\nTotal: ${fmtBs(doc.total_bs)} (${fmtUsd(doc.total_usd)})`;
 
-  const res = await enviarCorreo(db, c.env as unknown as Record<string, unknown>, {
+  const res = await enviarCorreo(db, envObj, {
     para: destino,
     alcance: "INQUILINO",
     tipo: "DOCUMENTO",
     responderA: perfil?.email ? String(perfil.email).trim() : undefined,
-    asunto: `${tituloDoc} ${nroDoc} · ${nombreNegocio}`,
+    asunto: `${tituloDoc} ${nroDoc}${doc.estado === "ANULADO" ? " [ANULADA]" : ""} · ${nombreNegocio}`,
     html,
     texto: textoPlano,
     adjuntos: pdfBase64 ? [{ filename: nombrePdf, content: pdfBase64 }] : undefined,
   });
   if (!res.ok) return falla(c, 400, res.error);
-  await auditar(c, u.id, "DOC_CORREO", `${tituloDoc} ${nroDoc} -> ${res.demo_redirigido_a || destino}`);
+  await auditar(c, u.id, "DOC_CORREO", `${tituloDoc} ${nroDoc} [${pdfOrigen}] -> ${res.demo_redirigido_a || destino}`);
   return c.json({
     ok: true,
     email: res.demo_redirigido_a || destino,
+    pdf_origen: pdfOrigen,
+    nombre_archivo: nombrePdf,
     ...(res.demo_redirigido_a ? { demo_redirigido_a: res.demo_redirigido_a, demo_restantes: res.demo_restantes } : {}),
   });
 });
 
-// Descargar la representación gráfica PDF oficial directamente desde la Imprenta Digital (TFHKA DescargaArchivo o enlace oficial CG)
+// Descargar la representación gráfica PDF oficial directamente desde la Imprenta Digital (TFHKA DescargaArchivo o proxy seguro CG)
 documentos.get("/:id/imprenta-pdf", async (c) => {
   const id = idParam(c), db = c.env.DB, envObj = c.env as unknown as Record<string, unknown>;
   const doc = await db
@@ -1325,35 +1441,20 @@ documentos.get("/:id/imprenta-pdf", async (c) => {
     .first<{ proveedor_tipo: string | null; numero_serie: string | null; pdf_url: string | null }>()
     .catch(() => null);
 
-  const cfg = await leerConfigImprentaCompleta(db, envObj);
-  const esTfhka = impEnv?.proveedor_tipo === PROVEEDOR_TFHKA || (!impEnv?.proveedor_tipo && cfg.proveedor_tipo === PROVEEDOR_TFHKA);
-
-  if (esTfhka) {
-    const tipoDoc = doc.es_nota_credito ? "NOTA_CREDITO" : doc.es_nota_debito ? "NOTA_DEBITO" : "FACTURA";
-    const pdfRes = await descargarPdfTfhka(db, envObj, cfg, {
-      tipo_documento: tipoDoc,
-      numero_documento: Number(doc.numero ?? 1),
-      serie: impEnv?.numero_serie !== null && impEnv?.numero_serie !== undefined ? impEnv.numero_serie : cfg.serie,
-    });
-    if (!pdfRes.ok) {
-      return falla(c, 502, pdfRes.error);
-    }
-    return new Response(pdfRes.bytes, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${pdfRes.filename}"`,
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-      },
-    });
+  const pdfRes = await obtenerPdfOficialImprenta(db, envObj, doc, impEnv);
+  if (!pdfRes.ok) {
+    return falla(c, pdfRes.status as 404 | 502, pdfRes.error);
   }
-
-  const pdfSeguro = validarUrlPdfSegura(impEnv?.pdf_url);
-  if (pdfSeguro) {
-    return c.redirect(pdfSeguro, 302);
-  }
-  return falla(c, 404, "Este documento no cuenta con un enlace PDF oficial remoto en la Imprenta Digital.");
+  const disposicion = c.req.query("descarga") === "1" ? "attachment" : "inline";
+  return new Response(pdfRes.bytes, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `${disposicion}; filename="${pdfRes.filename}"`,
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 });
 
 export default documentos;

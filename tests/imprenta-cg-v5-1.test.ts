@@ -108,7 +108,12 @@ test("1. CG v14 puro: validación SSRF, URLs PDF, formateadores enteros y payloa
   assert.equal(alicuotaATipoImpuestoCg(0), "E");
   assert.equal(codigoProductoCg(42, 1), "PROD-42");
   assert.equal(codigoProductoCg(null, 3), "ITEM-3");
+  assert.equal(codigoProductoCg(4, 1, "G"), "PROD-4-G");
+  assert.equal(codigoProductoCg(4, 1, "E"), "PROD-4-E");
+  assert.equal(codigoProductoCg(null, 1, "R"), "ITEM-1-R");
   assert.ok(codigoProductoCg(1234567890123, 1).length <= 13);
+  assert.ok(codigoProductoCg(1234567890123, 1, "G").length <= 13);
+  assert.ok(codigoProductoCg(1234567890123, 1, "G").endsWith("-G"));
   assert.equal(limpiarDocumentoIdentidadCg("J-40123456-7"), "J401234567");
   assert.equal(limpiarDocumentoIdentidadCg("19123456"), "V19123456");
   assert.equal(numeroDocumentoCg(7), "000007");
@@ -149,7 +154,7 @@ test("1. CG v14 puro: validación SSRF, URLs PDF, formateadores enteros y payloa
   assert.equal(f0.documentoIdentidadCliente, "J301112223");
   assert.equal(f0.tasa_del_dia, "50.0000");
   assert.equal(f0.fecha_tasa, "24-11-2026");
-  assert.equal(f0.productos[0].codigoProducto, "PROD-5");
+  assert.equal(f0.productos[0].codigoProducto, "PROD-5-G");
   assert.equal(f0.productos[0].tipoImpuesto, "G");
   assert.equal(f0.productos[0].cantidadAdquirida, "2");
   assert.equal(f0.productos[0].precioProducto, "2500.00"); // $50.00 * Bs 50.00 = Bs 2500.00
@@ -206,6 +211,30 @@ test("1. CG v14 puro: validación SSRF, URLs PDF, formateadores enteros y payloa
   });
   assert.equal((ncParc.productos as any[])[0].codigo, "PROD-5");
   assert.equal((ncParc.productos as any[])[0].cantidad, "1");
+
+  const ncParcConAlic = construirPayloadNcParcialCg({
+    documento_id: 12,
+    tipo_documento: "NOTA_CREDITO",
+    numero: 2,
+    control_interno: 9,
+    fecha_emision: "2026-11-24",
+    cliente_rif: "J-30111222-3",
+    cliente_nombre: "INVERSIONES CARACAS C.A.",
+    factura_afectada_numero: 7,
+    motivo_nc: "Devolución parcial con alícuota",
+    es_nc_total: false,
+    subtotal_bs: 0,
+    iva_bs: 0,
+    igtf_bs: 0,
+    total_bs: 0,
+    subtotal_usd: 0,
+    iva_usd: 0,
+    igtf_usd: 0,
+    total_usd: 0,
+    tasa_e8: 50_00000000,
+    renglones: [{ orden: 1, catalogo_id: 5, descripcion: "Soporte técnico", cantidad_milli: 1000, alicuota_cent: 1600 }],
+  });
+  assert.equal((ncParcConAlic.productos as any[])[0].codigo, "PROD-5-G");
 
   const ndPay = construirPayloadNdCg({
     documento_id: 13,
@@ -1541,9 +1570,14 @@ test("8. Suite de Certificación Calidad CG: bloqueo en PRODUCCION, 13 escenario
   });
   assert.equal(rMalClave.status, 400);
 
-  // 2) Ejecución completa de los 13 escenarios contra mock CG v14
+  // 2) Ejecución completa de los 13 escenarios contra mock CG v14 (incluyendo regla real de CG:
+  // cada codigoProducto queda atado de por vida a su primera alícuota, con PROD-2 y PROD-4 pre-registrados como G).
   const emitidas = new Set<string>();
   const controlesPorDoc: Record<string, string> = {};
+  const productosRegistrados = new Map<string, string>([
+    ["PROD-2", "G"],
+    ["PROD-4", "G"],
+  ]);
   let seqCtrl = 9001;
   let ncParcialBody: Record<string, any> | null = null;
   let anulBody: Record<string, any> | null = null;
@@ -1563,6 +1597,19 @@ test("8. Suite de Certificación Calidad CG: bloqueo en PRODUCCION, 13 escenario
       }
       if (emitidas.has(fac.numeroFactura)) {
         return new Response(JSON.stringify({ success: false, message: "Factura duplicada", invoice_errors: [fac.numeroFactura] }), { status: 409 });
+      }
+      for (const p of fac.productos) {
+        const prev = productosRegistrados.get(p.codigoProducto);
+        if (prev && prev !== p.tipoImpuesto) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              message: `El producto con código ${p.codigoProducto} ya está registrado en el sistema con la alícuota ${prev}, pero en la petición se envió con la alícuota ${p.tipoImpuesto}.`,
+            }),
+            { status: 400 }
+          );
+        }
+        productosRegistrados.set(p.codigoProducto, p.tipoImpuesto);
       }
       emitidas.add(fac.numeroFactura);
       const ctrl = `00-${String(seqCtrl++).padStart(8, "0")}`;
@@ -1651,8 +1698,8 @@ test("8. Suite de Certificación Calidad CG: bloqueo en PRODUCCION, 13 escenario
     assert.equal(rOk.data.resumen.errores_controlados_ok, 2);
     assert.equal(rOk.data.resumen.fallidos, 0);
 
-    // Verificar NC parcial enlazó PROD-101 y ANULACION usó el control exacto de FAC_EXENTA (doc 000503)
-    assert.equal(ncParcialBody?.productos?.[0]?.codigo, "PROD-101");
+    // Verificar NC parcial enlazó PROD-9101-G y ANULACION usó el control exacto de FAC_EXENTA (doc 000503)
+    assert.equal(ncParcialBody?.productos?.[0]?.codigo, "PROD-9101-G");
     assert.equal(anulBody?.numero_documento, "000503");
     assert.equal(anulBody?.numero_control, controlesPorDoc["000503"]);
 

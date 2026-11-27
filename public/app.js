@@ -1,14 +1,14 @@
 // Entrada de la aplicación: instalador, login, inicio, ajustes y panel Multi-Tenant Súper Admin.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, montarTurnstile, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
-import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261126v531";
+import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261126v540";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261126v531";
-import { vistaPagos } from "./pagos.js?v=20261126v531";
+import { vistaFactura } from "./factura.js?v=20261126v540";
+import { vistaPagos } from "./pagos.js?v=20261126v540";
 import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
-import { vistaInformes } from "./informes.js";
+import { vistaInformes } from "./informes.js?v=20261126v540";
 import { generarQrSvg } from "./qr.js";
 import { renderHistorialCorreoInquilino, vistaPanelCorreosPlataforma } from "./correos.js";
 import { iniciarPwaYConectividad, botonInstalarPwaHtml, enlazarBotonesPwa, puedeMostrarBotonInstalar } from "./pwa.js?v=20261123v502";
@@ -64,9 +64,9 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.3.1)</span>
-  <p class="suave">Descarga el paquete completo <b>v5.3.1 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>unicidad fiscal por ámbito</b>, integración completa <b>The Factory HKA Venezuela Emisión v2</b> + <b>CG La Imprenta Digital</b>, <b>Suite de Certificación en 1 clic</b> para ambas imprentas (<b>13 pruebas Calidad CG</b> + <b>21 pruebas Demo HKA</b>) y candado legal SNAT/2024/000102:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.3.1)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.4.0)</span>
+  <p class="suave">Descarga el paquete completo <b>v5.4.0 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>entrega exclusiva del PDF Fiscal Oficial (CG y The Factory HKA)</b> en Descargar, Compartir y Correo, <b>Libros Contables SENIAT auditados al centavo</b> (Ventas, Compras, Resumen IVA/Alcaldía, IGTF, ISLR, Cierre Z y Cierre Mensual CSV) y <b>Suite de Certificación 1 clic</b>:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.4.0)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-tfhka.ts">⬇️ src/imprenta-tfhka.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-cg.ts">⬇️ src/imprenta-cg.ts</button>

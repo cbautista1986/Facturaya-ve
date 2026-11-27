@@ -12,6 +12,7 @@ import {
   construirPayloadNcParcialCg,
   construirPayloadNcTotalCg,
   construirPayloadNdCg,
+  ejecutarSuiteCertificacionCg,
   extraerListaDocumentosCg,
   extraerRespuestaCg,
   formatearCantidadMilliCg,
@@ -1445,4 +1446,234 @@ test("7. Auto-recuperación CG v5.1.4: invoice_list_success bidimensional, corte
     globalThis.fetch = fetchOriginal;
   }
 });
+
+// =========================================================================
+// 8. Suite de Certificación Calidad en 1 clic para CG La Imprenta Digital
+// =========================================================================
+test("8. Suite de Certificación Calidad CG: bloqueo en PRODUCCION, 13 escenarios OK, PDF seguro y cero escritura en documentos locales", async () => {
+  const db = crearBaseDatosD1(":memory:");
+  const env: Record<string, unknown> = { DB: db, MASTER_KEY: "llave-cg-cert-v531", SUPER_ADMIN_EMAIL: "admin-cg@ejemplo.com" };
+  const jar: Record<string, string> = {};
+
+  // Inicializar empresa con modalidad Imprenta Digital
+  const reg = await reqJson(env, jar, "/api/instalar", "POST", {
+    nombre: "COMERCIAL CG CERT C.A.",
+    rif: "J-40123999-1",
+    direccion: "Caracas",
+    telefono: "04141234567",
+    email: "admin-cg@ejemplo.com",
+    clave: CLAVE_TEST,
+    tipo_contribuyente: "ORDINARIO",
+    medio_facturacion: "IMPRENTA_DIGITAL",
+  });
+  assert.equal(reg.status, 200);
+
+  // 1) Bloqueo duro en PRODUCCION (función pura + ruta)
+  const cfgProd = {
+    proveedor_tipo: "CG_IMPRENTA" as const,
+    proveedor: "CG La Imprenta Digital",
+    url: "https://produccion.cgimprenta.digital/",
+    usuario: "demo@cg.com",
+    ambiente: "PRODUCCION" as const,
+    serie: "A",
+    sucursal: "",
+    reservar_previo: false,
+    clave_configurada: true,
+    clave_final: "1234",
+    clave_clara: "ClaveDemoCg1234",
+    plan_nombre: "",
+    plan_cupo_total: 100,
+    plan_fecha_pago: "",
+    plan_fecha_vence: "",
+    plan_consumo_previo: 0,
+    plan_nota: "",
+    ultima_conciliacion: null,
+  };
+  let llamadasFetch = 0;
+  const resProd = await ejecutarSuiteCertificacionCg(db, env, cfgProd, { numero_inicio: 500 }, (async () => {
+    llamadasFetch++;
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch);
+  assert.equal(resProd.ok, false);
+  assert.equal(llamadasFetch, 0, "Jamás debe llamar a la API de CG si el ambiente es PRODUCCION");
+
+  // Guardar config CG en PRODUCCION y verificar que la ruta responde 403
+  await reqJson(env, jar, "/api/sistema/imprenta", "POST", {
+    proveedor_tipo: "CG_IMPRENTA",
+    proveedor: "CG La Imprenta Digital",
+    url: "https://produccion.cgimprenta.digital/",
+    usuario: "demo@cg.com",
+    clave: "ClaveDemoCg1234",
+    ambiente: "PRODUCCION",
+    serie: "A",
+    password: CLAVE_TEST,
+    confirmo: true,
+  });
+  const rProdHttp = await reqJson(env, jar, "/api/sistema/imprenta/certificar-cg", "POST", {
+    numero_inicio: 500,
+    password: CLAVE_TEST,
+    confirmo: true,
+  });
+  assert.equal(rProdHttp.status, 403);
+
+  // Cambiar a PRUEBAS (Calidad) y validar contraseña incorrecta / sin confirmación
+  await reqJson(env, jar, "/api/sistema/imprenta", "POST", {
+    proveedor_tipo: "CG_IMPRENTA",
+    proveedor: "CG La Imprenta Digital",
+    url: "https://calidad.cgimprenta.digital/",
+    usuario: "demo@cg.com",
+    clave: "ClaveDemoCg1234",
+    ambiente: "PRUEBAS",
+    serie: "A",
+    password: CLAVE_TEST,
+    confirmo: true,
+  });
+  const rSinConf = await reqJson(env, jar, "/api/sistema/imprenta/certificar-cg", "POST", {
+    numero_inicio: 500,
+    password: CLAVE_TEST,
+    confirmo: false,
+  });
+  assert.equal(rSinConf.status, 400);
+  const rMalClave = await reqJson(env, jar, "/api/sistema/imprenta/certificar-cg", "POST", {
+    numero_inicio: 500,
+    password: "Incorrecta999!",
+    confirmo: true,
+  });
+  assert.equal(rMalClave.status, 400);
+
+  // 2) Ejecución completa de los 13 escenarios contra mock CG v14
+  const emitidas = new Set<string>();
+  const controlesPorDoc: Record<string, string> = {};
+  let seqCtrl = 9001;
+  let ncParcialBody: Record<string, any> | null = null;
+  let anulBody: Record<string, any> | null = null;
+
+  const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const u = new URL(typeof input === "string" ? input : input.toString());
+    const bodyTxt = typeof init?.body === "string" ? init.body : "";
+    const body = bodyTxt ? JSON.parse(bodyTxt) : {};
+
+    if (u.pathname.endsWith("/api/Invoice/create_token_authenticator")) {
+      return new Response(JSON.stringify({ success: true, token: "jwt-cg-calidad-mock-token-123456" }), { status: 200 });
+    }
+    if (u.pathname.endsWith("/api/Invoice/add_list_invoice")) {
+      const fac = body?.facturas?.[0];
+      if (!fac?.numeroFactura || !Array.isArray(fac?.productos) || fac.productos.length === 0) {
+        return new Response(JSON.stringify({ success: false, message: "Campos obligatorios faltantes" }), { status: 400 });
+      }
+      if (emitidas.has(fac.numeroFactura)) {
+        return new Response(JSON.stringify({ success: false, message: "Factura duplicada", invoice_errors: [fac.numeroFactura] }), { status: 409 });
+      }
+      emitidas.add(fac.numeroFactura);
+      const ctrl = `00-${String(seqCtrl++).padStart(8, "0")}`;
+      controlesPorDoc[fac.numeroFactura] = ctrl;
+      // En FAC_IVA_8 devolver intencionalmente URL insegura javascript: para verificar sanitización
+      const pdfUrl =
+        fac.numeroFactura === "000501"
+          ? "javascript:alert(1)"
+          : `https://calidad.cgimprenta.digital/readonly/export_pdf/${fac.numeroFactura}`;
+      return new Response(
+        JSON.stringify({
+          success: true,
+          invoice_list_success: [{ control_number: ctrl, invoice_pdf: pdfUrl }],
+        }),
+        { status: 200 }
+      );
+    }
+    if (u.pathname.endsWith("/api/Invoice/add_credit_note")) {
+      const ctrl = `00-${String(seqCtrl++).padStart(8, "0")}`;
+      return new Response(
+        JSON.stringify({
+          success: true,
+          credit_note_list_success: [{ control_number: ctrl, credit_note_pdf: "https://calidad.cgimprenta.digital/readonly/nc_total.pdf" }],
+        }),
+        { status: 200 }
+      );
+    }
+    if (u.pathname.endsWith("/api/Invoice/add_credit_note_with_products")) {
+      ncParcialBody = body;
+      const ctrl = `00-${String(seqCtrl++).padStart(8, "0")}`;
+      return new Response(
+        JSON.stringify({
+          success: true,
+          credit_note_list_success: [{ control_number: ctrl, credit_note_pdf: "https://calidad.cgimprenta.digital/readonly/nc_parcial.pdf" }],
+        }),
+        { status: 200 }
+      );
+    }
+    if (u.pathname.endsWith("/api/Invoice/add_debit_note")) {
+      const ctrl = `00-${String(seqCtrl++).padStart(8, "0")}`;
+      return new Response(
+        JSON.stringify({
+          success: true,
+          debit_note_list_success: [{ control_number: ctrl, debit_note_pdf: "https://calidad.cgimprenta.digital/readonly/nd.pdf" }],
+        }),
+        { status: 200 }
+      );
+    }
+    if (u.pathname.endsWith("/api/Invoice/cancel_invoice")) {
+      anulBody = body;
+      return new Response(
+        JSON.stringify({
+          success: true,
+          details: { pdf_factura: "https://calidad.cgimprenta.digital/readonly/anulada.pdf" },
+        }),
+        { status: 200 }
+      );
+    }
+    if (u.pathname.includes("/api/Invoice/get_list_invoices")) {
+      const lista = Object.entries(controlesPorDoc).map(([num, ctrl]) => ({
+        document: "FACTURA",
+        invoice_number: num,
+        control_number: ctrl,
+        invoice_pdf: `https://calidad.cgimprenta.digital/readonly/export_pdf/${num}`,
+      }));
+      return new Response(JSON.stringify({ success: true, invoices: [lista] }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ error: "unexpected" }), { status: 404 });
+  }) as typeof fetch;
+
+  const fetchOriginal = globalThis.fetch;
+  globalThis.fetch = mockFetch;
+  try {
+    const rOk = await reqJson(env, jar, "/api/sistema/imprenta/certificar-cg", "POST", {
+      numero_inicio: 500,
+      email_prueba: "pruebas@ejemplo.com",
+      incluir_anulacion: true,
+      incluir_errores: true,
+      password: CLAVE_TEST,
+      confirmo: true,
+    });
+    assert.equal(rOk.status, 200, `Suite CG Calidad debe responder 200: ${JSON.stringify(rOk.data)}`);
+    assert.equal(rOk.data.ok, true);
+    assert.equal(rOk.data.resumen.total, 13);
+    assert.equal(rOk.data.resumen.aprobados, 11);
+    assert.equal(rOk.data.resumen.errores_controlados_ok, 2);
+    assert.equal(rOk.data.resumen.fallidos, 0);
+
+    // Verificar NC parcial enlazó PROD-101 y ANULACION usó el control exacto de FAC_EXENTA (doc 000503)
+    assert.equal(ncParcialBody?.productos?.[0]?.codigo, "PROD-101");
+    assert.equal(anulBody?.numero_documento, "000503");
+    assert.equal(anulBody?.numero_control, controlesPorDoc["000503"]);
+
+    // Verificar sanitización de PDF URL insegura en FAC_IVA_8 y preservación HTTPS en FAC_IVA_16
+    const resFac16 = rOk.data.resultados.find((x: any) => x.codigo === "FAC_IVA_16");
+    const resFac8 = rOk.data.resultados.find((x: any) => x.codigo === "FAC_IVA_8");
+    assert.equal(resFac16.pdf_url, "https://calidad.cgimprenta.digital/readonly/export_pdf/000500");
+    assert.equal(resFac8.pdf_url, null);
+
+    // Reporte de texto listo para copiar y enviar a CG
+    assert.match(rOk.data.reporte_texto, /CG LA IMPRENTA DIGITAL/);
+    assert.match(rOk.data.reporte_texto, /13\/13 OK/);
+
+    // Cero documentos ni envíos locales creados (correlativos intactos)
+    const docsCount = await db.prepare(`SELECT COUNT(*) AS n FROM documentos`).first<{ n: number }>();
+    const enviosCount = await db.prepare(`SELECT COUNT(*) AS n FROM imprenta_envios`).first<{ n: number }>();
+    assert.equal(docsCount?.n, 0);
+    assert.equal(enviosCount?.n, 0);
+  } finally {
+    globalThis.fetch = fetchOriginal;
+  }
+});
+
 

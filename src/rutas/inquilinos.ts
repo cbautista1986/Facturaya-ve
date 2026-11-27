@@ -351,7 +351,7 @@ inquilinos.post("/", async (c) => {
     imprenta_proveedor_tipo === PROVEEDOR_TFHKA
       ? texto(b.imprenta_serie, 10).toUpperCase().replace(/[^A-Z0-9_-]/g, "")
       : (texto(b.imprenta_serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
-  const imprenta_sucursal = (texto(b.imprenta_sucursal, 10) || "0001").replace(/[^A-Za-z0-9_-]/g, "") || "0001";
+  const imprenta_sucursal = texto(b.imprenta_sucursal, 10).replace(/[^A-Za-z0-9_-]/g, "");
   const imprenta_reservar_previo =
     b.imprenta_reservar_previo === true || b.imprenta_reservar_previo === 1 || b.imprenta_reservar_previo === "1" || b.imprenta_reservar_previo === "on"
       ? "1"

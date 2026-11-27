@@ -138,6 +138,7 @@ export function renderVisorImprentaHtml(estadoImp, opts = {}) {
     ${envios.length ? `<details style="margin-top:10px"><summary class="suave" style="cursor:pointer;font-weight:600">📜 Últimos ${envios.length} documentos enviados/retornados (${envios.filter((e) => e.estado === "ENVIADO_OK" || e.estado === "ANULADO_OK").length} OK)</summary>
       <div style="margin-top:6px">${envios.slice(0, 8).map((e) => {
         const pdf = urlSeguraHttps(e.pdf_url);
+        const pdfTfhka = !pdf && e.proveedor_tipo === "THE_FACTORY_HKA" && e.control_fiscal ? `/api/documentos/${encodeURIComponent(e.documento_id)}/imprenta-pdf` : "";
         const estCl = e.estado === "ENVIADO_OK" ? "verde" : e.estado === "ANULADO_OK" ? "gris" : "rojo";
         const estLbl = e.estado === "ENVIADO_OK" ? "Retornado OK" : e.estado === "ANULADO_OK" ? "Anulado Imprenta" : "Pendiente";
         const fhAsig = e.fecha_asignacion ? ` · Asignado: ${esc(e.fecha_asignacion)}${e.hora_asignacion ? ` ${esc(e.hora_asignacion)}` : ""}` : "";
@@ -149,7 +150,7 @@ export function renderVisorImprentaHtml(estadoImp, opts = {}) {
           <small class="suave">
             ${e.control_fiscal ? `Control: <code>${esc(e.control_fiscal)}</code>` : "Sin N.º de control aún"}${fhAsig}
             · Intentos: ${e.intentos || 1}
-            ${pdf ? ` · <a href="${esc(pdf)}" target="_blank" rel="noopener noreferrer">🏛️ PDF oficial Imprenta</a>` : ""}
+            ${pdf ? ` · <a href="${esc(pdf)}" target="_blank" rel="noopener noreferrer">🏛️ PDF oficial Imprenta</a>` : pdfTfhka ? ` · <a href="${esc(pdfTfhka)}" target="_blank" rel="noopener noreferrer">🏛️ PDF oficial HKA</a>` : ""}
             ${e.ultimo_error ? `<br><span class="rojo-txt">Error: ${esc(e.ultimo_error)}</span>` : ""}
           </small>
         </div>`;
@@ -211,8 +212,8 @@ export async function enlazarMedio(alCambiar) {
         ${campo("imp_clave", imprenta.clave_configurada ? `Contraseña API / Token (••••${esc(imprenta.clave_final)}; vacío para conservar)` : (esTfhka ? "Clave API The Factory HKA" : esCg ? "Contraseña API CG" : "Token / API Key"), "", "password", `maxlength="200" autocomplete="new-password"${imprenta.clave_configurada ? "" : " required"}`)}
         ${campo("imp_serie", esTfhka ? "Serie (opcional en HKA; dejar vacío si no usas serie)" : "Serie de facturación (ej: A)", esTfhka ? (imprenta.serie || "") : (imprenta.serie || "A"), "text", `maxlength="10" autocomplete="off" placeholder="${esTfhka ? "(vacío)" : "A"}"`)}
         <div id="imp-tfhka-extra" ${esTfhka ? "" : "hidden"}>
-          ${campo("imp_sucursal", "Sucursal The Factory HKA (ej: 0001)", imprenta.sucursal || "0001", "text", 'maxlength="10" autocomplete="off" placeholder="0001"')}
-          <label class="opcion"><input type="checkbox" id="imp_reservar_previo" ${imprenta.reservar_previo ? "checked" : ""}> 📋 Reservar numeración previa (<code>AsignarNumeraciones</code>) antes de emitir en The Factory HKA</label>
+          ${campo("imp_sucursal", "Sucursal TFHKA (opcional — dejar vacío)", imprenta.sucursal || "", "text", 'maxlength="10" autocomplete="off" placeholder="(vacío)"')}
+          <label class="opcion"><input type="checkbox" id="imp_reservar_previo" ${imprenta.reservar_previo ? "checked" : ""}> 📋 Reservar numeración previa (<code>AsignarNumeraciones</code>) — opcional; en Demo/Prod TFHKA asigna el N.º de Control automáticamente al emitir</label>
         </div>
 
         <hr><span class="etiqueta">📦 PLAN CONTRATADO Y FECHA PAGADA (VISOR DEL CLIENTE)</span>
@@ -228,12 +229,36 @@ export async function enlazarMedio(alCambiar) {
 
         ${campo("imp_password", "🔒 Tu contraseña (Administrador o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
         <label class="opcion"><input type="checkbox" id="imp-confirmo" required> ☑️ Estoy seguro de guardar o modificar la API y el plan de Imprenta Digital de este negocio.</label>
-        ${ERROR}<button class="boton chico" type="submit" id="imp-ir" disabled>Guardar API y Plan de Imprenta</button></form>` : ""}
+        ${ERROR}<button class="boton chico" type="submit" id="imp-ir" disabled>Guardar API y Plan de Imprenta</button></form>
+      ${(esTfhka || esCg) && imprenta.ambiente === "PRUEBAS" && imprenta.clave_configurada ? `<hr>
+        <details id="imp-cert-box">
+          <summary style="cursor:pointer;font-weight:700">${esCg
+            ? "🧪 Suite de Certificación Calidad (CG La Imprenta Digital · 13 pruebas)"
+            : "🧪 Suite de Certificación Demo (The Factory HKA · 21 pruebas oficiales)"}</summary>
+          <p class="suave" style="margin:8px 0">${esCg
+            ? "Ejecuta los 13 escenarios de certificación contra el ambiente de Calidad de CG La Imprenta Digital (IVA 16%, 8%, 31%, Exento, Mixta, Multi-renglón, Nota de Crédito Total, Nota de Crédito Parcial por productos, Nota de Débito, Anulación, Consulta en línea y 2 validaciones de error) <b>exclusivamente en ambiente Pruebas/Calidad</b>, sin tocar tus facturas ni correlativos locales."
+            : "Ejecuta los 21 escenarios oficiales requeridos por The Factory HKA Venezuela (IVA 16%, 8%, 31%, Exento, Percibido, Mixta, USD+VES, USD pagada en Bs, IGTF 3%, Descuento por renglón y global, 25 ítems, NC Total/Parcial, ND, Retención IVA 75%/100%, ISLR, Guía de Despacho y 2 validaciones de error) <b>exclusivamente en ambiente Demo</b>, sin tocar tus facturas ni correlativos locales."}</p>
+          <form id="imp-cert-form">
+            ${campo("imp_cert_inicio", esCg ? "Número de documento inicial para la batería Calidad CG" : "Número de documento inicial para la batería Demo", "100", "number", 'required min="1" max="99999000" step="1"')}
+            ${campo("imp_cert_email", "Correo de prueba para el comprador (opcional)", "", "email", 'maxlength="120" placeholder="tu@correo.com"')}
+            ${esCg ? `<label class="opcion"><input type="checkbox" id="imp_cert_anulacion" checked> Incluir prueba de anulación fiscal (<code>cancel_invoice</code>)</label>` : ""}
+            <label class="opcion"><input type="checkbox" id="imp_cert_errores" checked> Incluir las 2 pruebas de rechazo controlado (duplicado + campos faltantes)</label>
+            ${campo("imp_cert_password", "🔒 Tu contraseña (Administrador)", "", "password", 'required autocomplete="current-password"')}
+            <label class="opcion"><input type="checkbox" id="imp_cert_confirmo" required> ☑️ ${esCg
+              ? "Confirmo ejecutar la batería de certificación únicamente en el ambiente Calidad / Pruebas de CG La Imprenta Digital."
+              : "Confirmo ejecutar la batería de certificación únicamente en el ambiente Demo de The Factory HKA."}</label>
+            ${ERROR}<button class="boton chico morado" type="submit" id="imp-cert-ir" disabled>${esCg
+              ? "🚀 Ejecutar batería Calidad CG (13 pruebas)"
+              : "🚀 Ejecutar batería Demo (21 pruebas)"}</button>
+          </form>
+          <div id="imp-cert-res" hidden style="margin-top:12px"></div>
+        </details>` : ""}` : ""}
     ${historial.length ? `<small class="suave">Historial: ${historial.map((h) => `${esc(String(h.cambiado_en).slice(0, 10))}: ${esc(NOMBRE_MEDIO[h.medio_anterior] ?? h.medio_anterior)} → ${esc(NOMBRE_MEDIO[h.medio_nuevo] ?? h.medio_nuevo)}${h.por ? ` (${esc(h.por)})` : ""}`).join(" · ")}</small>` : ""}`;
 
   $("#medio-confirmo").addEventListener("change", () => { $("#medio-ir").disabled = !$("#medio-confirmo").checked; });
   $("#imp-confirmo")?.addEventListener("change", () => { $("#imp-ir").disabled = !$("#imp-confirmo").checked; });
   $("#rec-confirmo")?.addEventListener("change", () => { $("#rec-ir").disabled = !$("#rec-confirmo").checked; });
+  $("#imp_cert_confirmo")?.addEventListener("change", () => { $("#imp-cert-ir").disabled = !$("#imp_cert_confirmo").checked; });
 
   // Autocompletado inteligente al elegir CG Imprenta Digital o The Factory HKA y cambiar ambiente
   const selTipo = $("#imp_proveedor_tipo");
@@ -370,7 +395,7 @@ export async function enlazarMedio(alCambiar) {
         clave: d.imp_clave,
         ambiente: d.imp_ambiente,
         serie: d.imp_serie,
-        sucursal: d.imp_sucursal || "0001",
+        sucursal: d.imp_sucursal || "",
         reservar_previo: Boolean($("#imp_reservar_previo")?.checked),
         plan_nombre: d.imp_plan_nombre,
         plan_cupo_total: d.imp_plan_cupo_total === "" ? undefined : Number(d.imp_plan_cupo_total),
@@ -383,6 +408,59 @@ export async function enlazarMedio(alCambiar) {
       });
       aviso("API y plan de Imprenta Digital guardados ✅");
       await alCambiar();
+    });
+  }
+
+  if ($("#imp-cert-form")) {
+    enviar($("#imp-cert-form"), async (d) => {
+      const provNombreCert = esCg ? "CG La Imprenta Digital" : "The Factory HKA";
+      const rutaCert = esCg ? "sistema/imprenta/certificar-cg" : "sistema/imprenta/certificar-tfhka";
+      const box = $("#imp-cert-res");
+      if (box) {
+        box.hidden = false;
+        box.innerHTML = `<p class="suave">⏳ Ejecutando batería de certificación contra ${esc(provNombreCert)}… esto puede tardar unos segundos.</p>`;
+      }
+      const payloadCert = {
+        numero_inicio: Number(d.imp_cert_inicio) || 100,
+        email_prueba: d.imp_cert_email || "",
+        incluir_errores: Boolean($("#imp_cert_errores")?.checked),
+        password: d.imp_cert_password,
+        confirmo: $("#imp_cert_confirmo")?.checked,
+      };
+      if (esCg) {
+        payloadCert.incluir_anulacion = Boolean($("#imp_cert_anulacion")?.checked);
+      }
+      const r = await api(rutaCert, "POST", payloadCert);
+      const resu = r.resumen || {};
+      const lista = Array.isArray(r.resultados) ? r.resultados : [];
+      const reporteTxt = String(r.reporte_texto || "");
+      if (box) {
+        box.hidden = false;
+        box.innerHTML = `<div class="reng-cab" style="margin-bottom:8px">
+            <strong>Resultado: ${(resu.aprobados || 0) + (resu.errores_controlados_ok || 0)}/${resu.total || lista.length} OK</strong>
+            <span class="insignia ${resu.fallidos ? "rojo" : "verde"}">${resu.fallidos ? `${resu.fallidos} con observación` : "100% Aprobado"}</span>
+          </div>
+          <button type="button" class="boton chico contorno-azul" id="imp-cert-copiar" style="margin-bottom:8px">📋 Copiar reporte para ${esc(provNombreCert)}</button>
+          <div>${lista.map((it) => {
+            const pdfCert = urlSeguraHttps(it.pdf_url);
+            return `<div class="reng" style="padding:6px 10px">
+            <div class="reng-cab">
+              <span><b>${esc(it.codigo)}</b> · ${esc(it.tipo_documento)} · Doc <code>${esc(it.numero_documento)}</code></span>
+              <span class="insignia ${it.ok ? "verde" : "rojo"}">${it.ok ? (it.esperaba_error ? "Error OK" : "OK") : "Falló"}</span>
+            </div>
+            <small class="suave">${esc(it.descripcion)}<br>${it.control_fiscal ? `Control: <code>${esc(it.control_fiscal)}</code>` : esc(it.mensaje)}${pdfCert ? ` · <a href="${esc(pdfCert)}" target="_blank" rel="noopener noreferrer">🏛️ PDF oficial</a>` : ""}</small>
+          </div>`;
+          }).join("")}</div>`;
+        $("#imp-cert-copiar")?.addEventListener("click", async () => {
+          try {
+            if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(reporteTxt);
+            aviso("Reporte de certificación copiado al portapapeles 📋✅");
+          } catch {
+            aviso("No se pudo copiar automáticamente; selecciona el reporte manualmente.");
+          }
+        });
+      }
+      aviso(resu.fallidos ? `Certificación ${provNombreCert} finalizada con ${resu.fallidos} observación(es).` : `Batería ${provNombreCert} aprobada 100% ✅`);
     });
   }
 

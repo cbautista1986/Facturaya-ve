@@ -93,7 +93,7 @@ export const TRIGGERS_INMUTABILIDAD: { nombre: string; sql: string }[] = [
         OR new.vence_el IS NOT old.vence_el
         OR new.medio IS NOT old.medio
         OR (new.control_fiscal IS NOT old.control_fiscal AND (old.control_fiscal IS NOT NULL OR old.medio IS NULL))
-        OR (new.fiscal_serial IS NOT old.fiscal_serial AND (old.fiscal_serial IS NOT NULL OR old.medio IS NOT 'MAQUINA_FISCAL')))
+        OR (new.fiscal_serial IS NOT old.fiscal_serial AND (old.fiscal_serial IS NOT NULL OR old.medio NOT IN ('MAQUINA_FISCAL', 'IMPRENTA_DIGITAL'))))
       BEGIN SELECT RAISE(ABORT, 'Documento emitido: no se puede modificar, solo anular.'); END`,
   },
   {

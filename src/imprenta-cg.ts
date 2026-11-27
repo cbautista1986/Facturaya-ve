@@ -84,6 +84,10 @@ export type PayloadImprentaDocumento = {
   factura_afectada_monto_bs?: number | null;
   condicion?: string | null;
   vendedor_nombre?: string | null;
+  moneda_base?: "VES" | "USD";
+  descuento_global_bs?: number;
+  descuento_global_usd?: number;
+  descuento_global_desc?: string | null;
   emisor?: { rif: string; nombre_razon_social: string; direccion_fiscal?: string; email?: string | null };
   renglones?: {
     orden?: number;
@@ -95,6 +99,9 @@ export type PayloadImprentaDocumento = {
     alicuota_cent?: number;
     monto_usd?: number;
     monto_bs?: number;
+    descuento_bs?: number;
+    descuento_usd?: number;
+    es_percibido?: boolean;
   }[];
   impuestos?: Record<string, unknown>[];
 };
@@ -135,6 +142,26 @@ export type ResumenPlanImprenta = {
   nivel_alerta: "OK" | "AVISO" | "CRITICO" | "AGOTADO" | "VENCIDO" | "SIN_PLAN";
   mensaje_alerta: string;
 };
+
+export function ambitoFiscalImprenta(cfg: {
+  proveedor_tipo?: string | null;
+  ambiente?: string | null;
+  serie?: string | null;
+}): string {
+  const prov =
+    String(cfg.proveedor_tipo || PROVEEDOR_GENERICO)
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9_-]/g, "")
+      .slice(0, 24) || PROVEEDOR_GENERICO;
+  const amb = String(cfg.ambiente || "PRUEBAS").trim().toUpperCase() === "PRODUCCION" ? "PROD" : "PRUEBAS";
+  const ser = String(cfg.serie || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "")
+    .slice(0, 10);
+  return ser ? `${prov}:${amb}:${ser}` : `${prov}:${amb}`;
+}
 
 // ---------------------------------------------------------------- Validación SSRF y saneamiento de URLs
 
@@ -715,7 +742,7 @@ export async function leerConfigImprentaCompleta(
     usuario: m.usuario ?? "",
     ambiente: m.ambiente === "PRODUCCION" ? "PRODUCCION" : "PRUEBAS",
     serie,
-    sucursal: (m.sucursal || "0001").trim().slice(0, 10) || "0001",
+    sucursal: String(m.sucursal ?? "").trim().slice(0, 10),
     reservar_previo: m.reservar_previo === "1" || m.reservar_previo === "true",
     clave_configurada: !!claveClara,
     clave_final: claveClara ? claveClara.slice(-4) : "",
@@ -1287,11 +1314,16 @@ export async function enviarDocumentoCg(
   }
 
   const ahoraIso = new Date().toISOString();
+  const ambitoFiscal = ambitoFiscalImprenta(cfg);
   try {
     await db.batch([
       db
-        .prepare(`UPDATE documentos SET control_fiscal = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`)
-        .bind(parsed.control_fiscal, payload.documento_id),
+        .prepare(
+          `UPDATE documentos
+           SET control_fiscal = ?, fiscal_serial = COALESCE(fiscal_serial, ?)
+           WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`
+        )
+        .bind(parsed.control_fiscal, ambitoFiscal, payload.documento_id),
       db.prepare(`DELETE FROM integraciones WHERE clave = ?`).bind(`imprenta_pendiente_${payload.documento_id}`),
     ]);
   } catch (e) {
@@ -1300,13 +1332,23 @@ export async function enviarDocumentoCg(
     let estadoErr: "ERROR" | "PENDIENTE" = "PENDIENTE";
     if (/UNIQUE|documentos_fiscal_unico/i.test(rawErr)) {
       estadoErr = "ERROR";
-      const dueno = await db
-        .prepare(`SELECT numero, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito FROM documentos WHERE control_fiscal = ? LIMIT 1`)
-        .bind(parsed.control_fiscal)
-        .first<{ numero: number; tipo: string; es_nota_credito: number; es_nota_debito: number }>()
-        .catch(() => null);
+      const dueno =
+        (await db
+          .prepare(
+            `SELECT numero, modo, medio, fiscal_serial FROM documentos
+             WHERE control_fiscal = ? AND modo = 'REAL' AND COALESCE(medio, '') = 'IMPRENTA_DIGITAL' AND COALESCE(fiscal_serial, '') = ?
+             LIMIT 1`
+          )
+          .bind(parsed.control_fiscal, ambitoFiscal)
+          .first<{ numero: number; modo: string; medio: string | null; fiscal_serial: string | null }>()
+          .catch(() => null)) ??
+        (await db
+          .prepare(`SELECT numero, modo, medio, fiscal_serial FROM documentos WHERE control_fiscal = ? LIMIT 1`)
+          .bind(parsed.control_fiscal)
+          .first<{ numero: number; modo: string; medio: string | null; fiscal_serial: string | null }>()
+          .catch(() => null));
       const duenoTxt = dueno?.numero ? ` (doc. n.º ${numeroDocumentoCg(dueno.numero)})` : "";
-      msgUsuario = `El número de control ${parsed.control_fiscal} devuelto por CG ya está asignado a otro documento local${duenoTxt}. Verifica que el correlativo de facturas en FacturaYa no esté repetido en tu cuenta CG.`;
+      msgUsuario = `El número de control ${parsed.control_fiscal} devuelto por CG ya está asignado a otro documento local${duenoTxt} dentro del mismo ámbito (${ambitoFiscal}). Verifica que el correlativo de facturas en FacturaYa no esté repetido en tu cuenta CG.`;
     } else if (/Documento emitido|inmutable/i.test(rawErr)) {
       estadoErr = "ERROR";
       msgUsuario = "El documento ya estaba cerrado o no tenía modalidad de Imprenta Digital asignada al emitirse.";
@@ -1483,13 +1525,18 @@ export async function conciliarDocumentosCg(
   ).results;
 
   let recuperados = 0;
+  const ambitoFiscal = ambitoFiscalImprenta(cfg);
   for (const d of pendientesLocales) {
     const tipoLocal = d.es_nota_credito ? "NOTA_CREDITO" : d.es_nota_debito ? "NOTA_DEBITO" : "FACTURA";
     const hit = mapaRemoto.get(`${tipoLocal}:${claveNumeroCg(d.numero)}`);
     if (hit && /^[0-9A-Z][0-9A-Z-]{0,29}$/.test(hit.control)) {
       const rUpd = await db
-        .prepare(`UPDATE documentos SET control_fiscal = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`)
-        .bind(hit.control, d.id)
+        .prepare(
+          `UPDATE documentos
+           SET control_fiscal = ?, fiscal_serial = COALESCE(fiscal_serial, ?)
+           WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`
+        )
+        .bind(hit.control, ambitoFiscal, d.id)
         .run()
         .catch(() => ({ meta: { changes: 0 } }));
       if ((rUpd.meta?.changes ?? 0) > 0) {
@@ -1546,3 +1593,531 @@ export async function conciliarDocumentosCg(
     muestra: [...mapaRemoto.values()].slice(0, 10),
   };
 }
+
+// ---------------------------------------------------------------- Suite de Certificación Calidad (CG La Imprenta Digital · PRUEBAS)
+
+export type ResultadoCasoCertificacionCg = {
+  codigo: string;
+  descripcion: string;
+  tipo_documento: string;
+  numero_documento: string;
+  esperaba_error: boolean;
+  ok: boolean;
+  http_status: number;
+  control_fiscal: string | null;
+  pdf_url: string | null;
+  mensaje: string;
+};
+
+export async function ejecutarSuiteCertificacionCg(
+  db: D1Database,
+  env: Record<string, unknown> | undefined,
+  cfg: ConfigImprentaConSecreto,
+  opts?: {
+    numero_inicio?: number;
+    rif_emisor?: string;
+    razon_emisor?: string;
+    email_prueba?: string;
+    incluir_anulacion?: boolean;
+    incluir_errores?: boolean;
+  },
+  fetchFn: typeof fetch = fetch
+): Promise<{
+  ok: boolean;
+  ambiente?: string;
+  host?: string;
+  fecha_ejecucion?: string;
+  resumen?: { total: number; aprobados: number; fallidos: number; errores_controlados_ok: number };
+  resultados?: ResultadoCasoCertificacionCg[];
+  reporte_texto?: string;
+  error?: string;
+}> {
+  // CANDADO CRÍTICO: jamás ejecutar pruebas de certificación en ambiente PRODUCCION
+  if (cfg.ambiente !== "PRUEBAS") {
+    return {
+      ok: false,
+      error: "Bloqueado por seguridad fiscal: la Suite de Certificación CG La Imprenta Digital solo puede ejecutarse en ambiente PRUEBAS (Calidad).",
+    };
+  }
+  const valUrl = validarUrlImprentaSegura(cfg.url);
+  if (!valUrl.ok) return { ok: false, error: valUrl.error };
+  const host = normalizarHostCg(valUrl.url);
+
+  const auth = await obtenerOCachearTokenCg(db, env, cfg, true, fetchFn);
+  if (!auth.ok) return { ok: false, error: auth.error };
+
+  const numInicio = Math.max(1, Math.min(99_999_000, Math.trunc(Number(opts?.numero_inicio ?? 100) || 100)));
+  const incluirAnulacion = opts?.incluir_anulacion !== false;
+  const incluirErrores = opts?.incluir_errores !== false;
+  const emailPrueba = normalizarCorreoCg(opts?.email_prueba, "certificacion@facturayave.com");
+  const fechaIso = new Date(Date.now() - 4 * 3600 * 1000).toISOString().slice(0, 10);
+  const tasaE8 = 50_00000000; // Bs. 50.0000 por USD (aritmética entera exacta)
+  const serieLimpia = (cfg.serie || "A").trim().toUpperCase().slice(0, 5) || "A";
+  const emisorDemo = {
+    rif: opts?.rif_emisor || "J-40123456-7",
+    nombre_razon_social: opts?.razon_emisor || "EMPRESA CERTIFICACION FACTURAYA",
+    email: emailPrueba,
+  };
+
+  let seq = numInicio;
+  const nextNum = () => seq++;
+
+  const numFac16 = nextNum();
+  const numFac8 = nextNum();
+  const numFac31 = nextNum();
+  const numFacExenta = nextNum();
+  const numFacMixta = nextNum();
+  const numFacMulti = nextNum();
+  const numNcTotal = nextNum();
+  const numNcParcial = nextNum();
+  const numNd = nextNum();
+
+  const baseComun = (num: number, extra: Partial<PayloadImprentaDocumento>): PayloadImprentaDocumento => ({
+    documento_id: 0,
+    tipo_documento: "FACTURA",
+    numero: num,
+    control_interno: num,
+    fecha_emision: fechaIso,
+    cliente_rif: "J-30111222-3",
+    cliente_nombre: "CLIENTE PRUEBA CERTIFICACION C.A.",
+    cliente_email: emailPrueba,
+    cliente_direccion: "Av. Francisco de Miranda, Caracas",
+    cliente_telefono: "04145551234",
+    condicion: "CONTADO",
+    emisor: emisorDemo,
+    tasa_e8: tasaE8,
+    subtotal_bs: 500000,
+    iva_bs: 80000,
+    igtf_bs: 0,
+    total_bs: 580000,
+    subtotal_usd: 10000,
+    iva_usd: 1600,
+    igtf_usd: 0,
+    total_usd: 11600,
+    ...extra,
+  });
+
+  type CasoCg = {
+    codigo: string;
+    descripcion: string;
+    tipo_documento: string;
+    numero_documento: string;
+    ruta: string;
+    metodo: "GET" | "POST";
+    esperaba_error: boolean;
+    tipo_operacion: "EMISION" | "ANULACION" | "CONSULTA";
+    requiere_control_de?: string;
+    construir?: (controles: Record<string, string>) => Record<string, unknown>;
+  };
+
+  const casos: CasoCg[] = [
+    {
+      codigo: "FAC_IVA_16",
+      descripcion: "Factura gravada alícuota general 16% (G)",
+      tipo_documento: "FACTURA",
+      numero_documento: numeroDocumentoCg(numFac16),
+      ruta: "api/Invoice/add_list_invoice",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadFacturaCg(
+          baseComun(numFac16, {
+            renglones: [{ orden: 1, catalogo_id: 1, descripcion: "Servicio de soporte técnico 16%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600 }],
+          }),
+          serieLimpia,
+          { incluirDescripcion: false }
+        ),
+    },
+    {
+      codigo: "FAC_IVA_8",
+      descripcion: "Factura gravada alícuota reducida 8% (R)",
+      tipo_documento: "FACTURA",
+      numero_documento: numeroDocumentoCg(numFac8),
+      ruta: "api/Invoice/add_list_invoice",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadFacturaCg(
+          baseComun(numFac8, {
+            subtotal_bs: 500000, iva_bs: 40000, total_bs: 540000,
+            subtotal_usd: 10000, iva_usd: 800, total_usd: 10800,
+            renglones: [{ orden: 1, catalogo_id: 2, descripcion: "Servicio gravado alícuota reducida 8%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 800 }],
+          }),
+          serieLimpia,
+          { incluirDescripcion: false }
+        ),
+    },
+    {
+      codigo: "FAC_IVA_31",
+      descripcion: "Factura gravada alícuota adicional suntuaria 31% (A)",
+      tipo_documento: "FACTURA",
+      numero_documento: numeroDocumentoCg(numFac31),
+      ruta: "api/Invoice/add_list_invoice",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadFacturaCg(
+          baseComun(numFac31, {
+            subtotal_bs: 500000, iva_bs: 155000, total_bs: 655000,
+            subtotal_usd: 10000, iva_usd: 3100, total_usd: 13100,
+            renglones: [{ orden: 1, catalogo_id: 3, tipo: "PRODUCTO", descripcion: "Artículo suntuario 31%", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 3100 }],
+          }),
+          serieLimpia,
+          { incluirDescripcion: false }
+        ),
+    },
+    {
+      codigo: "FAC_EXENTA",
+      descripcion: "Factura exenta de IVA 0% (E)",
+      tipo_documento: "FACTURA",
+      numero_documento: numeroDocumentoCg(numFacExenta),
+      ruta: "api/Invoice/add_list_invoice",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadFacturaCg(
+          baseComun(numFacExenta, {
+            subtotal_bs: 250000, iva_bs: 0, total_bs: 250000,
+            subtotal_usd: 5000, iva_usd: 0, total_usd: 5000,
+            renglones: [{ orden: 1, catalogo_id: 4, descripcion: "Servicio exento de IVA", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 0 }],
+          }),
+          serieLimpia,
+          { incluirDescripcion: false }
+        ),
+    },
+    {
+      codigo: "FAC_MIXTA",
+      descripcion: "Factura mixta con 4 alícuotas (16% G + 8% R + 31% A + Exento E)",
+      tipo_documento: "FACTURA",
+      numero_documento: numeroDocumentoCg(numFacMixta),
+      ruta: "api/Invoice/add_list_invoice",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadFacturaCg(
+          baseComun(numFacMixta, {
+            subtotal_bs: 400000, iva_bs: 55000, total_bs: 455000,
+            subtotal_usd: 8000, iva_usd: 1100, total_usd: 9100,
+            renglones: [
+              { orden: 1, catalogo_id: 11, descripcion: "Ítem gravado 16%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 1600 },
+              { orden: 2, catalogo_id: 12, descripcion: "Ítem reducido 8%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 800 },
+              { orden: 3, catalogo_id: 13, tipo: "PRODUCTO", descripcion: "Ítem adicional 31%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 3100 },
+              { orden: 4, catalogo_id: 14, descripcion: "Ítem exento 0%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 0 },
+            ],
+          }),
+          serieLimpia,
+          { incluirDescripcion: false }
+        ),
+    },
+    {
+      codigo: "FAC_MULTI_CANT",
+      descripcion: "Factura multi-renglón con cantidades múltiples (base para NC Parcial)",
+      tipo_documento: "FACTURA",
+      numero_documento: numeroDocumentoCg(numFacMulti),
+      ruta: "api/Invoice/add_list_invoice",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadFacturaCg(
+          baseComun(numFacMulti, {
+            subtotal_bs: 750000, iva_bs: 120000, total_bs: 870000,
+            subtotal_usd: 15000, iva_usd: 2400, total_usd: 17400,
+            renglones: [
+              { orden: 1, catalogo_id: 101, tipo: "PRODUCTO", descripcion: "Repuesto certificado A", cantidad_milli: 2000, precio_usd: 5000, alicuota_cent: 1600 },
+              { orden: 2, catalogo_id: 102, tipo: "SERVICIO", descripcion: "Instalación técnica B", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 1600 },
+            ],
+          }),
+          serieLimpia,
+          { incluirDescripcion: false }
+        ),
+    },
+    {
+      codigo: "NC_TOTAL",
+      descripcion: "Nota de Crédito Total (add_credit_note) sobre Factura 16%",
+      tipo_documento: "NOTA_CREDITO",
+      numero_documento: numeroDocumentoCg(numNcTotal),
+      ruta: "api/Invoice/add_credit_note",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadNcTotalCg(
+          baseComun(numNcTotal, {
+            tipo_documento: "NOTA_CREDITO",
+            es_nc_total: true,
+            factura_afectada_numero: numFac16,
+            motivo_nc: "Devolucion total prueba certificacion CG",
+          })
+        ),
+    },
+    {
+      codigo: "NC_PARCIAL",
+      descripcion: "Nota de Crédito Parcial por productos (add_credit_note_with_products)",
+      tipo_documento: "NOTA_CREDITO",
+      numero_documento: numeroDocumentoCg(numNcParcial),
+      ruta: "api/Invoice/add_credit_note_with_products",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadNcParcialCg(
+          baseComun(numNcParcial, {
+            tipo_documento: "NOTA_CREDITO",
+            es_nc_total: false,
+            factura_afectada_numero: numFacMulti,
+            motivo_nc: "Devolucion parcial 1 unidad repuesto A",
+            renglones: [
+              { orden: 1, catalogo_id: 101, descripcion: "Repuesto certificado A", cantidad_milli: 1000, precio_usd: 5000, alicuota_cent: 1600 },
+            ],
+          })
+        ),
+    },
+    {
+      codigo: "ND_AJUSTE",
+      descripcion: "Nota de Débito por recargo/ajuste (add_debit_note) sobre Factura 8%",
+      tipo_documento: "NOTA_DEBITO",
+      numero_documento: numeroDocumentoCg(numNd),
+      ruta: "api/Invoice/add_debit_note",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "EMISION",
+      construir: () =>
+        construirPayloadNdCg(
+          baseComun(numNd, {
+            tipo_documento: "NOTA_DEBITO",
+            factura_afectada_numero: numFac8,
+            motivo_nc: "Recargo adicional prueba certificacion CG",
+            renglones: [
+              { orden: 1, descripcion: "Recargo servicio urgente", cantidad_milli: 1000, precio_usd: 1500, alicuota_cent: 1600 },
+            ],
+          })
+        ),
+    },
+  ];
+
+  if (incluirAnulacion) {
+    casos.push({
+      codigo: "ANULACION",
+      descripcion: "Anulación fiscal de Factura Exenta (cancel_invoice)",
+      tipo_documento: "ANULACION",
+      numero_documento: numeroDocumentoCg(numFacExenta),
+      ruta: "api/Invoice/cancel_invoice",
+      metodo: "POST",
+      esperaba_error: false,
+      tipo_operacion: "ANULACION",
+      requiere_control_de: "FAC_EXENTA",
+      construir: (controles) => construirPayloadAnulacionCg(numFacExenta, controles.FAC_EXENTA || ""),
+    });
+  }
+
+  casos.push({
+    codigo: "CONSULTA_LISTADO",
+    descripcion: "Consulta en línea de documentos emitidos (get_list_invoices)",
+    tipo_documento: "CONSULTA",
+    numero_documento: "LISTADO",
+    ruta: "api/Invoice/get_list_invoices?limite=20&pagina=1",
+    metodo: "GET",
+    esperaba_error: false,
+    tipo_operacion: "CONSULTA",
+  });
+
+  if (incluirErrores) {
+    casos.push(
+      {
+        codigo: "ERR_DUPLICADO",
+        descripcion: "Validación negativa: rechazo por N.º de factura duplicado",
+        tipo_documento: "FACTURA",
+        numero_documento: numeroDocumentoCg(numFac16),
+        ruta: "api/Invoice/add_list_invoice",
+        metodo: "POST",
+        esperaba_error: true,
+        tipo_operacion: "EMISION",
+        construir: () =>
+          construirPayloadFacturaCg(
+            baseComun(numFac16, {
+              renglones: [{ orden: 1, catalogo_id: 1, descripcion: "Intento duplicado controlado", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600 }],
+            }),
+            serieLimpia,
+            { incluirDescripcion: false }
+          ),
+      },
+      {
+        codigo: "ERR_CAMPOS_FALTANTES",
+        descripcion: "Validación negativa: rechazo por campos obligatorios faltantes",
+        tipo_documento: "FACTURA",
+        numero_documento: numeroDocumentoCg(nextNum()),
+        ruta: "api/Invoice/add_list_invoice",
+        metodo: "POST",
+        esperaba_error: true,
+        tipo_operacion: "EMISION",
+        construir: () => ({
+          numeroSerie: serieLimpia,
+          cantidadFactura: 1,
+          facturas: [{ numeroFactura: "", documentoIdentidadCliente: "", productos: [] }],
+        }),
+      }
+    );
+  }
+
+  const controlesObtenidos: Record<string, string> = {};
+  const resultados: ResultadoCasoCertificacionCg[] = [];
+
+  for (const caso of casos) {
+    if (caso.requiere_control_de && !controlesObtenidos[caso.requiere_control_de]) {
+      resultados.push({
+        codigo: caso.codigo,
+        descripcion: caso.descripcion,
+        tipo_documento: caso.tipo_documento,
+        numero_documento: caso.numero_documento,
+        esperaba_error: caso.esperaba_error,
+        ok: false,
+        http_status: 0,
+        control_fiscal: null,
+        pdf_url: null,
+        mensaje: `Omitido: requiere que ${caso.requiere_control_de} haya obtenido número de control previo.`,
+      });
+      continue;
+    }
+
+    const body = caso.construir ? caso.construir(controlesObtenidos) : undefined;
+    const res = await peticionAutenticadaCg(
+      db,
+      env,
+      cfg,
+      caso.ruta,
+      { method: caso.metodo, body, timeoutMs: 25_000 },
+      fetchFn
+    );
+
+    if (caso.tipo_operacion === "CONSULTA") {
+      const lista = res.error ? [] : extraerListaDocumentosCg(res.data);
+      const okConsulta = res.ok && !res.error && lista.length > 0;
+      resultados.push({
+        codigo: caso.codigo,
+        descripcion: caso.descripcion,
+        tipo_documento: caso.tipo_documento,
+        numero_documento: caso.numero_documento,
+        esperaba_error: false,
+        ok: okConsulta,
+        http_status: res.status,
+        control_fiscal: null,
+        pdf_url: null,
+        mensaje: okConsulta
+          ? `Consulta OK: ${lista.length} documento(s) verificados en CG Calidad.`
+          : res.error || res.data?.message || `HTTP ${res.status} sin documentos en get_list_invoices.`,
+      });
+      continue;
+    }
+
+    if (caso.tipo_operacion === "ANULACION") {
+      const ctrlUsado = controlesObtenidos[caso.requiere_control_de || ""] || null;
+      const pdfAnul = validarUrlPdfSegura(
+        res.data?.details?.pdf_factura ?? res.data?.pdf_factura ?? res.data?.pdf ?? res.data?.data?.pdf_factura ?? null
+      );
+      const okAnul = res.ok && !res.error;
+      resultados.push({
+        codigo: caso.codigo,
+        descripcion: caso.descripcion,
+        tipo_documento: caso.tipo_documento,
+        numero_documento: caso.numero_documento,
+        esperaba_error: false,
+        ok: okAnul,
+        http_status: res.status,
+        control_fiscal: ctrlUsado,
+        pdf_url: pdfAnul,
+        mensaje: okAnul
+          ? `Anulada correctamente en CG (Control ${ctrlUsado || ""})`
+          : res.error || res.data?.message || `HTTP ${res.status} al anular.`,
+      });
+      continue;
+    }
+
+    const parsed = res.error ? null : extraerRespuestaCg(res.data, caso.tipo_documento, res.status);
+
+    if (caso.esperaba_error) {
+      const rechazadoOk = !res.ok || !parsed?.ok || !parsed?.control_fiscal;
+      resultados.push({
+        codigo: caso.codigo,
+        descripcion: caso.descripcion,
+        tipo_documento: caso.tipo_documento,
+        numero_documento: caso.numero_documento,
+        esperaba_error: true,
+        ok: rechazadoOk,
+        http_status: res.status,
+        control_fiscal: parsed?.control_fiscal ?? null,
+        pdf_url: null,
+        mensaje: rechazadoOk
+          ? `Rechazo controlado OK: ${parsed?.error || res.error || `HTTP ${res.status}`}`
+          : "Se esperaba rechazo de validación, pero CG devolvió éxito.",
+      });
+    } else if (res.ok && parsed?.ok && parsed.control_fiscal) {
+      controlesObtenidos[caso.codigo] = parsed.control_fiscal;
+      resultados.push({
+        codigo: caso.codigo,
+        descripcion: caso.descripcion,
+        tipo_documento: caso.tipo_documento,
+        numero_documento: caso.numero_documento,
+        esperaba_error: false,
+        ok: true,
+        http_status: res.status,
+        control_fiscal: parsed.control_fiscal,
+        pdf_url: parsed.pdf_url,
+        mensaje: `Control asignado: ${parsed.control_fiscal}`,
+      });
+    } else {
+      resultados.push({
+        codigo: caso.codigo,
+        descripcion: caso.descripcion,
+        tipo_documento: caso.tipo_documento,
+        numero_documento: caso.numero_documento,
+        esperaba_error: false,
+        ok: false,
+        http_status: res.status,
+        control_fiscal: null,
+        pdf_url: null,
+        mensaje: res.error || parsed?.error || `HTTP ${res.status}`,
+      });
+    }
+  }
+
+  const aprobados = resultados.filter((r) => r.ok && !r.esperaba_error).length;
+  const erroresControladosOk = resultados.filter((r) => r.ok && r.esperaba_error).length;
+  const fallidos = resultados.filter((r) => !r.ok).length;
+  const fechaEjec = new Date().toISOString();
+
+  const lineasReporte = [
+    `REPORTE DE CERTIFICACIÓN CALIDAD — CG LA IMPRENTA DIGITAL (FacturaYa Venezuela v5.3.1)`,
+    `Fecha: ${fechaEjec} | Ambiente: PRUEBAS (Calidad) | Host: ${host}`,
+    `Emisor: ${emisorDemo.nombre_razon_social} (${emisorDemo.rif}) | Serie: "${serieLimpia}"`,
+    `Resultado: ${aprobados + erroresControladosOk}/${resultados.length} OK (${aprobados} operaciones + ${erroresControladosOk} errores controlados, ${fallidos} fallidos)`,
+    ``,
+    ...resultados.map(
+      (r, idx) =>
+        `${String(idx + 1).padStart(2, "0")}. [${r.ok ? "OK" : "FAIL"}] ${r.codigo} (${r.tipo_documento} · Doc ${r.numero_documento}) -> ${
+          r.control_fiscal ? `Control ${r.control_fiscal}${r.pdf_url ? ` · PDF: ${r.pdf_url}` : ""}` : r.mensaje
+        }`
+    ),
+  ];
+
+  return {
+    ok: fallidos === 0,
+    ambiente: "PRUEBAS",
+    host,
+    fecha_ejecucion: fechaEjec,
+    resumen: {
+      total: resultados.length,
+      aprobados,
+      fallidos,
+      errores_controlados_ok: erroresControladosOk,
+    },
+    resultados,
+    reporte_texto: lineasReporte.join("\n"),
+  };
+}
+

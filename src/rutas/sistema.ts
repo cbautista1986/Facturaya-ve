@@ -14,8 +14,10 @@ import {
   PROVEEDOR_CG,
   PROVEEDOR_GENERICO,
   PROVEEDOR_TFHKA,
+  ambitoFiscalImprenta,
   anularFacturaCg,
   conciliarDocumentosCg,
+  ejecutarSuiteCertificacionCg,
   enviarDocumentoCg,
   leerConfigImprentaCompleta,
   normalizarHostCg,
@@ -33,6 +35,8 @@ import {
 import {
   anularDocumentoTfhka,
   conciliarDocumentosTfhka,
+  consultarNumeracionesTfhka,
+  ejecutarSuiteCertificacionTfhka,
   enviarDocumentoTfhka,
   normalizarHostTfhka,
   numeroDocumentoTfhka,
@@ -341,10 +345,15 @@ export async function solicitarControlImprentaDigital(
       });
       return { ok: false, control_fiscal: null, proveedor: cfg.proveedor, proveedor_tipo: PROVEEDOR_GENERICO, error: errMsg, idempotency_key: idempotencyKey };
     }
+    const ambitoFiscal = ambitoFiscalImprenta(cfg);
     await db.batch([
       db
-        .prepare(`UPDATE documentos SET control_fiscal = ? WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`)
-        .bind(rawCtrl, payload.documento_id),
+        .prepare(
+          `UPDATE documentos
+           SET control_fiscal = ?, fiscal_serial = COALESCE(fiscal_serial, ?)
+           WHERE id = ? AND control_fiscal IS NULL AND estado = 'EMITIDO'`
+        )
+        .bind(rawCtrl, ambitoFiscal, payload.documento_id),
       db.prepare(`DELETE FROM integraciones WHERE clave = ?`).bind(`imprenta_pendiente_${payload.documento_id}`),
     ]);
     await registrarEnvioImprentaDb(db, {
@@ -487,7 +496,7 @@ sistema.post("/imprenta", async (c) => {
     provTipo === PROVEEDOR_TFHKA
       ? texto(b.serie, 10).toUpperCase().replace(/[^A-Z0-9_-]/g, "")
       : (texto(b.serie, 5) || "A").toUpperCase().replace(/[^A-Z0-9]/g, "") || "A";
-  const sucursal = (texto(b.sucursal, 10) || "0001").replace(/[^A-Za-z0-9_-]/g, "") || "0001";
+  const sucursal = texto(b.sucursal, 10).replace(/[^A-Za-z0-9_-]/g, "");
   const reservarPrevio =
     b.reservar_previo === true || b.reservar_previo === 1 || b.reservar_previo === "1" || b.reservar_previo === "on"
       ? "1"
@@ -561,7 +570,7 @@ sistema.post("/imprenta", async (c) => {
     db.prepare(
       `DELETE FROM integraciones WHERE clave IN (
          'imprenta_cg_jwt', 'imprenta_cg_jwt_exp', 'imprenta_cg_jwt_host', 'imprenta_cg_jwt_user',
-         'imprenta_tfhka_jwt', 'imprenta_tfhka_jwt_exp', 'imprenta_tfhka_jwt_host', 'imprenta_tfhka_jwt_user'
+         'imprenta_tfhka_jwt', 'imprenta_tfhka_jwt_exp', 'imprenta_tfhka_jwt_host', 'imprenta_tfhka_jwt_user', 'imprenta_tfhka_api_prefix'
        )`
     )
   );
@@ -686,6 +695,122 @@ sistema.post("/imprenta/conciliar", async (c) => {
   await auditar(c, c.get("usuario").id, "IMPRENTA_CONCILIAR", `CG=${res.total_cg} local=${res.total_local} recuperados=${res.recuperados}`);
   const estado = await obtenerResumenImprenta(db, envObj, fechaCaracas(), { incluirHistorial: true });
   return c.json({ ok: true, conciliacion: res, imprenta_estado: estado });
+});
+
+sistema.post("/imprenta/numeraciones", async (c) => {
+  const db = c.env.DB, envObj = c.env as unknown as Record<string, unknown>;
+  const cfg = await leerConfigImprentaCompleta(db, envObj);
+  if (!cfg.url || !cfg.clave_clara) {
+    return falla(c, 400, "Configura primero tu API de Imprenta Digital.");
+  }
+  if (cfg.proveedor_tipo !== PROVEEDOR_TFHKA) {
+    return c.json({
+      ok: true,
+      numeraciones: null,
+      mensaje: "La consulta en línea de cupo (ConsultaNumeraciones) está disponible para The Factory HKA Venezuela. En CG La Imprenta Digital puedes ver el saldo en el módulo Indicadores de su portal.",
+    });
+  }
+  const num = await consultarNumeracionesTfhka(db, envObj, cfg);
+  if (!num.ok) return falla(c, 502, num.error || "No se pudo consultar el cupo de numeraciones en The Factory HKA.");
+  return c.json({ ok: true, numeraciones: num });
+});
+
+sistema.post("/imprenta/certificar-tfhka", async (c) => {
+  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
+    return falla(c, 400, "Marca la casilla de confirmación para ejecutar la suite de certificación Demo en The Factory HKA.");
+  }
+  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
+  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) {
+    return falla(c, 400, "La contraseña no es correcta.");
+  }
+
+  const cfg = await leerConfigImprentaCompleta(db, envObj);
+  if (cfg.proveedor_tipo !== PROVEEDOR_TFHKA) {
+    return falla(c, 403, "La Suite de Certificación Demo aplica únicamente cuando el conector activo es The Factory HKA Venezuela.");
+  }
+  if (cfg.ambiente !== "PRUEBAS") {
+    return falla(c, 403, "Bloqueado por seguridad fiscal: la Suite de Certificación The Factory HKA solo puede ejecutarse en ambiente PRUEBAS (Demo), jamás en PRODUCCION.");
+  }
+  if (!cfg.url || !cfg.usuario || !cfg.clave_clara) {
+    return falla(c, 400, "Guarda primero las credenciales API de The Factory HKA Demo.");
+  }
+
+  const numInicio = Math.max(1, Math.min(99_999_000, Math.trunc(Number(b.numero_inicio ?? 100) || 100)));
+  const incluirErrores = b.incluir_errores !== false;
+  const perfil = await db
+    .prepare(`SELECT rif, nombre_razon_social, email FROM perfil_emisor WHERE id = 1`)
+    .first<{ rif: string; nombre_razon_social: string; email: string | null }>()
+    .catch(() => null);
+
+  const res = await ejecutarSuiteCertificacionTfhka(db, envObj, cfg, {
+    numero_inicio: numInicio,
+    rif_emisor: perfil?.rif,
+    razon_emisor: perfil?.nombre_razon_social,
+    email_prueba: texto(b.email_prueba, 120) || perfil?.email || undefined,
+    incluir_errores: incluirErrores,
+  });
+
+  if (res.error && !res.resultados) {
+    return falla(c, 502, res.error);
+  }
+  await auditar(
+    c,
+    yo.id,
+    "IMPRENTA_TFHKA_CERTIFICAR",
+    `inicio=${numInicio} ok=${res.resumen?.aprobados ?? 0}+err=${res.resumen?.errores_controlados_ok ?? 0}/${res.resumen?.total ?? 0} fail=${res.resumen?.fallidos ?? 0}`
+  );
+  return c.json(res);
+});
+
+sistema.post("/imprenta/certificar-cg", async (c) => {
+  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
+    return falla(c, 400, "Marca la casilla de confirmación para ejecutar la suite de certificación en CG La Imprenta Digital (Calidad).");
+  }
+  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
+  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) {
+    return falla(c, 400, "La contraseña no es correcta.");
+  }
+
+  const cfg = await leerConfigImprentaCompleta(db, envObj);
+  if (cfg.proveedor_tipo !== PROVEEDOR_CG) {
+    return falla(c, 403, "La Suite de Certificación CG aplica únicamente cuando el conector activo es CG La Imprenta Digital.");
+  }
+  if (cfg.ambiente !== "PRUEBAS") {
+    return falla(c, 403, "Bloqueado por seguridad fiscal: la Suite de Certificación CG solo puede ejecutarse en ambiente PRUEBAS (Calidad), jamás en PRODUCCION.");
+  }
+  if (!cfg.url || !cfg.usuario || !cfg.clave_clara) {
+    return falla(c, 400, "Guarda primero las credenciales API de CG La Imprenta Digital (Calidad).");
+  }
+
+  const numInicio = Math.max(1, Math.min(99_999_000, Math.trunc(Number(b.numero_inicio ?? 100) || 100)));
+  const incluirAnulacion = b.incluir_anulacion !== false;
+  const incluirErrores = b.incluir_errores !== false;
+  const perfil = await db
+    .prepare(`SELECT rif, nombre_razon_social, email FROM perfil_emisor WHERE id = 1`)
+    .first<{ rif: string; nombre_razon_social: string; email: string | null }>()
+    .catch(() => null);
+
+  const res = await ejecutarSuiteCertificacionCg(db, envObj, cfg, {
+    numero_inicio: numInicio,
+    rif_emisor: perfil?.rif,
+    razon_emisor: perfil?.nombre_razon_social,
+    email_prueba: texto(b.email_prueba, 120) || perfil?.email || undefined,
+    incluir_anulacion: incluirAnulacion,
+    incluir_errores: incluirErrores,
+  });
+
+  if (res.error && !res.resultados) {
+    return falla(c, 502, res.error);
+  }
+  await auditar(
+    c,
+    yo.id,
+    "IMPRENTA_CG_CERTIFICAR",
+    `inicio=${numInicio} ok=${res.resumen?.aprobados ?? 0}+err=${res.resumen?.errores_controlados_ok ?? 0}/${res.resumen?.total ?? 0} fail=${res.resumen?.fallidos ?? 0}`
+  );
+  return c.json(res);
 });
 
 // SERVICIO DE CORREO ELECTRÓNICO (Resend / Brevo) para enviar facturas a clientes y recuperación jerárquica de claves.

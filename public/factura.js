@@ -2,8 +2,8 @@
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
 import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261126v520";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261126v520";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261126v531";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261126v531";
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -438,7 +438,7 @@ async function ver(estado, id) {
       ${D.tipo === "FACTURA" && emitido ? `<div class="tot"><span>N.º de Control</span><b>${esc(nroControlEtiqueta)}</b></div>
         <div class="tot"><span>Modalidad digital</span><b>${esImprenta ? "🌐 Imprenta Digital (SNAT/2024/000102)" : "📱 Sistema Digital SENIAT (SNAT/2024/000102)"}</b></div>` : ""}
       ${impEnv ? `<div class="tot"><span>Estado Imprenta (${esc(provEtiqueta)})</span><b><span class="insignia ${impEnv.estado === "ENVIADO_OK" ? "verde" : impEnv.estado === "ANULADO_OK" ? "gris" : "rojo"}">${impEnv.estado === "ENVIADO_OK" ? "✅ Retornado OK" : impEnv.estado === "ANULADO_OK" ? "⛔ Anulado en Imprenta" : "⏳ Pendiente"}</span></b></div>` : ""}
-      ${pdfOficialCg ? `<div style="margin-top:8px"><a class="boton chico morado" href="${esc(pdfOficialCg)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ Ver PDF oficial firmado (${esc(provEtiqueta)})</a></div>` : ""}
+      ${pdfOficialCg ? `<div style="margin-top:8px"><a class="boton chico morado" href="${esc(pdfOficialCg)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ Ver PDF oficial firmado (${esc(provEtiqueta)})</a></div>` : impEnv?.proveedor_tipo === "THE_FACTORY_HKA" && D.control_fiscal ? `<div style="margin-top:8px"><a class="boton chico morado" href="/api/documentos/${encodeURIComponent(D.id)}/imprenta-pdf" target="_blank" rel="noopener noreferrer" style="display:inline-block;text-align:center;text-decoration:none">🏛️ PDF Oficial (The Factory HKA)</a></div>` : ""}
       ${impEnv?.ultimo_error && !D.control_fiscal ? `<p class="error" style="margin:6px 0 0">Último error imprenta: ${esc(impEnv.ultimo_error)}</p>` : ""}
       ${emitido ? `<div class="tot"><span>Tasa BCV (Art. 128 Ley BCV)</span><b>Bs. ${bs(D.tasa_e8 / 1e8)}</b></div>` : ""}
     </section>

@@ -12,6 +12,8 @@ import { anularFacturaImprentaDigital, solicitarControlImprentaDigital } from ".
 import { EMAIL, PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
 import { leerTipoContribuyente, normalizarTipoContribuyente, reglasRegimen } from "../regimen";
 import { evaluarAnulacionDocumento, puedeInvocarImprentaDigital, validarIgtfNotaCredito } from "../reglas-fiscales";
+import { PROVEEDOR_TFHKA, leerConfigImprentaCompleta, validarUrlPdfSegura } from "../imprenta-cg";
+import { descargarPdfTfhka } from "../imprenta-tfhka";
 
 const documentos = new Hono<Env>();
 documentos.use("*", requiereSesion);
@@ -1300,6 +1302,58 @@ documentos.post("/:id/enviar-correo", async (c) => {
     email: res.demo_redirigido_a || destino,
     ...(res.demo_redirigido_a ? { demo_redirigido_a: res.demo_redirigido_a, demo_restantes: res.demo_restantes } : {}),
   });
+});
+
+// Descargar la representación gráfica PDF oficial directamente desde la Imprenta Digital (TFHKA DescargaArchivo o enlace oficial CG)
+documentos.get("/:id/imprenta-pdf", async (c) => {
+  const id = idParam(c), db = c.env.DB, envObj = c.env as unknown as Record<string, unknown>;
+  const doc = await db
+    .prepare(
+      `SELECT id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, modo, estado, medio, numero, control_fiscal
+       FROM documentos WHERE id = ?`
+    )
+    .bind(id)
+    .first<Fila>();
+  if (!doc) return falla(c, 404, "Documento no encontrado.");
+  if (doc.tipo !== "FACTURA" || doc.modo !== "REAL" || doc.medio !== "IMPRENTA_DIGITAL" || !doc.control_fiscal) {
+    return falla(c, 409, "El PDF oficial de Imprenta Digital solo está disponible para documentos fiscales reales sellados con N.º de Control.");
+  }
+
+  const impEnv = await db
+    .prepare(`SELECT proveedor_tipo, numero_serie, pdf_url FROM imprenta_envios WHERE documento_id = ?`)
+    .bind(id)
+    .first<{ proveedor_tipo: string | null; numero_serie: string | null; pdf_url: string | null }>()
+    .catch(() => null);
+
+  const cfg = await leerConfigImprentaCompleta(db, envObj);
+  const esTfhka = impEnv?.proveedor_tipo === PROVEEDOR_TFHKA || (!impEnv?.proveedor_tipo && cfg.proveedor_tipo === PROVEEDOR_TFHKA);
+
+  if (esTfhka) {
+    const tipoDoc = doc.es_nota_credito ? "NOTA_CREDITO" : doc.es_nota_debito ? "NOTA_DEBITO" : "FACTURA";
+    const pdfRes = await descargarPdfTfhka(db, envObj, cfg, {
+      tipo_documento: tipoDoc,
+      numero_documento: Number(doc.numero ?? 1),
+      serie: impEnv?.numero_serie !== null && impEnv?.numero_serie !== undefined ? impEnv.numero_serie : cfg.serie,
+    });
+    if (!pdfRes.ok) {
+      return falla(c, 502, pdfRes.error);
+    }
+    return new Response(pdfRes.bytes, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename="${pdfRes.filename}"`,
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
+  const pdfSeguro = validarUrlPdfSegura(impEnv?.pdf_url);
+  if (pdfSeguro) {
+    return c.redirect(pdfSeguro, 302);
+  }
+  return falla(c, 404, "Este documento no cuenta con un enlace PDF oficial remoto en la Imprenta Digital.");
 });
 
 export default documentos;

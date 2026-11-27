@@ -829,6 +829,66 @@ export const MIGRACIONES: Migracion[] = [
       `ALTER TABLE imprenta_envios ADD COLUMN imprenta_autorizacion TEXT DEFAULT NULL`,
     ],
   },
+  // 0023: Imprenta Digital v5.2.1 (Unicidad Fiscal por Ámbito):
+  // - Evita falsas colisiones de control_fiscal entre PRACTICA vs REAL, APP_SENIAT vs IMPRENTA_DIGITAL,
+  //   Sandbox vs Producción, o entre distintos proveedores autorizados (CG vs The Factory HKA),
+  //   manteniendo unicidad estricta dentro del mismo modo + medio + ámbito fiscal (fiscal_serial).
+  // - Permite sellar `fiscal_serial` UNA SOLA VEZ (de NULL a valor inmutable) en IMPRENTA_DIGITAL.
+  {
+    id: "0023_fiscal_unico_ambito_v5_2_1",
+    sql: [
+      `DROP INDEX IF EXISTS documentos_fiscal_unico`,
+      `CREATE UNIQUE INDEX documentos_fiscal_unico ON documentos (modo, COALESCE(medio, ''), COALESCE(fiscal_serial, ''), control_fiscal) WHERE control_fiscal IS NOT NULL`,
+      `DROP TRIGGER IF EXISTS doc_inmutable`,
+      `CREATE TRIGGER doc_inmutable BEFORE UPDATE ON documentos
+        WHEN old.modo = 'REAL' AND old.estado <> 'BORRADOR' AND (
+          old.estado = 'ANULADO'
+          OR new.estado NOT IN ('EMITIDO', 'FACTURADO', 'ANULADO')
+          OR (old.estado = 'FACTURADO' AND new.estado <> 'FACTURADO')
+          OR new.tipo IS NOT old.tipo
+          OR new.es_nota_credito IS NOT old.es_nota_credito
+          OR new.es_nota_debito IS NOT old.es_nota_debito
+          OR new.factura_afectada_id IS NOT old.factura_afectada_id
+          OR new.motivo_nc IS NOT old.motivo_nc
+          OR new.modo IS NOT old.modo
+          OR new.numero IS NOT old.numero
+          OR new.control_interno IS NOT old.control_interno
+          OR new.presupuesto_id IS NOT old.presupuesto_id
+          OR new.cliente_id IS NOT old.cliente_id
+          OR new.cliente_rif IS NOT old.cliente_rif
+          OR new.cliente_nombre IS NOT old.cliente_nombre
+          OR new.cliente_direccion IS NOT old.cliente_direccion
+          OR new.cliente_whatsapp IS NOT old.cliente_whatsapp
+          OR new.cliente_email IS NOT old.cliente_email
+          OR new.nota IS NOT old.nota
+          OR new.fecha_emision IS NOT old.fecha_emision
+          OR new.emitido_en IS NOT old.emitido_en
+          OR new.tasa_e8 IS NOT old.tasa_e8
+          OR new.tasa_cargada_en IS NOT old.tasa_cargada_en
+          OR new.subtotal_usd IS NOT old.subtotal_usd
+          OR new.iva_usd IS NOT old.iva_usd
+          OR new.aplica_igtf IS NOT old.aplica_igtf
+          OR new.igtf_alicuota_cent IS NOT old.igtf_alicuota_cent
+          OR new.igtf_usd IS NOT old.igtf_usd
+          OR new.total_usd IS NOT old.total_usd
+          OR new.subtotal_bs IS NOT old.subtotal_bs
+          OR new.iva_bs IS NOT old.iva_bs
+          OR new.igtf_bs IS NOT old.igtf_bs
+          OR new.total_bs IS NOT old.total_bs
+          OR new.costo_total_usd IS NOT old.costo_total_usd
+          OR new.parametros_json IS NOT old.parametros_json
+          OR new.emisor_json IS NOT old.emisor_json
+          OR new.creado_en IS NOT old.creado_en
+          OR new.creado_por IS NOT old.creado_por
+          OR new.condicion IS NOT old.condicion
+          OR new.dias_credito IS NOT old.dias_credito
+          OR new.vence_el IS NOT old.vence_el
+          OR new.medio IS NOT old.medio
+          OR (new.control_fiscal IS NOT old.control_fiscal AND (old.control_fiscal IS NOT NULL OR old.medio IS NULL))
+          OR (new.fiscal_serial IS NOT old.fiscal_serial AND (old.fiscal_serial IS NOT NULL OR old.medio NOT IN ('MAQUINA_FISCAL', 'IMPRENTA_DIGITAL'))))
+        BEGIN SELECT RAISE(ABORT, 'Documento emitido: no se puede modificar, solo anular.'); END`,
+    ],
+  },
 ];
 
 export async function migrar(db: D1Database) {

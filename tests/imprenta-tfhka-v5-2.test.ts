@@ -7,7 +7,11 @@ import {
   HOST_TFHKA_PROD,
   TFHKA_AUTORIZACION_DEFECTO,
   TFHKA_RAZON_SOCIAL_DEFECTO,
+  aplicarRetencionTfhka,
+  construirComprobanteRetencionIslrTfhka,
+  construirComprobanteRetencionIvaTfhka,
   construirDocumentoElectronicoTfhka,
+  construirGuiaDespachoTfhka,
   dividirRifTfhka,
   extraerRespuestaEmisionTfhka,
   extraerTokenTfhka,
@@ -69,7 +73,8 @@ test("1. TFHKA emisionv2 puro: normalizadores, montoEnLetrasEntero y payloads Fa
   // Normalización de host
   assert.equal(normalizarHostTfhka("https://demoemisionv2.thefactoryhka.com.ve/Emision"), HOST_TFHKA_DEMO);
   assert.equal(normalizarHostTfhka("https://emisionv2.thefactoryhka.com.ve/Autenticacion"), HOST_TFHKA_PROD);
-  assert.equal(normalizarHostTfhka("https://emisionv2.thefactoryhka.com.ve/api/"), HOST_TFHKA_PROD);
+  assert.equal(normalizarHostTfhka("https://emisionv2.thefactoryhka.com.ve/api/Autenticacion"), "https://emisionv2.thefactoryhka.com.ve/api/");
+  assert.equal(normalizarHostTfhka("https://emisionv2.thefactoryhka.com.ve/api/DescargaArchivo"), "https://emisionv2.thefactoryhka.com.ve/api/");
 
   // Tipos y números de documento
   assert.equal(tipoDocumentoTfhka("FACTURA"), "01");
@@ -731,3 +736,597 @@ test("3. APP_SENIAT + REAL: flujo manual de control_fiscal y correo siguen 100% 
     globalThis.fetch = fetchOriginal;
   }
 });
+
+// =========================================================================
+// 4. Unicidad Fiscal por Ámbito (v5.2.1 · Migración 0023): sin falsos choques entre App SENIAT / Práctica / Sandbox / Producción / CG / TFHKA
+// =========================================================================
+test("4. Unicidad fiscal por ámbito (v5.2.1): 00-00000005/00-00000006 en APP_SENIAT o heredado no bloquean a CG ni TFHKA, pero mismo ámbito sí bloquea duplicados", async () => {
+  const db = crearBaseDatosD1(":memory:");
+  const env: Record<string, unknown> = {
+    DB: db,
+    MASTER_KEY: "llave-maestra-ambito-v521",
+    SUPER_ADMIN_EMAIL: "admin@ambito.ve",
+  };
+  const jarAdmin: Record<string, string> = {};
+
+  const inst = await reqJson(env, jarAdmin, "/api/instalar", "POST", {
+    nombre: "NEGOCIO TRANSICION VE C.A.",
+    rif: "J-40991122-3",
+    direccion: "Caracas",
+    telefono: "0414-3334455",
+    email: "admin@ambito.ve",
+    clave: CLAVE_TEST,
+    tipo_contribuyente: "ORDINARIO",
+    medio_facturacion: "APP_SENIAT",
+  });
+  assert.equal(inst.status, 200);
+  await db.prepare(`UPDATE perfil_emisor SET tasa_bcv = '50.00', tasa_bcv_fecha = ? WHERE id = 1`).bind(new Date().toISOString()).run();
+  await db.prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`).run();
+
+  const cli = await reqJson(env, jarAdmin, "/api/clientes", "POST", {
+    rif_cedula: "J-424296928-6",
+    nombre_apellido: "Nostimo Cafe",
+    direccion: "Caracas",
+    telefono: "0412-1112233",
+    email: "nostimo@cliente.ve",
+  });
+  assert.equal(cli.status, 200);
+
+  // 4.1 Emitir Factura #1 en APP_SENIAT + REAL y registrar manualmente 00-00000005
+  const fSeniat = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+    tipo: "FACTURA",
+    cliente_id: cli.data.id,
+    lineas: [{ tipo: "SERVICIO", descripcion: "Servicio en App SENIAT", cantidad: "1", precio_usd: "15,00", alicuota_iva: 16 }],
+  });
+  assert.equal((await reqJson(env, jarAdmin, `/api/documentos/${fSeniat.data.id}/emitir`, "POST", {})).status, 200);
+  assert.equal((await reqJson(env, jarAdmin, `/api/documentos/${fSeniat.data.id}/fiscal`, "POST", { numero: "00-00000005" })).status, 200);
+
+  // 4.2 Cambiar modalidad a IMPRENTA_DIGITAL y configurar CG Calidad (PRUEBAS, Serie A)
+  const modRes = await reqJson(env, jarAdmin, "/api/sistema/medio", "POST", {
+    medio: "IMPRENTA_DIGITAL",
+    motivo: "Migración oficial a CG Imprenta Digital",
+    clave: CLAVE_TEST,
+    confirmo: true,
+  });
+  assert.equal(modRes.status, 200);
+
+  const cfgCg = await reqJson(env, jarAdmin, "/api/sistema/imprenta", "POST", {
+    proveedor_tipo: "CG_IMPRENTA",
+    proveedor: "CG La Imprenta Digital",
+    url: "https://calidad.cgimprenta.digital/",
+    usuario: "demo@cg.ve",
+    clave: "clave-cg-ambito-2026",
+    ambiente: "PRUEBAS",
+    serie: "A",
+    password: CLAVE_TEST,
+    confirmo: true,
+  });
+  assert.equal(cfgCg.status, 200);
+
+  // Simular también un documento heredado de IMPRENTA_DIGITAL sin fiscal_serial (v5.1) con control 00-00000006
+  const fLegado = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+    tipo: "FACTURA",
+    cliente_id: cli.data.id,
+    lineas: [{ tipo: "SERVICIO", descripcion: "Servicio legado v5.1", cantidad: "1", precio_usd: "15,00", alicuota_iva: 16 }],
+  });
+  // Emitir sin mock CG aún (queda pendiente), y simular que v5.1 tenía 00-00000006 con fiscal_serial = NULL
+  const fetchOrig = globalThis.fetch;
+  let ctrlADevolver = "00-00000005";
+  let modoMock: "FALLAR" | "CG_OK" | "TFHKA_OK" = "FALLAR";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (modoMock === "FALLAR") throw new Error("Simulated offline");
+    if (url.endsWith("/api/Invoice/create_token_authenticator")) {
+      return new Response(JSON.stringify({ success: true, token: "eyJhbGciOiJIUzI1NiJ9.cg-ambito-jwt-1" }), { status: 200 });
+    }
+    if (url.endsWith("/api/Invoice/add_list_invoice")) {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          invoice_list_success: [{ control_number: ctrlADevolver, invoice_pdf: `https://calidad.cgimprenta.digital/pdf/${ctrlADevolver}.pdf` }],
+        }),
+        { status: 200 }
+      );
+    }
+    if (url.endsWith("/Autenticacion")) {
+      return new Response(JSON.stringify({ codigo: "200", token: "eyJhbGciOiJIUzI1NiJ9.tfhka-ambito-jwt-1" }), { status: 200 });
+    }
+    if (url.endsWith("/Emision")) {
+      return new Response(
+        JSON.stringify({
+          codigo: "200",
+          resultado: { numeroControl: ctrlADevolver, fechaAsignacion: "26/11/2026", horaAsignacion: "07:05:00 PM" },
+        }),
+        { status: 200 }
+      );
+    }
+    return new Response("Not Found", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    await reqJson(env, jarAdmin, `/api/documentos/${fLegado.data.id}/emitir`, "POST", {});
+    await db.prepare(`UPDATE documentos SET control_fiscal = '00-00000006' WHERE id = ?`).bind(fLegado.data.id).run();
+
+    // 4.3 Ahora CG Calidad devuelve 00-00000005 (mismo que APP_SENIAT) y 00-00000006 (mismo que legado fiscal_serial=NULL): AMBOS DEBEN PASAR
+    modoMock = "CG_OK";
+    ctrlADevolver = "00-00000005";
+    const fCg5 = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Cambio SSD", cantidad: "1", precio_usd: "15,00", alicuota_iva: 16 }],
+    });
+    const emCg5 = await reqJson(env, jarAdmin, `/api/documentos/${fCg5.data.id}/emitir`, "POST", {});
+    assert.equal(emCg5.status, 200);
+    assert.equal(emCg5.data.control_fiscal, "00-00000005", "CG PRUEBAS no debe chocar con APP_SENIAT 00-00000005");
+
+    const rowCg5 = await db.prepare(`SELECT control_fiscal, fiscal_serial FROM documentos WHERE id = ?`).bind(fCg5.data.id).first<{ control_fiscal: string; fiscal_serial: string }>();
+    assert.equal(rowCg5?.fiscal_serial, "CG_IMPRENTA:PRUEBAS:A");
+
+    // Verificar inmutabilidad de fiscal_serial una vez sellado
+    await assert.rejects(
+      () => db.prepare(`UPDATE documentos SET fiscal_serial = 'OTRO' WHERE id = ?`).bind(fCg5.data.id).run(),
+      /Documento emitido/
+    );
+
+    ctrlADevolver = "00-00000006";
+    const fCg6 = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Cambio RAM", cantidad: "1", precio_usd: "15,00", alicuota_iva: 16 }],
+    });
+    const emCg6 = await reqJson(env, jarAdmin, `/api/documentos/${fCg6.data.id}/emitir`, "POST", {});
+    assert.equal(emCg6.status, 200);
+    assert.equal(emCg6.data.control_fiscal, "00-00000006", "CG PRUEBAS no debe chocar con registro legado sin fiscal_serial");
+
+    // 4.4 Un duplicado REAL dentro del MISMO ámbito (CG_IMPRENTA:PRUEBAS:A devolviendo 00-00000005 otra vez) SÍ DEBE RECHAZARSE
+    ctrlADevolver = "00-00000005";
+    const fCgDup = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Duplicado mismo ámbito", cantidad: "1", precio_usd: "15,00", alicuota_iva: 16 }],
+    });
+    const emCgDup = await reqJson(env, jarAdmin, `/api/documentos/${fCgDup.data.id}/emitir`, "POST", {});
+    assert.equal(emCgDup.status, 200);
+    assert.equal(emCgDup.data.control_fiscal, undefined, "Duplicado en el mismo ámbito CG_IMPRENTA:PRUEBAS:A debe rechazarse");
+
+    // 4.5 Cambiar a The Factory HKA (PRUEBAS) -> su serie propia también arranca en 00-00000005 sin chocar con CG
+    const cfgTf = await reqJson(env, jarAdmin, "/api/sistema/imprenta", "POST", {
+      proveedor_tipo: "THE_FACTORY_HKA",
+      proveedor: "The Factory HKA Venezuela",
+      url: HOST_TFHKA_DEMO,
+      usuario: "tfhka_user",
+      clave: "clave-tfhka-ambito-2026",
+      ambiente: "PRUEBAS",
+      serie: "",
+      sucursal: "0001",
+      password: CLAVE_TEST,
+      confirmo: true,
+    });
+    assert.equal(cfgTf.status, 200);
+
+    modoMock = "TFHKA_OK";
+    ctrlADevolver = "00-00000005";
+    const fTf5 = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Servicio con TFHKA", cantidad: "1", precio_usd: "20,00", alicuota_iva: 16 }],
+    });
+    const emTf5 = await reqJson(env, jarAdmin, `/api/documentos/${fTf5.data.id}/emitir`, "POST", {});
+    assert.equal(emTf5.status, 200);
+    assert.equal(emTf5.data.control_fiscal, "00-00000005", "TFHKA PRUEBAS no debe chocar con CG PRUEBAS");
+    const rowTf5 = await db.prepare(`SELECT fiscal_serial FROM documentos WHERE id = ?`).bind(fTf5.data.id).first<{ fiscal_serial: string }>();
+    assert.equal(rowTf5?.fiscal_serial, "THE_FACTORY_HKA:PRUEBAS");
+  } finally {
+    globalThis.fetch = fetchOrig;
+  }
+});
+
+// =========================================================================
+// 5. v5.3.0: Constructores puros TFHKA (5 alícuotas G/R/A/E/P, descuentos, USD+VES, IGTF Forma 09, Retenciones 05/06, Guía 04)
+// =========================================================================
+test("5. v5.3.0 puro: 5 alícuotas G/R/A/E/P, descuentos, moneda base USD, IGTF Forma 09, Sucursal vacía, Retenciones IVA/ISLR y Guía de Despacho", () => {
+  // 5.1 Mixta completa con las 5 alícuotas + Sucursal y Serie vacías (confirmado por soporte TFHKA)
+  const mixta = construirDocumentoElectronicoTfhka({
+    documento_id: 201,
+    tipo_documento: "FACTURA",
+    numero: 105,
+    control_interno: 105,
+    fecha_emision: "2026-11-26",
+    cliente_rif: "J-30111222-3",
+    cliente_nombre: "COMERCIAL MIXTA C.A.",
+    subtotal_bs: 500000,
+    iva_bs: 55000,
+    igtf_bs: 0,
+    total_bs: 555000,
+    subtotal_usd: 10000,
+    iva_usd: 1100,
+    igtf_usd: 0,
+    total_usd: 11100,
+    tasa_e8: 50_00000000,
+    renglones: [
+      { orden: 1, descripcion: "Item 16%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 1600 },
+      { orden: 2, descripcion: "Item 8%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 800 },
+      { orden: 3, descripcion: "Item 31%", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 3100 },
+      { orden: 4, descripcion: "Item Exento", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 0 },
+      { orden: 5, descripcion: "Item Percibido", cantidad_milli: 1000, precio_usd: 2000, alicuota_cent: 0, es_percibido: true },
+    ],
+  });
+  const encM = (mixta.DocumentoElectronico as any).Encabezado;
+  const itemsM = (mixta.DocumentoElectronico as any).DetallesItems;
+  assert.equal(encM.IdentificacionDocumento.Serie, "");
+  assert.equal(encM.IdentificacionDocumento.Sucursal, "");
+  assert.deepEqual(itemsM.map((x: any) => x.CodigoImpuesto), ["G", "R", "A", "E", "P"]);
+  assert.deepEqual(itemsM.map((x: any) => x.TasaIVA), ["16", "8", "31", "0", "0"]);
+  assert.equal(encM.Totales.MontoGravadoTotal, "3000.00");
+  assert.equal(encM.Totales.MontoExentoTotal, "1000.00");
+  assert.equal(encM.Totales.MontoPercibidoTotal, "1000.00");
+  assert.deepEqual(
+    encM.Totales.ImpuestosSubtotal.map((x: any) => [x.CodigoTotalImp, x.AlicuotaImp]),
+    [
+      ["G", "16.00"],
+      ["R", "8.00"],
+      ["A", "31.00"],
+      ["E", "00.00"],
+      ["P", "00.00"],
+    ]
+  );
+
+  // 5.2 Descuento por renglón + Descuento global + IGTF 3% (Forma "09" USD)
+  const descIgtf = construirDocumentoElectronicoTfhka({
+    documento_id: 202,
+    tipo_documento: "FACTURA",
+    numero: 106,
+    control_interno: 106,
+    fecha_emision: "2026-11-26",
+    cliente_rif: "J-30111222-3",
+    cliente_nombre: "CLIENTE IGTF C.A.",
+    descuento_global_bs: 50000,
+    descuento_global_usd: 1000,
+    descuento_global_desc: "Pronto pago",
+    subtotal_bs: 400000,
+    iva_bs: 64000,
+    igtf_bs: 13920,
+    total_bs: 477920,
+    subtotal_usd: 8000,
+    iva_usd: 1280,
+    igtf_usd: 278,
+    total_usd: 9558,
+    tasa_e8: 50_00000000,
+    renglones: [
+      {
+        orden: 1,
+        descripcion: "Servicio con descuento",
+        cantidad_milli: 1000,
+        precio_usd: 10000,
+        descuento_usd: 1000,
+        descuento_bs: 50000,
+        monto_usd: 9000,
+        monto_bs: 450000,
+        alicuota_cent: 1600,
+      },
+    ],
+  });
+  const encD = (descIgtf.DocumentoElectronico as any).Encabezado;
+  const itemD = (descIgtf.DocumentoElectronico as any).DetallesItems[0];
+  assert.equal(itemD.PrecioAntesDescuento, "5000.00");
+  assert.equal(itemD.DescuentoMonto, "500.00");
+  assert.equal(itemD.PrecioItem, "4500.00");
+  assert.equal(encD.Totales.SubtotalAntesDescuento, "4500.00");
+  assert.equal(encD.Totales.TotalDescuento, "500.00");
+  assert.deepEqual(encD.Totales.ListaDescBonificacion, [{ DescDescuento: "Pronto pago", MontoDescuento: "500.00" }]);
+  assert.equal(encD.Totales.FormasPago[0].Forma, "09");
+  assert.equal(encD.Totales.FormasPago[0].Moneda, "USD");
+  assert.equal(encD.Totales.FormasPago[0].TipoCambio, "50.0000");
+
+  // 5.3 Factura moneda base USD pagada en VES sin IGTF (con TotalesOtraMoneda en VES)
+  const usdEnBs = construirDocumentoElectronicoTfhka({
+    documento_id: 203,
+    tipo_documento: "FACTURA",
+    numero: 107,
+    control_interno: 107,
+    fecha_emision: "2026-11-26",
+    cliente_rif: "J-30111222-3",
+    cliente_nombre: "CLIENTE USD BS C.A.",
+    moneda_base: "USD",
+    subtotal_bs: 500000,
+    iva_bs: 80000,
+    igtf_bs: 0,
+    total_bs: 580000,
+    subtotal_usd: 10000,
+    iva_usd: 1600,
+    igtf_usd: 0,
+    total_usd: 11600,
+    tasa_e8: 50_00000000,
+    renglones: [{ orden: 1, descripcion: "Suscripción USD", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600 }],
+  });
+  const encU = (usdEnBs.DocumentoElectronico as any).Encabezado;
+  assert.equal(encU.IdentificacionDocumento.Moneda, "USD");
+  assert.equal(encU.Totales.TotalAPagar, "116.00");
+  assert.equal(encU.Totales.FormasPago[0].Forma, "02");
+  assert.equal(encU.Totales.FormasPago[0].Moneda, "VES");
+  assert.equal(encU.Totales.FormasPago[0].TipoCambio, "50.0000");
+  assert.equal(encU.TotalesOtraMoneda.Moneda, "VES");
+  assert.equal(encU.TotalesOtraMoneda.TotalAPagar, "5800.00");
+
+  // 5.4 Retención IVA 75% (05), Retención ISLR (06) y Guía de Despacho (04)
+  const retIva = construirComprobanteRetencionIvaTfhka({
+    numero: 201,
+    numero_comprobante: "20261100000001",
+    fecha_emision: "2026-11-26",
+    sujeto_rif: "J-30111222-3",
+    sujeto_nombre: "PROVEEDOR DEMO C.A.",
+    factura_fecha: "2026-11-26",
+    factura_numero: 105,
+    factura_control: "00-00000105",
+    monto_total_bs: 580000,
+    monto_exento_bs: 0,
+    base_imponible_bs: 500000,
+    alicuota_iva_cent: 1600,
+    porcentaje_retencion_cent: 7500,
+    monto_iva_bs: 80000,
+    monto_retenido_bs: 60000,
+  });
+  assert.equal((retIva.DocumentoElectronico as any).Encabezado.IdentificacionDocumento.TipoDocumento, "05");
+  assert.equal((retIva.DocumentoElectronico as any).DetallesRetencion[0].Porcentaje, "0.16");
+  assert.equal((retIva.DocumentoElectronico as any).DetallesRetencion[0].PorcentajeRetencion, "0.75");
+  assert.equal((retIva.DocumentoElectronico as any).DetallesRetencion[0].Percibido, "200.00");
+
+  const retIslr = construirComprobanteRetencionIslrTfhka({
+    numero: 202,
+    numero_comprobante: "20261100000002",
+    fecha_emision: "2026-11-26",
+    sujeto_rif: "J-30111222-3",
+    sujeto_nombre: "PROVEEDOR SERVICIOS C.A.",
+    factura_fecha: "2026-11-26",
+    factura_numero: 105,
+    factura_control: "00-00000105",
+    monto_total_bs: 580000,
+    base_imponible_bs: 500000,
+    porcentaje_retencion_cent: 200,
+    monto_retenido_bs: 10000,
+  });
+  assert.equal((retIslr.DocumentoElectronico as any).Encabezado.IdentificacionDocumento.TipoDocumento, "06");
+  assert.equal((retIslr.DocumentoElectronico as any).Encabezado.TotalesRetencion.TotalISRL, "100.00");
+  assert.equal((retIslr.DocumentoElectronico as any).Encabezado.TotalesRetencion.TipoComprobante, "1");
+
+  const guia = construirGuiaDespachoTfhka({
+    numero: 203,
+    fecha_emision: "2026-11-26",
+    cliente_rif: "J-30111222-3",
+    cliente_nombre: "DESTINATARIO C.A.",
+    motivo_traslado: "Traslado mercancía",
+    origen_producto: "Caracas",
+    destino_producto: "Valencia",
+    conductor_nombre: "Pedro Chofer",
+    conductor_rif: "V-15000000",
+    vehiculo_placa: "AA123BB",
+    renglones: [{ descripcion: "Servidores", cantidad_milli: 2000 }],
+  });
+  assert.equal((guia.DocumentoElectronico as any).Encabezado.IdentificacionDocumento.TipoDocumento, "04");
+  assert.equal((guia.DocumentoElectronico as any).GuiaDespacho.esGuiaDespacho, "1");
+  assert.equal((guia.DocumentoElectronico as any).GuiaDespacho.numeroPlaca, "AA123BB");
+});
+
+// =========================================================================
+// 6. v5.3.0 E2E: /api/ auto-fallback, ConsultaNumeraciones, DescargaArchivo PDF, AplicarRetencion y Suite Certificación 21 pruebas
+// =========================================================================
+test("6. v5.3.0 E2E TFHKA: /api/ auto-prefix, ConsultaNumeraciones, DescargaArchivo PDF, AplicarRetencion y Suite Demo 21 casos (403 en PRODUCCION)", async () => {
+  const db = crearBaseDatosD1(":memory:");
+  const env: Record<string, unknown> = {
+    DB: db,
+    MASTER_KEY: "llave-maestra-tfhka-v530-test",
+    SUPER_ADMIN_EMAIL: "admin@v530.ve",
+  };
+  const jarAdmin: Record<string, string> = {};
+
+  const inst = await reqJson(env, jarAdmin, "/api/instalar", "POST", {
+    nombre: "EXENET CERTIFICACION C.A.",
+    rif: "J-40998877-6",
+    direccion: "Caracas, Venezuela",
+    telefono: "0414-1234567",
+    email: "admin@v530.ve",
+    clave: CLAVE_TEST,
+    tipo_contribuyente: "ESPECIAL",
+    medio_facturacion: "IMPRENTA_DIGITAL",
+  });
+  assert.equal(inst.status, 200);
+  await db.prepare(`UPDATE perfil_emisor SET tasa_bcv = '50.00', tasa_bcv_fecha = ? WHERE id = 1`).bind(new Date().toISOString()).run();
+  await db.prepare(`UPDATE ajustes SET valor = 'REAL' WHERE clave = 'modo'`).run();
+
+  // Configurar TFHKA con Serie="" y Sucursal="" (ambos vacíos opcionales) y host raíz (para probar auto-fallback a /api/)
+  const cfgSave = await reqJson(env, jarAdmin, "/api/sistema/imprenta", "POST", {
+    proveedor_tipo: "THE_FACTORY_HKA",
+    proveedor: "The Factory HKA Venezuela",
+    url: HOST_TFHKA_DEMO,
+    usuario: "demo_v530",
+    clave: "clave-v530-sintetica",
+    ambiente: "PRUEBAS",
+    serie: "",
+    sucursal: "",
+    reservar_previo: false,
+    password: CLAVE_TEST,
+    confirmo: true,
+  });
+  assert.equal(cfgSave.status, 200);
+  assert.equal(cfgSave.data.sucursal, "");
+  assert.equal(cfgSave.data.serie, "");
+
+  const cli = await reqJson(env, jarAdmin, "/api/clientes", "POST", {
+    rif_cedula: "J-30111222-3",
+    nombre_apellido: "CLIENTE DEMO V530 C.A.",
+    direccion: "Caracas",
+    email: "cli@v530.ve",
+  });
+  assert.equal(cli.status, 200);
+
+  const fetchOrig = globalThis.fetch;
+  const emitidosMock = new Set<string>();
+  let ctrlSeq = 900;
+  const rutasVistas: string[] = [];
+  const pdfSintetico = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n";
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    rutasVistas.push(url);
+    const body = init?.body ? JSON.parse(String(init.body)) : null;
+
+    // Simular servidor que expone endpoints bajo /api/... (devolviendo 404 en /Autenticacion sin /api/)
+    if (url === `${HOST_TFHKA_DEMO}Autenticacion`) {
+      return new Response(JSON.stringify({ mensaje: "Not found" }), { status: 404 });
+    }
+    if (url === `${HOST_TFHKA_DEMO}api/Autenticacion`) {
+      return new Response(JSON.stringify({ codigo: "200", token: "eyJ-tfhka-v530-api-prefix-jwt" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === `${HOST_TFHKA_DEMO}api/ConsultaNumeraciones`) {
+      return new Response(
+        JSON.stringify({
+          codigo: "200",
+          resultado: { disponibles: 480, utilizados: 20, totalAsignados: 500, numeraciones: [{ serie: "", disponibles: 480 }] },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (url === `${HOST_TFHKA_DEMO}api/DescargaArchivo`) {
+      return new Response(
+        JSON.stringify({ codigo: "200", resultado: { archivo: btoa(pdfSintetico) } }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (url === `${HOST_TFHKA_DEMO}api/AplicarRetencion`) {
+      return new Response(JSON.stringify({ codigo: "200", mensaje: "Retención aplicada" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url === `${HOST_TFHKA_DEMO}api/Emision`) {
+      const idDoc = body?.DocumentoElectronico?.Encabezado?.IdentificacionDocumento;
+      const tipo = String(idDoc?.TipoDocumento ?? "");
+      const num = String(idDoc?.NumeroDocumento ?? "");
+      const comp = body?.DocumentoElectronico?.Encabezado?.Comprador;
+      const suj = body?.DocumentoElectronico?.Encabezado?.SujetoRetenido;
+      if (!num || (!comp?.NumeroIdentificacion && !suj?.NumeroIdentificacion)) {
+        return new Response(JSON.stringify({ codigo: "400", mensaje: "Faltan campos obligatorios (NumeroDocumento / Receptor)" }), { status: 400 });
+      }
+      const key = `${tipo}:${num}`;
+      if (emitidosMock.has(key)) {
+        return new Response(JSON.stringify({ codigo: "409", mensaje: `Documento ${num} ya fue emitido (duplicado)` }), { status: 409 });
+      }
+      emitidosMock.add(key);
+      ctrlSeq++;
+      return new Response(
+        JSON.stringify({
+          codigo: "200",
+          resultado: {
+            numeroControl: `00-${String(ctrlSeq).padStart(8, "0")}`,
+            fechaAsignacion: "26/11/2026",
+            horaAsignacion: "11:30:00 AM",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    return new Response(JSON.stringify({ error: `Ruta inesperada: ${url}` }), { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    // 6.1 Probar conexión -> auto-descubre /api/ y consulta ConsultaNumeraciones (480 disponibles de 500)
+    const probar = await reqJson(env, jarAdmin, "/api/sistema/imprenta/probar", "POST", {});
+    assert.equal(probar.status, 200, `Probar falló: ${JSON.stringify(probar.data)}`);
+    assert.equal(probar.data.api_prefix, "api/");
+    assert.equal(probar.data.numeraciones?.disponibles, 480);
+    assert.equal(probar.data.numeraciones?.total_asignados, 500);
+    assert.ok(String(probar.data.mensaje).includes("480 N.º de control disponibles"));
+
+    // 6.2 Endpoint directo POST /api/sistema/imprenta/numeraciones
+    const numRes = await reqJson(env, jarAdmin, "/api/sistema/imprenta/numeraciones", "POST", {});
+    assert.equal(numRes.status, 200);
+    assert.equal(numRes.data.numeraciones?.disponibles, 480);
+
+    // 6.3 Emitir 1 factura real y descargar su PDF oficial vía GET /api/documentos/:id/imprenta-pdf
+    const bor = await reqJson(env, jarAdmin, "/api/documentos", "POST", {
+      tipo: "FACTURA",
+      cliente_id: cli.data.id,
+      lineas: [{ tipo: "SERVICIO", descripcion: "Servicio v530", cantidad: "1", precio_usd: "25,00", alicuota_iva: 16 }],
+    });
+    const em = await reqJson(env, jarAdmin, `/api/documentos/${bor.data.id}/emitir`, "POST", {});
+    assert.equal(em.status, 200);
+    assert.ok(em.data.control_fiscal);
+
+    const cookieHdr = Object.entries(jarAdmin)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
+    const pdfHttp = await app.fetch(
+      new Request(`http://local/api/documentos/${bor.data.id}/imprenta-pdf`, {
+        method: "GET",
+        headers: { Cookie: cookieHdr },
+      }),
+      env
+    );
+    assert.equal(pdfHttp.status, 200);
+    assert.equal(pdfHttp.headers.get("content-type"), "application/pdf");
+    const pdfTxt = await pdfHttp.text();
+    assert.ok(pdfTxt.startsWith("%PDF-1.4"), "Debe retornar los bytes %PDF reales desde DescargaArchivo");
+
+    // 6.4 AplicarRetencion vía conector
+    const cfgLive = await (await import("../src/imprenta-cg")).leerConfigImprentaCompleta(db, env);
+    const retApp = await aplicarRetencionTfhka(db, env, cfgLive, {
+      numero_documento: 1,
+      numero_control: em.data.control_fiscal,
+      base_imponible_bs: 125000,
+      numero_comprobante_retencion: "20261100000099",
+      fecha_emision_cr: "2026-11-26",
+      total_iva_bs: 20000,
+      total_retenido_bs: 15000,
+    });
+    assert.equal(retApp.ok, true);
+
+    // 6.5 Ejecutar Suite de Certificación Demo (21 pruebas) sin ensuciar la tabla local documentos
+    const docsAntes = (await db.prepare(`SELECT COUNT(*) AS n FROM documentos`).first<{ n: number }>())?.n ?? 0;
+    const cert = await reqJson(env, jarAdmin, "/api/sistema/imprenta/certificar-tfhka", "POST", {
+      numero_inicio: 500,
+      email_prueba: "cert@v530.ve",
+      incluir_errores: true,
+      password: CLAVE_TEST,
+      confirmo: true,
+    });
+    assert.equal(cert.status, 200, `Certificación falló: ${JSON.stringify(cert.data)}`);
+    assert.equal(cert.data.ok, true);
+    assert.equal(cert.data.resumen.total, 21);
+    assert.equal(cert.data.resumen.aprobados, 19);
+    assert.equal(cert.data.resumen.errores_controlados_ok, 2);
+    assert.equal(cert.data.resumen.fallidos, 0);
+    assert.ok(String(cert.data.reporte_texto).includes("21/21 OK"));
+
+    const docsDespues = (await db.prepare(`SELECT COUNT(*) AS n FROM documentos`).first<{ n: number }>())?.n ?? 0;
+    assert.equal(docsDespues, docsAntes, "La Suite de Certificación Demo JAMÁS debe insertar filas en documentos locales");
+
+    // 6.6 Cambiar a PRODUCCION -> certificar-tfhka DEBE bloquearse con HTTP 403
+    const cfgProd = await reqJson(env, jarAdmin, "/api/sistema/imprenta", "POST", {
+      proveedor_tipo: "THE_FACTORY_HKA",
+      proveedor: "The Factory HKA Venezuela",
+      url: HOST_TFHKA_PROD,
+      usuario: "prod_v530",
+      clave: "clave-prod-sintetica",
+      ambiente: "PRODUCCION",
+      serie: "",
+      sucursal: "",
+      password: CLAVE_TEST,
+      confirmo: true,
+    });
+    assert.equal(cfgProd.status, 200);
+
+    const certProd = await reqJson(env, jarAdmin, "/api/sistema/imprenta/certificar-tfhka", "POST", {
+      numero_inicio: 600,
+      password: CLAVE_TEST,
+      confirmo: true,
+    });
+    assert.equal(certProd.status, 403, "En PRODUCCION la suite de certificación debe estar estrictamente bloqueada (403)");
+  } finally {
+    globalThis.fetch = fetchOrig;
+  }
+});
+
+

@@ -1,7 +1,8 @@
 // Entrada de la aplicación: instalador, login, inicio, ajustes y panel Multi-Tenant Súper Admin.
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, montarTurnstile, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
-import { tarjetaMedio, enlazarMedio, renderVisorImprentaHtml } from "./medio.js?v=20261126v540";
+import { tarjetaMedio, enlazarMedio } from "./medio.js?v=20261127v542";
+import { estadoSemaforoTasaBcv } from "./dinero.js?v=20261127v541";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
 import { vistaCatalogo } from "./catalogo.js";
@@ -64,9 +65,9 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.4.0)</span>
-  <p class="suave">Descarga el paquete completo <b>v5.4.0 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>entrega exclusiva del PDF Fiscal Oficial (CG y The Factory HKA)</b> en Descargar, Compartir y Correo, <b>Libros Contables SENIAT auditados al centavo</b> (Ventas, Compras, Resumen IVA/Alcaldía, IGTF, ISLR, Cierre Z y Cierre Mensual CSV) y <b>Suite de Certificación 1 clic</b>:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.4.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.4.2)</span>
+  <p class="suave">Descarga el paquete completo <b>v5.4.2 (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>correo estricto del cliente en facturas CG/HKA (jamás usa el correo del emisor)</b>, <b>Suite de Certificación exclusiva Súper Admin</b>, <b>semáforo de Tasa BCV</b>, panel de Inicio limpio, <b>entrega exclusiva del PDF Fiscal Oficial</b> y <b>Libros Contables SENIAT auditados al centavo</b>:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.4.2)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-tfhka.ts">⬇️ src/imprenta-tfhka.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="imprenta-cg.ts">⬇️ src/imprenta-cg.ts</button>
@@ -592,8 +593,12 @@ function vistaLogin() {
 function vistaInicio() {
   const n = estado.negocio || {}, tasa = Number(n.tasa_bcv) || 0;
   const modoTasa = n.tasa_bcv_modo === "MANUAL" ? "MANUAL" : "AUTOMATICO";
+  const semTasa = estadoSemaforoTasaBcv(tasa, n.tasa_bcv_fecha);
   const regInfo = infoRegimen(n.tipo_contribuyente);
   const esFormal = n.tipo_contribuyente === "FORMAL";
+  const subTasa = n.tasa_bcv_fecha
+    ? `${semTasa.detalle ? `${semTasa.detalle} · ` : ""}Actualizada: ${fechaLocal(n.tasa_bcv_fecha)}`
+    : semTasa.detalle;
   raiz.innerHTML = `
     ${barraSuper()}
     <header class="encabezado">${logoHeader(n)}<h1>Hola, ${esc(n.nombre_razon_social || "Mi Negocio")}</h1>
@@ -604,13 +609,16 @@ function vistaInicio() {
     ${estado.seguridad?.ultimo_error_r2 ? `<section class="aviso-anulado" data-destino="#/inquilinos/salud">☁️ <b>Alerta de respaldo R2 (${esc(estado.seguridad.ultimo_error_r2.tipo || "cron")}):</b> ${esc(estado.seguridad.ultimo_error_r2.mensaje || "Error en la última ejecución.")} <small>(${esc(estado.seguridad.ultimo_error_r2.fecha || "")})</small></section>` : ""}
     ${n.medio_facturacion === "SIN_DEFINIR" && puede("super") ? `<section class="aviso-control" data-destino="#/ajustes">⚠️ Define la <b>modalidad de facturación digital (SNAT/2024/000102)</b> en Ajustes.</section>` : ""}
     <div class="inicio-resumen">
-      <section class="tarjeta tasa">
+      <section class="tarjeta tasa ${semTasa.clase}" id="inicio-tasa-card" data-tasa-estado="${semTasa.estado}">
         <div id="tasa-vista">
-          <span class="etiqueta">🟢 TASA OFICIAL BCV (ART. 128 LEY BCV)</span><br>
+          <span class="etiqueta">${semTasa.punto} TASA OFICIAL BCV (ART. 128 LEY BCV)</span><br>
           <strong>${tasa ? `Bs. ${bs(tasa)}` : "Sin definir"}</strong>
-          <span class="insignia ${modoTasa === "MANUAL" ? "ambar" : "verde"}" id="tasa-modo-badge" style="margin-left:8px;vertical-align:middle">${modoTasa === "MANUAL" ? "✍️ Manual" : "🔄 Automático BCV"}</span>
-          <span class="insignia ${regInfo.insignia}" id="inicio-regimen-badge" style="margin-left:6px;vertical-align:middle">${esc(regInfo.corto)}</span><br>
-          <small class="suave">${n.tasa_bcv_fecha ? `Actualizada: ${fechaLocal(n.tasa_bcv_fecha)}` : "Sincroniza o define la tasa en Ajustes"}</small>
+          <div class="tasa-insignias">
+            <span class="insignia ${semTasa.insignia}" id="tasa-estado-badge">${esc(semTasa.etiqueta)}</span>
+            <span class="insignia ${modoTasa === "MANUAL" ? "ambar" : "verde"}" id="tasa-modo-badge">${modoTasa === "MANUAL" ? "✍️ Manual" : "🔄 Automático BCV"}</span>
+            <span class="insignia ${regInfo.insignia}" id="inicio-regimen-badge">${esc(regInfo.corto)}</span>
+          </div>
+          <small class="suave">${esc(subTasa)}</small>
         </div>
         ${puede("tasa") ? `<button class="boton chico contorno-azul" type="button" id="tasa-ir-ajustes" data-destino="#/ajustes" data-ayuda="Configurar tasa BCV automática o manual en Ajustes">⚙️ Ajustes</button>` : ""}
       </section>
@@ -619,7 +627,6 @@ function vistaInicio() {
         : puede("informes_contador") ? `<section class="tarjeta ganancia" data-destino="#/informes" data-nombre="Libros SENIAT"><span class="etiqueta">${esFormal ? "📊 RELACIÓN DE VENTAS Y COMPRAS (FORMAL)" : "📊 LIBROS CONTABLES (ART. 70 Y 72 RLIVA)"}</span><strong>${esFormal ? "Relación de Ventas, Compras e ISLR" : "Ventas, Compras y Resumen IVA"}</strong>
         <small class="suave">Descarga en PDF o Excel (CSV).</small></section>` : ""}
     </div>
-    ${n.medio_facturacion === "IMPRENTA_DIGITAL" ? `<div id="inicio-visor-imprenta"></div>` : ""}
     <div class="rejilla">
       ${puede("caja") ? `<button class="accion azul" data-destino="#/factura" data-nombre="Factura" data-ayuda="Presupuestos, facturas, notas de crédito y débito"><span>🧾</span>Factura<small>Facturas y presupuestos</small></button>
       <button class="accion ambar" data-destino="#/clientes" data-nombre="Clientes" data-ayuda="Tus clientes, RIF y correo"><span>👥</span>Clientes<small>Tus clientes</small></button>
@@ -633,16 +640,6 @@ function vistaInicio() {
   $("#ajustes").addEventListener("click", () => (location.hash = "#/ajustes"));
   enlazarBotonesPwa(raiz, aviso);
   activar();
-  if (n.medio_facturacion === "IMPRENTA_DIGITAL") {
-    api("imprenta/visor").then((v) => {
-      const box = $("#inicio-visor-imprenta");
-      if (!box || !v?.resumen) return;
-      box.innerHTML = renderVisorImprentaHtml(v, { compacto: true });
-      box.querySelector("[data-destino]")?.addEventListener("click", () => {
-        if (puede("admin")) location.hash = "#/ajustes";
-      });
-    }).catch(() => {});
-  }
   if (puede("admin")) api("documentos/resumen").then((r) => {
     $("#gan-total").textContent = usd(r.total); $("#gan-det").textContent = `🟣 Servicios: ${usd(r.servicios)} · 🔵 Productos: ${usd(r.productos)} · Toca para ver Libros SENIAT`;
   }).catch(() => {});

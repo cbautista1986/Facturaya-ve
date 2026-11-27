@@ -715,13 +715,38 @@ sistema.post("/imprenta/numeraciones", async (c) => {
   return c.json({ ok: true, numeraciones: num });
 });
 
+async function verificarClaveSuperCert(
+  rawDb: D1Database,
+  db: D1Database,
+  yo: { id: number; email: string },
+  password: string
+): Promise<boolean> {
+  const emailLow = String(yo.email || "").trim().toLowerCase();
+  const filaRaw = emailLow
+    ? await rawDb
+        .prepare(`SELECT password_hash FROM usuarios WHERE lower(email) = ? AND activo = 1 LIMIT 1`)
+        .bind(emailLow)
+        .first<{ password_hash: string }>()
+        .catch(() => null)
+    : null;
+  if (filaRaw?.password_hash) return verificarClave(password, filaRaw.password_hash);
+  const filaLocal = await db
+    .prepare(`SELECT password_hash FROM usuarios WHERE id = ?`)
+    .bind(yo.id)
+    .first<{ password_hash: string }>()
+    .catch(() => null);
+  return Boolean(filaLocal?.password_hash && (await verificarClave(password, filaLocal.password_hash)));
+}
+
 sistema.post("/imprenta/certificar-tfhka", async (c) => {
-  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const db = c.env.DB, rawDb = c.get("rawDb") || db, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (!esSuperAdmin(yo.rol, yo.email, envObj)) {
+    return falla(c, 403, "La Suite de Certificación de Imprenta Digital es exclusiva del Súper Administrador de la plataforma.");
+  }
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla de confirmación para ejecutar la suite de certificación Demo en The Factory HKA.");
   }
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) {
+  if (!(await verificarClaveSuperCert(rawDb, db, yo, String(b.password ?? "")))) {
     return falla(c, 400, "La contraseña no es correcta.");
   }
 
@@ -747,7 +772,7 @@ sistema.post("/imprenta/certificar-tfhka", async (c) => {
     numero_inicio: numInicio,
     rif_emisor: perfil?.rif,
     razon_emisor: perfil?.nombre_razon_social,
-    email_prueba: texto(b.email_prueba, 120) || perfil?.email || undefined,
+    email_prueba: texto(b.email_prueba, 120) || undefined,
     incluir_errores: incluirErrores,
   });
 
@@ -764,12 +789,14 @@ sistema.post("/imprenta/certificar-tfhka", async (c) => {
 });
 
 sistema.post("/imprenta/certificar-cg", async (c) => {
-  const db = c.env.DB, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  const db = c.env.DB, rawDb = c.get("rawDb") || db, b = await leerJson(c), yo = c.get("usuario"), envObj = c.env as unknown as Record<string, unknown>;
+  if (!esSuperAdmin(yo.rol, yo.email, envObj)) {
+    return falla(c, 403, "La Suite de Certificación de Imprenta Digital es exclusiva del Súper Administrador de la plataforma.");
+  }
   if (b.confirmo !== true && b.confirmo !== "on" && b.confirmo !== 1) {
     return falla(c, 400, "Marca la casilla de confirmación para ejecutar la suite de certificación en CG La Imprenta Digital (Calidad).");
   }
-  const u = await db.prepare(`SELECT password_hash FROM usuarios WHERE id = ?`).bind(yo.id).first<{ password_hash: string }>();
-  if (!u || !(await verificarClave(String(b.password ?? ""), u.password_hash))) {
+  if (!(await verificarClaveSuperCert(rawDb, db, yo, String(b.password ?? "")))) {
     return falla(c, 400, "La contraseña no es correcta.");
   }
 
@@ -796,7 +823,7 @@ sistema.post("/imprenta/certificar-cg", async (c) => {
     numero_inicio: numInicio,
     rif_emisor: perfil?.rif,
     razon_emisor: perfil?.nombre_razon_social,
-    email_prueba: texto(b.email_prueba, 120) || perfil?.email || undefined,
+    email_prueba: texto(b.email_prueba, 120) || undefined,
     incluir_anulacion: incluirAnulacion,
     incluir_errores: incluirErrores,
   });

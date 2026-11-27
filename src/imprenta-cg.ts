@@ -352,7 +352,7 @@ export function construirPayloadFacturaCg(
     ...(notaLimpia ? { descripcionFactura: notaLimpia } : {}),
     documentoIdentidadCliente: limpiarDocumentoIdentidadCg(payload.cliente_rif),
     nombreRazonSocialCliente: limpiarTextoCg(payload.cliente_nombre, 120, "Cliente"),
-    correoCliente: normalizarCorreoCg(payload.cliente_email, payload.emisor?.email),
+    correoCliente: normalizarCorreoCg(payload.cliente_email),
     direccionCliente: limpiarTextoCg(payload.cliente_direccion, 200, "Venezuela"),
     telefonoCliente: normalizarTelefonoCg(payload.cliente_telefono),
     tasa_del_dia: formatearTasaCg(payload.tasa_e8),

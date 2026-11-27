@@ -112,3 +112,96 @@ export function aRifSeniat(valor) {
   return limpioRif;
 }
 
+// Semáforo visual de la Tasa Oficial BCV en hora de Venezuela (Caracas UTC-4, sin horario de verano):
+// - verde: día hábil (lun–vie) con tasa actualizada hoy.
+// - amarillo: fin de semana (sáb–dom) con tasa vigente desde el viernes (el BCV no publica sábados ni domingos).
+// - rojo: tasa sin definir, sin fecha válida o desactualizada (día hábil sin actualizar hoy, o fin de semana sin tasa del viernes).
+export function estadoSemaforoTasaBcv(tasa, tasaFecha, ahoraMs = Date.now()) {
+  const numTasa = Number(tasa);
+  if (!Number.isFinite(numTasa) || numTasa <= 0) {
+    return {
+      estado: "rojo",
+      clase: "tasa-rojo",
+      punto: "🔴",
+      insignia: "rojo",
+      etiqueta: "Sin definir",
+      detalle: "Define o sincroniza la tasa oficial en Ajustes",
+    };
+  }
+  let tasaMs = 0;
+  if (tasaFecha instanceof Date) {
+    tasaMs = tasaFecha.getTime();
+  } else if (tasaFecha != null && String(tasaFecha).trim() !== "") {
+    const s = String(tasaFecha).trim();
+    if (/^\d{9,13}$/.test(s)) {
+      const n = Number(s);
+      tasaMs = s.length <= 10 ? n * 1000 : n;
+    } else {
+      const iso = s.replace(" ", "T");
+      tasaMs = Date.parse(/(Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`);
+    }
+  }
+  if (!Number.isFinite(tasaMs) || tasaMs <= 0) {
+    return {
+      estado: "rojo",
+      clase: "tasa-rojo",
+      punto: "🔴",
+      insignia: "rojo",
+      etiqueta: "Sin actualizar",
+      detalle: "Sin fecha de actualización · sincroniza en Ajustes",
+    };
+  }
+
+  const OFFSET_VET_MS = 4 * 60 * 60 * 1000;
+  const DIA_MS = 24 * 60 * 60 * 1000;
+  const ahoraVet = new Date(ahoraMs - OFFSET_VET_MS);
+  const tasaVet = new Date(tasaMs - OFFSET_VET_MS);
+  const hoyIso = ahoraVet.toISOString().slice(0, 10);
+  const tasaIso = tasaVet.toISOString().slice(0, 10);
+  const diaSemana = ahoraVet.getUTCDay(); // 0=Dom, 1=Lun .. 5=Vie, 6=Sáb
+
+  if (diaSemana === 6 || diaSemana === 0) {
+    const diasDesdeViernes = diaSemana === 6 ? 1 : 2;
+    const viernesIso = new Date(ahoraMs - OFFSET_VET_MS - diasDesdeViernes * DIA_MS).toISOString().slice(0, 10);
+    if (tasaIso >= viernesIso) {
+      return {
+        estado: "amarillo",
+        clase: "tasa-amarillo",
+        punto: "🟡",
+        insignia: "ambar",
+        etiqueta: "Fin de semana",
+        detalle: "Fin de semana (BCV): rige la tasa oficial del viernes",
+      };
+    }
+    return {
+      estado: "rojo",
+      clase: "tasa-rojo",
+      punto: "🔴",
+      insignia: "rojo",
+      etiqueta: "Sin actualizar",
+      detalle: "Sin actualizar desde antes del viernes",
+    };
+  }
+
+  if (tasaIso >= hoyIso) {
+    return {
+      estado: "verde",
+      clase: "tasa-verde",
+      punto: "🟢",
+      insignia: "verde",
+      etiqueta: "Al día",
+      detalle: "",
+    };
+  }
+
+  return {
+    estado: "rojo",
+    clase: "tasa-rojo",
+    punto: "🔴",
+    insignia: "rojo",
+    etiqueta: "Sin actualizar",
+    detalle: "Tasa sin actualizar hoy · revisa en Ajustes",
+  };
+}
+
+

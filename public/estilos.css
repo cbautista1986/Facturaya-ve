@@ -71,6 +71,10 @@ a.boton { text-decoration: none; }
 .icono { border-radius: 50%; cursor: pointer; }
 
 .tasa { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-left: 6px solid var(--verde); }
+.tasa.tasa-verde { border-left-color: var(--verde); }
+.tasa.tasa-amarillo { border-left-color: #F59E0B; }
+.tasa.tasa-rojo { border-left-color: var(--rojo); }
+.tasa-insignias { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 4px; }
 .tasa strong { font-size: 22px; }
 .tasa form { flex: 1; display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
 .tasa form .etiqueta, .tasa form .error { grid-column: 1 / -1; margin: 0; }

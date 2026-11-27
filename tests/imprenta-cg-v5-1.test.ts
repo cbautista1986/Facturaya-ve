@@ -1154,7 +1154,7 @@ test("5. Compatibilidad universal CG: cualquier host/serie/usuario, saneamiento 
     assert.equal(invoiceLog.length, 2);
     assert.equal(invoiceLog[0].host, "https://calidad.cgimprenta.digital");
     assert.equal(invoiceLog[0].serie, "A");
-    assert.equal(invoiceLog[0].correo, "dueno-a@tenant-a.test");
+    assert.equal(invoiceLog[0].correo, "sin-correo@facturayave.com");
     assert.equal(invoiceLog[0].tel, "00000000000");
     assert.equal(invoiceLog[0].auth, "Bearer tok-calidad.cgimprenta.digital-api-tenant-a@cg.invalid");
 

@@ -5,6 +5,9 @@ import { crearBaseDatosD1 } from "./d1";
 import { construirModelo, aCsv } from "../public/informe-tabla.js";
 import { enviarCierreMensualInquilino } from "../src/tasa-bcv";
 import { cifrarSecreto } from "../src/cifrado";
+import { estadoSemaforoTasaBcv } from "../public/dinero.js";
+import { construirPayloadFacturaCg } from "../src/imprenta-cg";
+import { construirDocumentoElectronicoTfhka } from "../src/imprenta-tfhka";
 
 const CLAVE_TEST = "ClaveLibrosOficial2026!";
 
@@ -486,3 +489,129 @@ test("2. Auditoría Contable Total v5.4.0: Libros de Ventas, Compras, Resumen IV
     globalThis.fetch = origFetch;
   }
 });
+
+test("3. Semáforo de Tasa Oficial BCV (v5.4.1): verde al día, amarillo fin de semana, rojo sin actualizar y frontera UTC-4 Caracas", () => {
+  // Viernes 27/11/2026 08:00 AM VET = 2026-11-27T12:00:00Z
+  const vieManana = Date.parse("2026-11-27T12:00:00Z");
+  // Actualizada el mismo viernes 2:00 AM VET (06:00:00Z) -> VERDE
+  const rVerde = estadoSemaforoTasaBcv(926.36, "2026-11-27 06:00:00", vieManana);
+  assert.equal(rVerde.estado, "verde");
+  assert.equal(rVerde.clase, "tasa-verde");
+  assert.equal(rVerde.punto, "🟢");
+
+  // Viernes con tasa del jueves -> ROJO (sin actualizar hoy)
+  const rVieVieja = estadoSemaforoTasaBcv(920.1, "2026-11-26 22:00:00", vieManana);
+  assert.equal(rVieVieja.estado, "rojo");
+  assert.equal(rVieVieja.clase, "tasa-rojo");
+  assert.equal(rVieVieja.punto, "🔴");
+
+  // Sin tasa o sin fecha -> ROJO
+  assert.equal(estadoSemaforoTasaBcv(0, "2026-11-27 06:00:00", vieManana).estado, "rojo");
+  assert.equal(estadoSemaforoTasaBcv(926.36, null, vieManana).estado, "rojo");
+
+  // Sábado 28/11/2026 10:00 AM VET (14:00:00Z) con tasa del viernes -> AMARILLO (fin de semana)
+  const sabado = Date.parse("2026-11-28T14:00:00Z");
+  const rSab = estadoSemaforoTasaBcv(926.36, "2026-11-27 06:00:00", sabado);
+  assert.equal(rSab.estado, "amarillo");
+  assert.equal(rSab.clase, "tasa-amarillo");
+  assert.equal(rSab.punto, "🟡");
+
+  // Sábado con tasa sincronizada el mismo sábado -> AMARILLO (sigue siendo fin de semana BCV)
+  assert.equal(estadoSemaforoTasaBcv(926.36, "2026-11-28 06:00:00", sabado).estado, "amarillo");
+
+  // Domingo 29/11/2026 03:00 PM VET (19:00:00Z) con tasa del viernes -> AMARILLO
+  const domingo = Date.parse("2026-11-29T19:00:00Z");
+  assert.equal(estadoSemaforoTasaBcv(926.36, "2026-11-27 22:00:00", domingo).estado, "amarillo");
+
+  // Domingo pero la última actualización fue el jueves (ni siquiera se actualizó el viernes) -> ROJO
+  assert.equal(estadoSemaforoTasaBcv(920.1, "2026-11-26 22:00:00", domingo).estado, "rojo");
+
+  // Lunes 30/11/2026 08:30 AM VET (12:30:00Z) todavía con tasa del viernes -> ROJO hasta que actualice lunes
+  const lunes = Date.parse("2026-11-30T12:30:00Z");
+  assert.equal(estadoSemaforoTasaBcv(926.36, "2026-11-27 22:00:00", lunes).estado, "rojo");
+
+  // Frontera medianoche UTC vs Caracas: 2026-11-28T02:30:00Z es Viernes 27/11 10:30 PM VET -> VERDE (aún es viernes en Venezuela)
+  const vieNocheVet = Date.parse("2026-11-28T02:30:00Z");
+  assert.equal(estadoSemaforoTasaBcv(926.36, "2026-11-27 06:00:00", vieNocheVet).estado, "verde");
+});
+
+test("4. Aislamiento de correo del cliente en CG/TFHKA (jamás filtra correo del emisor) y RBAC exclusivo SUPER_ADMIN en Suite de Certificación (v5.4.2)", async () => {
+  // 4.1 Payloads CG y TFHKA: cliente SIN correo usa sin-correo@facturayave.com (JAMÁS el correo del emisor)
+  const basePayload: any = {
+    documento_id: 13,
+    tipo_documento: "FACTURA",
+    numero: 13,
+    control_interno: 13,
+    fecha_emision: "2026-11-27",
+    cliente_rif: "J-00179817-0",
+    cliente_nombre: "LABORATORIO AVILAB",
+    cliente_email: null,
+    cliente_direccion: "Caracas",
+    cliente_telefono: "584123169520",
+    condicion: "CONTADO",
+    emisor: { rif: "J-18529773-6", nombre_razon_social: "FACTURAYA", email: "dueno-privado@emisor.com" },
+    tasa_e8: 50_00000000,
+    subtotal_bs: 500000,
+    iva_bs: 80000,
+    igtf_bs: 0,
+    total_bs: 580000,
+    subtotal_usd: 10000,
+    iva_usd: 1600,
+    igtf_usd: 0,
+    total_usd: 11600,
+    renglones: [{ orden: 1, descripcion: "Configuración router", cantidad_milli: 1000, precio_usd: 10000, alicuota_cent: 1600, monto_usd: 10000, iva_usd: 1600, monto_bs: 500000, iva_bs: 80000 }],
+  };
+  const cgSinCorreo: any = construirPayloadFacturaCg(basePayload, "A");
+  assert.equal(cgSinCorreo.facturas[0].correoCliente, "sin-correo@facturayave.com");
+  assert.notEqual(cgSinCorreo.facturas[0].correoCliente, "dueno-privado@emisor.com");
+
+  const tfSinCorreo: any = construirDocumentoElectronicoTfhka(basePayload, { serie: "" });
+  assert.equal(tfSinCorreo.DocumentoElectronico.Encabezado.Comprador.Correo[0], "sin-correo@facturayave.com");
+  assert.equal(tfSinCorreo.DocumentoElectronico.Encabezado.Comprador.Notificar, "No");
+
+  // Con correo real del cliente, envía estrictamente el correo del cliente
+  const conCorreo = { ...basePayload, cliente_email: "pagos@avilab.ve" };
+  assert.equal((construirPayloadFacturaCg(conCorreo, "A") as any).facturas[0].correoCliente, "pagos@avilab.ve");
+  const tfConCorreo: any = construirDocumentoElectronicoTfhka(conCorreo, { serie: "" });
+  assert.equal(tfConCorreo.DocumentoElectronico.Encabezado.Comprador.Correo[0], "pagos@avilab.ve");
+  assert.equal(tfConCorreo.DocumentoElectronico.Encabezado.Comprador.Notificar, "Si");
+
+  // 4.2 RBAC: un usuario ADMIN normal NO puede ejecutar certificar-cg ni certificar-tfhka (HTTP 403)
+  const { env, jar: jarSuper } = await prepararInquilinoReal({ tipo_contribuyente: "ORDINARIO", medio: "IMPRENTA_DIGITAL" });
+  const crearAdm = await reqJson(env, jarSuper, "/api/usuarios", "POST", {
+    nombre: "Admin Cliente",
+    email: "admin-cliente@prueba.ve",
+    rol: "ADMIN",
+  });
+  assert.equal(crearAdm.status, 200, `Crear ADMIN falló: ${JSON.stringify(crearAdm.data)}`);
+  const claveTempAdm = String(crearAdm.data.clave_temporal ?? "");
+  assert.ok(claveTempAdm.length >= 6);
+
+  const jarAdmin: Record<string, string> = {};
+  const loginAdm = await reqJson(env, jarAdmin, "/api/login", "POST", {
+    email: "admin-cliente@prueba.ve",
+    clave: claveTempAdm,
+  });
+  assert.equal(loginAdm.status, 200);
+  const cambioAdm = await reqJson(env, jarAdmin, "/api/cuenta/clave", "POST", {
+    actual: claveTempAdm,
+    nueva: "ClaveAdminCliente2026!",
+  });
+  assert.equal(cambioAdm.status, 200);
+
+  const rCg403 = await reqJson(env, jarAdmin, "/api/sistema/imprenta/certificar-cg", "POST", {
+    numero_inicio: 300,
+    password: "ClaveAdminCliente2026!",
+    confirmo: true,
+  });
+  assert.equal(rCg403.status, 403);
+
+  const rTf403 = await reqJson(env, jarAdmin, "/api/sistema/imprenta/certificar-tfhka", "POST", {
+    numero_inicio: 300,
+    password: "ClaveAdminCliente2026!",
+    confirmo: true,
+  });
+  assert.equal(rTf403.status, 403);
+});
+
+

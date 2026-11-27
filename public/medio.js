@@ -1,5 +1,5 @@
 // Tarjeta MODALIDAD DE FACTURACIÓN DIGITAL + CG La Imprenta Digital (SNAT/INTI/012) + Visor de Plan y Consumo.
-import { $, esc, api, aviso, campo, enviar, ERROR } from "./comun.js";
+import { $, esc, api, aviso, campo, enviar, puede, ERROR } from "./comun.js";
 
 const dia = (d) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Caracas" }).format(d);
 const fechaDoc = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
@@ -213,7 +213,7 @@ export async function enlazarMedio(alCambiar) {
         ${campo("imp_serie", esTfhka ? "Serie (opcional en HKA; dejar vacío si no usas serie)" : "Serie de facturación (ej: A)", esTfhka ? (imprenta.serie || "") : (imprenta.serie || "A"), "text", `maxlength="10" autocomplete="off" placeholder="${esTfhka ? "(vacío)" : "A"}"`)}
         <div id="imp-tfhka-extra" ${esTfhka ? "" : "hidden"}>
           ${campo("imp_sucursal", "Sucursal TFHKA (opcional — dejar vacío)", imprenta.sucursal || "", "text", 'maxlength="10" autocomplete="off" placeholder="(vacío)"')}
-          <label class="opcion"><input type="checkbox" id="imp_reservar_previo" ${imprenta.reservar_previo ? "checked" : ""}> 📋 Reservar numeración previa (<code>AsignarNumeraciones</code>) — opcional; en Demo/Prod TFHKA asigna el N.º de Control automáticamente al emitir</label>
+          <label class="opcion"><input type="checkbox" id="imp_reservar_previo" ${imprenta.reservar_previo ? "checked" : ""}> <span>📋 Reservar numeración previa (<code>AsignarNumeraciones</code>) — opcional; en Demo/Prod TFHKA asigna el N.º de Control automáticamente al emitir</span></label>
         </div>
 
         <hr><span class="etiqueta">📦 PLAN CONTRATADO Y FECHA PAGADA (VISOR DEL CLIENTE)</span>
@@ -230,20 +230,20 @@ export async function enlazarMedio(alCambiar) {
         ${campo("imp_password", "🔒 Tu contraseña (Administrador o Súper Admin)", "", "password", 'required autocomplete="current-password"')}
         <label class="opcion"><input type="checkbox" id="imp-confirmo" required> ☑️ Estoy seguro de guardar o modificar la API y el plan de Imprenta Digital de este negocio.</label>
         ${ERROR}<button class="boton chico" type="submit" id="imp-ir" disabled>Guardar API y Plan de Imprenta</button></form>
-      ${(esTfhka || esCg) && imprenta.ambiente === "PRUEBAS" && imprenta.clave_configurada ? `<hr>
+      ${puede("super") && (esTfhka || esCg) && imprenta.ambiente === "PRUEBAS" && imprenta.clave_configurada ? `<hr>
         <details id="imp-cert-box">
           <summary style="cursor:pointer;font-weight:700">${esCg
-            ? "🧪 Suite de Certificación Calidad (CG La Imprenta Digital · 13 pruebas)"
-            : "🧪 Suite de Certificación Demo (The Factory HKA · 21 pruebas oficiales)"}</summary>
+            ? "🧪 Suite de Certificación Calidad (CG La Imprenta Digital · 13 pruebas · Solo Súper Admin)"
+            : "🧪 Suite de Certificación Demo (The Factory HKA · 21 pruebas · Solo Súper Admin)"}</summary>
           <p class="suave" style="margin:8px 0">${esCg
             ? "Ejecuta los 13 escenarios de certificación contra el ambiente de Calidad de CG La Imprenta Digital (IVA 16%, 8%, 31%, Exento, Mixta, Multi-renglón, Nota de Crédito Total, Nota de Crédito Parcial por productos, Nota de Débito, Anulación, Consulta en línea y 2 validaciones de error) <b>exclusivamente en ambiente Pruebas/Calidad</b>, sin tocar tus facturas ni correlativos locales."
             : "Ejecuta los 21 escenarios oficiales requeridos por The Factory HKA Venezuela (IVA 16%, 8%, 31%, Exento, Percibido, Mixta, USD+VES, USD pagada en Bs, IGTF 3%, Descuento por renglón y global, 25 ítems, NC Total/Parcial, ND, Retención IVA 75%/100%, ISLR, Guía de Despacho y 2 validaciones de error) <b>exclusivamente en ambiente Demo</b>, sin tocar tus facturas ni correlativos locales."}</p>
           <form id="imp-cert-form">
             ${campo("imp_cert_inicio", esCg ? "Número de documento inicial para la batería Calidad CG" : "Número de documento inicial para la batería Demo", "100", "number", 'required min="1" max="99999000" step="1"')}
-            ${campo("imp_cert_email", "Correo de prueba para el comprador (opcional)", "", "email", 'maxlength="120" placeholder="tu@correo.com"')}
-            ${esCg ? `<label class="opcion"><input type="checkbox" id="imp_cert_anulacion" checked> Incluir prueba de anulación fiscal (<code>cancel_invoice</code>)</label>` : ""}
+            ${campo("imp_cert_email", "Correo de prueba para el comprador (opcional; vacío = certificacion@facturayave.com)", "", "email", 'maxlength="120" placeholder="certificacion@facturayave.com"')}
+            ${esCg ? `<label class="opcion"><input type="checkbox" id="imp_cert_anulacion" checked> <span>Incluir prueba de anulación fiscal (<code>cancel_invoice</code>)</span></label>` : ""}
             <label class="opcion"><input type="checkbox" id="imp_cert_errores" checked> Incluir las 2 pruebas de rechazo controlado (duplicado + campos faltantes)</label>
-            ${campo("imp_cert_password", "🔒 Tu contraseña (Administrador)", "", "password", 'required autocomplete="current-password"')}
+            ${campo("imp_cert_password", "🔒 Tu contraseña (Súper Administrador)", "", "password", 'required autocomplete="current-password"')}
             <label class="opcion"><input type="checkbox" id="imp_cert_confirmo" required> ☑️ ${esCg
               ? "Confirmo ejecutar la batería de certificación únicamente en el ambiente Calidad / Pruebas de CG La Imprenta Digital."
               : "Confirmo ejecutar la batería de certificación únicamente en el ambiente Demo de The Factory HKA."}</label>

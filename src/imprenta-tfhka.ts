@@ -197,7 +197,7 @@ export function construirDocumentoElectronicoTfhka(
 
   const esCredito = String(payload.condicion ?? "").toUpperCase() === "CREDITO";
   const compradorId = dividirRifTfhka(payload.cliente_rif);
-  const correoCliente = normalizarCorreoCg(payload.cliente_email, payload.emisor?.email);
+  const correoCliente = normalizarCorreoCg(payload.cliente_email);
   const telCliente = normalizarTelefonoCg(payload.cliente_telefono);
 
   const rengs = payload.renglones ?? [];

@@ -1,8 +1,8 @@
 // Módulo PAGOS (pantallas): por cobrar, cobros, datos de cobro, registrar un pago y recibos.
 // El saldo siempre lo calcula el servidor (total - pagos vigentes); aquí solo se muestra. Los Bs se convierten con la tasa del día del pago.
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, telefono, puede, ERROR } from "./comun.js";
-import { aTasaE8, aCentavos, bsAUsd, usdABs } from "./dinero.js";
-import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js?v=20261126v540";
+import { aTasaE8, aCentavos, bsAUsd, usdABs } from "./dinero.js?v=20261127v561";
+import { construirRecibo, nombreRecibo, numeroRecibo, numeroDoc, metodoNombre } from "./pdf.js?v=20261127v561";
 
 const fechaDoc = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
 const hoyCaracas = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Caracas" }).format(new Date());

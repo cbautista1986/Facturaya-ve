@@ -1,7 +1,7 @@
 // Pantallas de INFORMES (Fase 6): menú de informes y cada informe con selector de periodo, vista compacta y exportación CSV / PDF.
 // Todo el contenido sale de informe-tabla.js (mismo modelo para pantalla, CSV y PDF); aquí solo se dibuja y se descarga.
 import { $, raiz, esc, api, aviso, navegacion, activar, descargar, cargarPdfLib, puede, ERROR } from "./comun.js";
-import { informesDisponibles, construirModelo, aCsv, construirPdfInforme, nombreArchivoInforme, hoyCaracas } from "./informe-tabla.js?v=20261126v540";
+import { informesDisponibles, construirModelo, aCsv, construirPdfInforme, nombreArchivoInforme, hoyCaracas } from "./informe-tabla.js?v=20261127v561";
 
 let periodo = null; // { preset, desde, hasta }: se recuerda al pasar de un informe a otro
 let pedido = 0;     // contador para ignorar respuestas tardías

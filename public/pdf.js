@@ -1,7 +1,9 @@
 // PDF de presupuestos y facturas. Se genera en el navegador con pdf-lib (incluida en /vendor, sin internet).
 // construirPdf(PDFLib, { doc, lineas, impuestos }) -> Uint8Array. Los datos son los que devuelve GET /api/documentos/:id.
 // Solo depende de dinero.js, para poder probarlo fuera del navegador.
-import { tasaTexto, cantidadTexto, aRifSeniat, usdABs } from "./dinero.js";
+import { tasaTexto, cantidadTexto, aRifSeniat, usdABs } from "./dinero.js?v=20261127v561";
+
+const etiquetaExencionPdf = (t) => (t === "EXONERADA" ? "Exon." : t === "NO_SUJETA" ? "No Suj." : "Exento");
 
 const ANCHO = 595.28, ALTO = 841.89, M = 40;
 const num = (c) => (c / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -183,7 +185,7 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
     const puMostrar = mostrarPuBs ? usdABs(l.precio_usd, D.tasa_e8) : l.precio_usd;
     T(cantidadTexto(l.cantidad_milli), col.cant, y + 3, { s: 9.5 });
     ds.forEach((t, i) => T(t, col.desc, y + 3 + i * 12, { s: 9.5 }));
-    T(num(puMostrar), col.pu, y + 3, { s: 9.5, der: true }); T(l.alicuota_cent === 0 ? "Exento" : `${l.alicuota_cent / 100}%`, col.iva, y + 3, { s: 9.5, der: true });
+    T(num(puMostrar), col.pu, y + 3, { s: 9.5, der: true }); T(l.alicuota_cent === 0 ? etiquetaExencionPdf(l.tipo_exencion) : `${l.alicuota_cent / 100}%`, col.iva, y + 3, { s: 9.5, der: true });
     T(num(l.monto_usd), col.usd, y + 3, { s: 9.5, der: true }); T(num(l.monto_bs), col.bs, y + 3, { s: 9.5, der: true });
     pag.drawLine({ start: { x: M, y: ALTO - y - h }, end: { x: R, y: ALTO - y - h }, thickness: 0.4, color: rgb(0.85, 0.85, 0.85) });
     y += h;
@@ -192,12 +194,27 @@ export async function construirPdf(L, { doc: D, lineas, impuestos, factura_afect
   // ---- totales (USD de referencia; Bs. son los montos legales)
   const filas = [];
   for (const i of impuestos) {
-    if (i.alicuota_cent === 0) filas.push(["Monto exento", i.base_usd, i.base_bs]);
-    else { filas.push([`Base imponible ${i.alicuota_cent / 100}%`, i.base_usd, i.base_bs]); filas.push([`IVA ${i.alicuota_cent / 100}%`, i.iva_usd, i.iva_bs]); }
+    if (i.alicuota_cent === 0) {
+      const exoU = i.exonerada_usd ?? 0, nsU = i.no_sujeta_usd ?? 0, exU = i.exenta_usd ?? (i.base_usd - exoU - nsU);
+      const exoB = i.exonerada_bs ?? 0, nsB = i.no_sujeta_bs ?? 0, exB = i.exenta_bs ?? (i.base_bs - exoB - nsB);
+      let agr = 0;
+      if (exU || exB) { filas.push(["Monto exento", exU, exB]); agr++; }
+      if (exoU || exoB) { filas.push(["Monto exonerado", exoU, exoB]); agr++; }
+      if (nsU || nsB) { filas.push(["Monto no sujeto", nsU, nsB]); agr++; }
+      if (!agr) filas.push(["Monto exento", i.base_usd, i.base_bs]);
+    } else {
+      filas.push([`Base imponible ${i.alicuota_cent / 100}%`, i.base_usd, i.base_bs]);
+      filas.push([`IVA ${i.alicuota_cent / 100}%`, i.iva_usd, i.iva_bs]);
+    }
   }
   if (D.aplica_igtf && D.igtf_usd > 0) {
     const alicIgtf = (D.igtf_alicuota_cent || 300) / 100;
-    filas.push(["Subtotal + IVA", (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0), (D.subtotal_bs ?? 0) + (D.iva_bs ?? 0)]);
+    const totalConIvaUsd = (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0);
+    const totalConIvaBs = (D.subtotal_bs ?? 0) + (D.iva_bs ?? 0);
+    filas.push(["Subtotal + IVA", totalConIvaUsd, totalConIvaBs]);
+    if ((D.igtf_base_usd ?? 0) > 0 && D.igtf_base_usd < totalConIvaUsd) {
+      filas.push(["Base IGTF (divisas)", D.igtf_base_usd, D.igtf_base_bs ?? 0]);
+    }
     filas.push([`IGTF (${alicIgtf}%)`, D.igtf_usd, D.igtf_bs ?? 0]);
   }
   const notaLineas = D.nota ? envolver(`Nota: ${D.nota}`, ANCHO - 2 * M, 9) : [];

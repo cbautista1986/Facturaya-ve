@@ -72,10 +72,12 @@ export type PayloadImprentaDocumento = {
   es_nc_total?: boolean;
   subtotal_bs: number;
   iva_bs: number;
+  igtf_base_bs?: number;
   igtf_bs: number;
   total_bs: number;
   subtotal_usd: number;
   iva_usd: number;
+  igtf_base_usd?: number;
   igtf_usd: number;
   total_usd: number;
   tasa_e8: number;

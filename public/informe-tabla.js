@@ -2,7 +2,7 @@
 // la vista del celular, el CSV y el PDF (los tres salen del MISMO modelo, así nunca dicen cosas distintas).
 // Modelo: { clave, titulo, periodo, resumen: [[etiqueta, valor]], notas: [texto], secciones: [{ titulo, columnas: [{ t, der }], filas: [[texto]], totales: [[texto]] }] }
 // Solo muestra números que ya calculó el servidor; aquí no se hace ninguna cuenta de dinero salvo sumas de la propia pantalla.
-import { cantidadTexto } from "./dinero.js";
+import { cantidadTexto } from "./dinero.js?v=20261127v561";
 
 export const num = (c) => (c == null ? "" : (c / 100).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const fecha = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
@@ -57,11 +57,22 @@ function modeloVentas(r, opts = {}) {
   const hayIgtf = r.filas.some((f) => f.igtf_bs);
   const hayRet = r.filas.some((f) => f.iva_retenido_bs);
   const columnas = [izq("Fecha"), izq("Tipo"), izq("N.º doc."), izq("Factura afectada"), izq("N.º de Control"), izq("Modalidad"), izq("RIF / Cédula"), izq("Cliente"), izq("Estado"),
-    ...alic.flatMap((a) => [der(`Base ${alicuota(a)} (Bs)`), ...(a === 0 ? [] : [der(`IVA ${alicuota(a)} (Bs)`)])]),
+    ...alic.flatMap((a) => (a === 0
+      ? [der("Exentas (Bs)"), der("Exoneradas (Bs)"), der("No Sujetas (Bs)")]
+      : [der(`Base ${alicuota(a)} (Bs)`), der(`IVA ${alicuota(a)} (Bs)`)])),
     ...(hayRet ? [izq("N.º Comp. Retención"), der("IVA Retenido (Bs)")] : []),
     ...(hayIgtf ? [der("IGTF (Bs)"), der("IGTF (USD)")] : []),
     der("Total (Bs)"), der("Total (USD)")];
-  const celdasImp = (f) => alic.flatMap((a) => { const i = f.impuestos.find((x) => x.alicuota_cent === a); return [num(i?.base_bs ?? 0), ...(a === 0 ? [] : [num(i?.iva_bs ?? 0)])]; });
+  const celdasImp = (f) => alic.flatMap((a) => {
+    const i = f.impuestos.find((x) => x.alicuota_cent === a);
+    if (a === 0) {
+      const exo = i?.exonerada_bs ?? f.exonerada_bs ?? 0;
+      const ns = i?.no_sujeta_bs ?? f.no_sujeta_bs ?? 0;
+      const ex = i ? (i.exenta_bs ?? (i.base_bs - exo - ns)) : (f.exenta_bs ?? 0);
+      return [num(ex), num(exo), num(ns)];
+    }
+    return [num(i?.base_bs ?? 0), num(i?.iva_bs ?? 0)];
+  });
   const filas = r.filas.map((f) => {
     const anulada = f.estado === "ANULADO", esNc = !!f.es_nota_credito, esNd = !!f.es_nota_debito;
     const nro = esNc ? `NC-${nroFactura(f.numero)}` : esNd ? `ND-${nroFactura(f.numero)}` : nroFactura(f.numero);
@@ -71,11 +82,20 @@ function modeloVentas(r, opts = {}) {
     return [fecha(f.fecha_emision), tipoTxt, nro, afectada, nroCtrl, MEDIO[f.medio] || "App Digital SENIAT", f.cliente_rif || "", f.cliente_nombre || "",
       anulada ? "ANULADA" : "Emitida",
       ...(anulada
-        ? [...alic.flatMap((a) => (a === 0 ? [""] : ["", ""])), ...(hayRet ? ["", ""] : []), ...(hayIgtf ? ["", ""] : []), "", ""]
+        ? [...alic.flatMap((a) => (a === 0 ? ["", "", ""] : ["", ""])), ...(hayRet ? ["", ""] : []), ...(hayIgtf ? ["", ""] : []), "", ""]
         : [...celdasImp(f), ...(hayRet ? [f.comprobante_retencion || "", num(f.iva_retenido_bs ?? 0)] : []), ...(hayIgtf ? [num(f.igtf_bs ?? 0), num(f.igtf_usd ?? 0)] : []), num(f.total_bs), num(f.total_usd)])];
   });
   const totales = [["TOTAL", "", "", "", "", "", "", "", `${r.n_vigentes} fact. / ${r.n_notas_credito ?? 0} NC${r.n_notas_debito ? ` / ${r.n_notas_debito} ND` : ""}`,
-    ...alic.flatMap((a) => { const t = r.alicuotas.find((x) => x.alicuota_cent === a); return [num(t.base_bs), ...(a === 0 ? [] : [num(t.iva_bs)])]; }),
+    ...alic.flatMap((a) => {
+      const t = r.alicuotas.find((x) => x.alicuota_cent === a);
+      if (a === 0) {
+        const exo = t?.exonerada_bs ?? r.ventas_exoneradas_bs ?? 0;
+        const ns = t?.no_sujeta_bs ?? r.ventas_no_sujetas_bs ?? 0;
+        const ex = t?.exenta_bs ?? r.ventas_exentas_bs ?? ((t?.base_bs ?? 0) - exo - ns);
+        return [num(ex), num(exo), num(ns)];
+      }
+      return [num(t.base_bs), num(t.iva_bs)];
+    }),
     ...(hayRet ? ["", num(r.iva_retenido_bs ?? 0)] : []),
     ...(hayIgtf ? [num(r.igtf_bs ?? 0), num(r.igtf_usd ?? 0)] : []),
     num(r.total_bs), num(r.total_usd)]];
@@ -85,8 +105,8 @@ function modeloVentas(r, opts = {}) {
       ...(hayIgtf ? [["IGTF en Bs", num(r.igtf_bs)], ["IGTF en USD", num(r.igtf_usd)]] : []),
       ["Total neto en Bs", num(r.total_bs)], ["Total neto en USD", num(r.total_usd)]],
     notas: [esFormal
-      ? "Relación de ventas para Contribuyente Formal del IVA (Art. 8 Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102). Operaciones exentas en Bolívares a tasa oficial BCV."
-      : "Conforme al Art. 72 del Reglamento de la Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102. Montos expresados en Bolívares a tasa oficial BCV.",
+      ? "Relación de ventas para Contribuyente Formal del IVA (Art. 8 Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102). Operaciones sin IVA discriminadas en Exentas, Exoneradas y No Sujetas en Bolívares a tasa oficial BCV."
+      : "Conforme al Art. 72 del Reglamento de la Ley de IVA y Providencias SENIAT SNAT/2011/0071 y SNAT/2024/000102. Operaciones al 0% separadas en Exentas, Exoneradas y No Sujetas, expresadas en Bolívares a tasa oficial BCV.",
       ...(r.n_sin_fiscal ? [`⚠️ Hay ${r.n_sin_fiscal} documento(s) vigente(s) pendiente(s) de N.º de Control fiscal definitivo.`] : []),
       ...(r.iva_retenido_otros_periodos_bs ? [`Incluye ${num(r.iva_retenido_otros_periodos_bs)} Bs de retenciones de IVA recibidas en este período por facturas de otros meses; se detallan en la sección de retenciones.`] : [])],
     secciones: [{ titulo: "Facturas, Notas de Crédito y Notas de Débito", columnas, filas, totales },
@@ -104,23 +124,44 @@ function modeloCompras(r, opts = {}) {
   const esFormal = opts?.tipo_contribuyente === "FORMAL";
   const alic = r.alicuotas.map((a) => a.alicuota_cent);
   const columnas = [izq("Fecha"), izq("RIF proveedor"), izq("Proveedor"), izq("N.º factura"), izq("N.º control"), izq("Tipo"), izq("Estado"), der("Tasa BCV"),
-    ...alic.flatMap((a) => [der(`Base ${alicuota(a)} (Bs)`), ...(a === 0 ? [] : [der(`IVA ${alicuota(a)} (Bs)`)])]), der("Total (Bs)"), der("Total (USD)")];
-  const vacias = () => [...alic.flatMap((a) => (a === 0 ? [""] : ["", ""])), ""];
+    ...alic.flatMap((a) => (a === 0
+      ? [der("Exentas (Bs)"), der("Exoneradas (Bs)"), der("No Sujetas (Bs)")]
+      : [der(`Base ${alicuota(a)} (Bs)`), der(`IVA ${alicuota(a)} (Bs)`)])),
+    der("Total (Bs)"), der("Total (USD)")];
+  const vacias = () => [...alic.flatMap((a) => (a === 0 ? ["", "", ""] : ["", ""])), ""];
   const filas = r.filas.map((f) => {
     const anulada = f.estado === "ANULADA", tipoTxt = TIPO_COMPRA_TXT[f.tipo_compra] || "Mercancía";
     const base = [fecha(f.fecha), f.proveedor_rif, f.proveedor_nombre, f.factura_numero, f.control_numero || "", tipoTxt, anulada ? "ANULADA" : "Registrada", anulada ? "" : tasaTxt(f.tasa_e8)];
     if (anulada) return [...base, ...vacias(), ""];
     if (f.tasa_e8 == null) return [...base, ...vacias(), num(f.total_usd)]; // compra anterior a la tasa: sin Bs, solo USD
-    const celdas = alic.flatMap((a) => { const i = f.impuestos.find((x) => x.alicuota_cent === a); return [num(i?.base_bs ?? 0), ...(a === 0 ? [] : [num(i?.iva_bs ?? 0)])]; });
+    const celdas = alic.flatMap((a) => {
+      const i = f.impuestos.find((x) => x.alicuota_cent === a);
+      if (a === 0) {
+        const exo = i?.exonerada_bs ?? f.exonerada_bs ?? 0;
+        const ns = i?.no_sujeta_bs ?? f.no_sujeta_bs ?? 0;
+        const ex = i ? (i.exenta_bs ?? (i.base_bs - exo - ns)) : (f.exenta_bs ?? 0);
+        return [num(ex), num(exo), num(ns)];
+      }
+      return [num(i?.base_bs ?? 0), num(i?.iva_bs ?? 0)];
+    });
     return [...base, ...celdas, num(f.total_bs), num(f.total_usd)];
   });
-  const totales = [["TOTAL", "", "", "", "", "", `${r.n_vigentes} registrada(s)`, "", ...alic.flatMap((a) => { const t = r.alicuotas.find((x) => x.alicuota_cent === a); return [num(t.base_bs), ...(a === 0 ? [] : [num(t.iva_bs)])]; }), num(r.total_bs), num(r.total_usd)]];
+  const totales = [["TOTAL", "", "", "", "", "", `${r.n_vigentes} registrada(s)`, "", ...alic.flatMap((a) => {
+    const t = r.alicuotas.find((x) => x.alicuota_cent === a);
+    if (a === 0) {
+      const exo = t?.exonerada_bs ?? r.compras_exoneradas_bs ?? 0;
+      const ns = t?.no_sujeta_bs ?? r.compras_no_sujetas_bs ?? 0;
+      const ex = t?.exenta_bs ?? r.compras_exentas_bs ?? ((t?.base_bs ?? 0) - exo - ns);
+      return [num(ex), num(exo), num(ns)];
+    }
+    return [num(t.base_bs), num(t.iva_bs)];
+  }), num(r.total_bs), num(r.total_usd)]];
   return { clave: "compras", titulo: esFormal ? "Relación de compras (Contribuyente Formal)" : "Libro de compras (Art. 70 RLIVA)", periodo: periodo(r),
     resumen: [["Compras registradas", String(r.n_vigentes)], ["Anuladas (no suman)", String(r.n_anuladas)], ...(!esFormal ? [["IVA crédito fiscal (Bs)", num(r.iva_bs)]] : [["IVA soportado como costo (Bs)", num(r.iva_bs)]]), ["Total en Bs", num(r.total_bs)],
       ...(r.n_sin_tasa ? [["Sin tasa (no suman en Bs)", String(r.n_sin_tasa)]] : [])],
     notas: [esFormal
       ? "Relación de compras para Contribuyente Formal del IVA (Art. 8 Ley de IVA y SNAT/2011/0071). El IVA pagado en compras forma parte del costo o gasto deducible de ISLR y no genera crédito fiscal."
-      : "Conforme al Art. 70 del Reglamento de la Ley de IVA. Incluye compras de mercancía, gastos operativos y servicios registrados en Bolívares a la tasa BCV de cada factura.",
+      : "Conforme al Art. 70 del Reglamento de la Ley de IVA. Incluye compras de mercancía, gastos operativos y servicios con operaciones al 0% separadas en Exentas, Exoneradas y No Sujetas, en Bolívares a la tasa BCV de cada factura.",
       ...(r.n_sin_tasa ? [`${r.n_sin_tasa} compra(s) previas no registran tasa BCV.`] : [])],
     secciones: [{ titulo: "Compras", columnas, filas, totales }] };
 }
@@ -129,8 +170,25 @@ const mesTxt = (m) => `${m.slice(5, 7)}/${m.slice(0, 4)}`;
 const resultadoIva = (d) => (d > 0 ? "A pagar" : d < 0 ? "Crédito a favor" : "-");
 function modeloResumenIva(r) {
   const cuotaDe = (x) => x.cuota_tributaria_bs ?? (x.diferencia_bs - (x.retenciones_bs ?? 0));
-  const fila = (mes, x) => [mes, num(x.ventas_gravadas_bs), num(x.ventas_exentas_bs), num(x.debito_bs), num(x.compras_gravadas_bs), num(x.compras_exentas_bs), num(x.credito_bs), num(x.diferencia_bs), num(x.retenciones_bs ?? 0), num(cuotaDe(x)), resultadoIva(cuotaDe(x))];
-  const filaMuni = (mes, x) => [mes, num(x.ventas_gravadas_bs), num(x.ventas_exentas_bs), num(x.ingresos_brutos_bs ?? (x.ventas_gravadas_bs + x.ventas_exentas_bs)), num(x.ingresos_brutos_usd ?? 0)];
+  const sinIvaVentas = (x) => x.ventas_sin_iva_bs ?? ((x.ventas_exentas_bs ?? 0) + (x.ventas_exoneradas_bs ?? 0) + (x.ventas_no_sujetas_bs ?? 0));
+  const fila = (mes, x) => [
+    mes,
+    num(x.ventas_gravadas_bs),
+    num(x.ventas_exentas_bs),
+    num(x.ventas_exoneradas_bs ?? 0),
+    num(x.ventas_no_sujetas_bs ?? 0),
+    num(x.debito_bs),
+    num(x.compras_gravadas_bs),
+    num(x.compras_exentas_bs),
+    num(x.compras_exoneradas_bs ?? 0),
+    num(x.compras_no_sujetas_bs ?? 0),
+    num(x.credito_bs),
+    num(x.diferencia_bs),
+    num(x.retenciones_bs ?? 0),
+    num(cuotaDe(x)),
+    resultadoIva(cuotaDe(x)),
+  ];
+  const filaMuni = (mes, x) => [mes, num(x.ventas_gravadas_bs), num(sinIvaVentas(x)), num(x.ingresos_brutos_bs ?? (x.ventas_gravadas_bs + sinIvaVentas(x))), num(x.ingresos_brutos_usd ?? 0)];
   const t = r.total, cuotaTotal = cuotaDe(t);
   return { clave: "resumen-iva", titulo: "Resumen mensual de IVA y Alcaldía", periodo: periodo(r),
     resumen: [
@@ -138,17 +196,17 @@ function modeloResumenIva(r) {
       ["Crédito fiscal (compras)", num(t.credito_bs)],
       ...(t.retenciones_bs ? [["Retenciones de IVA (Bs)", num(t.retenciones_bs)]] : []),
       [cuotaTotal < 0 ? "Excedente / Crédito a favor" : "Cuota neta a pagar SENIAT", num(Math.abs(cuotaTotal))],
-      ["Ingresos Brutos Alcaldía (Bs)", num(t.ingresos_brutos_bs ?? (t.ventas_gravadas_bs + t.ventas_exentas_bs))],
+      ["Ingresos Brutos Alcaldía (Bs)", num(t.ingresos_brutos_bs ?? (t.ventas_gravadas_bs + sinIvaVentas(t)))],
     ],
     notas: [
-      "1. Declaración de IVA (Forma 000030 SENIAT): Débito fiscal menos Crédito fiscal menos Retenciones de IVA soportadas en el período.",
-      "2. Declaración Municipal de Actividades Económicas (Alcaldía): Ingresos Brutos = Ventas gravadas (base imponible sin IVA) + Ventas exentas, netas de Notas de Crédito (excluye IVA e IGTF).",
+      "1. Declaración de IVA (Forma 000030 SENIAT): Débito fiscal menos Crédito fiscal menos Retenciones de IVA soportadas en el período. Discrimina operaciones Exentas, Exoneradas y No Sujetas (Arts. 70 y 72 RLIVA).",
+      "2. Declaración Municipal de Actividades Económicas (Alcaldía): Ingresos Brutos = Ventas gravadas (base imponible sin IVA) + Ventas sin IVA (exentas, exoneradas y no sujetas), netas de Notas de Crédito (excluye IVA e IGTF).",
       ...(t.compras_sin_tasa ? [`${t.compras_sin_tasa} compra(s) sin tasa BCV no están incluidas en el crédito fiscal.`] : []),
     ],
     secciones: [
-      { titulo: "Declaración de IVA por mes (SENIAT Forma 000030)", columnas: [izq("Mes"), der("Ventas gravadas (base)"), der("Ventas exentas"), der("Débito fiscal"), der("Compras gravadas (base)"), der("Compras exentas"), der("Crédito fiscal"), der("Cuota previa"), der("Retenciones IVA"), der("Cuota neta"), izq("Resultado")],
+      { titulo: "Declaración de IVA por mes (SENIAT Forma 000030)", columnas: [izq("Mes"), der("Vtas. grav. (base)"), der("Vtas. exentas"), der("Vtas. exoner."), der("Vtas. no suj."), der("Débito fiscal"), der("Comp. grav. (base)"), der("Comp. exentas"), der("Comp. exoner."), der("Comp. no suj."), der("Crédito fiscal"), der("Cuota previa"), der("Retenc. IVA"), der("Cuota neta"), izq("Resultado")],
         filas: r.filas.map((x) => fila(mesTxt(x.mes), x)), totales: r.filas.length ? [fila("TOTAL", t)] : [] },
-      { titulo: "Ingresos Brutos Municipales (Alcaldía / Actividades Económicas)", columnas: [izq("Mes"), der("Ventas gravadas sin IVA (Bs)"), der("Ventas exentas (Bs)"), der("Ingresos Brutos Netos (Bs)"), der("Ingresos Brutos Ref. (USD)")],
+      { titulo: "Ingresos Brutos Municipales (Alcaldía / Actividades Económicas)", columnas: [izq("Mes"), der("Ventas gravadas sin IVA (Bs)"), der("Ventas sin IVA (Bs)"), der("Ingresos Brutos Netos (Bs)"), der("Ingresos Brutos Ref. (USD)")],
         filas: r.filas.map((x) => filaMuni(mesTxt(x.mes), x)), totales: r.filas.length ? [filaMuni("TOTAL", t)] : [] },
     ] };
 }
@@ -243,7 +301,7 @@ function modeloIgtf(r) {
       ["IGTF 3% percibido (Bs)", num(r.igtf_bs)],
       ["IGTF 3% percibido (USD)", num(r.igtf_usd)],
     ],
-    notas: ["Auxiliar para la declaración y enteramiento quincenal/mensual del Impuesto a las Grandes Transacciones Financieras (IGTF 3%) percibido por pagos en moneda extranjera o criptoactivos distintos al Bolívar, conforme a la Providencia SENIAT SNAT/2022/000013."],
+    notas: ["Auxiliar para la declaración y enteramiento quincenal/mensual del Impuesto a las Grandes Transacciones Financieras (IGTF 3%) percibido por pagos totales o parciales en moneda extranjera o criptoactivos distintos al Bolívar, conforme a la Providencia SENIAT SNAT/2022/000013. En pagos mixtos refleja exclusivamente la base efectivamente pagada en divisas."],
     secciones: [{ titulo: "Documentos con percepción de IGTF (3%)",
       columnas: [izq("Fecha"), izq("Tipo"), izq("N.º doc."), izq("N.º Control"), izq("RIF / Cédula"), izq("Cliente"), izq("Estado"), der("Tasa BCV"), der("Base divisas (Bs)"), der("Base divisas (USD)"), der("IGTF 3% (Bs)"), der("IGTF 3% (USD)")],
       filas, totales }] };
@@ -274,7 +332,16 @@ function modeloCierreCaja(r) {
     ? [["TOTAL EN CAJA", "", String(n.recibos_vigentes), `Bs. ${num(rec.cobrado_bs)} + $ ${num(rec.cobrado_divisas_usd)}`, num(rec.total_equiv_bs), num(rec.total_equiv_usd)]]
     : [];
   const filasFiscal = [
-    ...fac.alicuotas.map((a) => [`Ventas ${alicuota(a.alicuota_cent)}`, num(a.base_bs), num(a.iva_bs), num(a.base_usd), num(a.iva_usd)]),
+    ...fac.alicuotas.flatMap((a) => {
+      if (a.alicuota_cent !== 0) return [[`Ventas ${alicuota(a.alicuota_cent)}`, num(a.base_bs), num(a.iva_bs), num(a.base_usd), num(a.iva_usd)]];
+      const exoB = a.exonerada_bs ?? 0, nsB = a.no_sujeta_bs ?? 0, exB = a.exenta_bs ?? (a.base_bs - exoB - nsB);
+      const exoU = a.exonerada_usd ?? 0, nsU = a.no_sujeta_usd ?? 0, exU = a.exenta_usd ?? (a.base_usd - exoU - nsU);
+      const out = [];
+      if (exB || exU) out.push(["Ventas Exentas", num(exB), "0,00", num(exU), "0,00"]);
+      if (exoB || exoU) out.push(["Ventas Exoneradas", num(exoB), "0,00", num(exoU), "0,00"]);
+      if (nsB || nsU) out.push(["Ventas No Sujetas", num(nsB), "0,00", num(nsU), "0,00"]);
+      return out.length ? out : [["Ventas Exentas", num(a.base_bs), "0,00", num(a.base_usd), "0,00"]];
+    }),
     ...(fac.igtf_bs ? [["IGTF 3% percibido en divisas", num(fac.igtf_bs), "0,00", num(fac.igtf_usd), "0,00"]] : []),
   ];
   const totalesFiscal = [["TOTAL FACTURADO NETO", num(fac.subtotal_bs + fac.igtf_bs), num(fac.iva_bs), num(fac.subtotal_usd + fac.igtf_usd), num(fac.iva_usd)],

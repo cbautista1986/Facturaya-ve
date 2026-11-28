@@ -77,10 +77,12 @@ export const TRIGGERS_INMUTABILIDAD: { nombre: string; sql: string }[] = [
         OR new.iva_usd IS NOT old.iva_usd
         OR new.aplica_igtf IS NOT old.aplica_igtf
         OR new.igtf_alicuota_cent IS NOT old.igtf_alicuota_cent
+        OR new.igtf_base_usd IS NOT old.igtf_base_usd
         OR new.igtf_usd IS NOT old.igtf_usd
         OR new.total_usd IS NOT old.total_usd
         OR new.subtotal_bs IS NOT old.subtotal_bs
         OR new.iva_bs IS NOT old.iva_bs
+        OR new.igtf_base_bs IS NOT old.igtf_base_bs
         OR new.igtf_bs IS NOT old.igtf_bs
         OR new.total_bs IS NOT old.total_bs
         OR new.costo_total_usd IS NOT old.costo_total_usd
@@ -250,11 +252,14 @@ async function listarTriggersPresentes(
   return new Map(results.map((r) => [r.name.slice(prefijo.length), String(r.sql ?? "")]));
 }
 
-function triggerNecesitaReparacion(nombre: string, sqlActual: string | undefined, tieneV34: boolean): boolean {
+function triggerNecesitaReparacion(nombre: string, sqlActual: string | undefined, tieneV34: boolean, tieneV56 = false): boolean {
   if (!sqlActual) return true;
   if (tieneV34) {
     if (nombre === "doc_inmutable" && !sqlActual.includes("es_nota_debito")) return true;
     if (nombre === "pago_inmutable" && (!sqlActual.includes("es_retencion_islr") || !sqlActual.includes("motivo_anulacion"))) return true;
+  }
+  if (tieneV56) {
+    if (nombre === "doc_inmutable" && (!sqlActual.includes("igtf_base_usd") || !sqlActual.includes("igtf_base_bs"))) return true;
   }
   return false;
 }
@@ -294,11 +299,12 @@ export async function diagnosticarInquilino(
     });
   }
 
-  // 2) Verificar los 16 triggers de inmutabilidad SENIAT (y vigencia post-0015)
+  // 2) Verificar los 16 triggers de inmutabilidad SENIAT (y vigencia post-0015 / post-0024)
   const triggersPresentes = await listarTriggersPresentes(rawDb, dbInq, codigo, envObj).catch(() => new Map<string, string>());
   const tieneV34 = hechas.has("0015_paquete_v3_4");
+  const tieneV56 = hechas.has("0024_igtf_parcial_y_exenciones_iva");
   const triggersFaltantes = TRIGGERS_INMUTABILIDAD.map((t) => t.nombre).filter((n) =>
-    triggerNecesitaReparacion(n, triggersPresentes.get(n), tieneV34)
+    triggerNecesitaReparacion(n, triggersPresentes.get(n), tieneV34, tieneV56)
   );
   if (triggersFaltantes.length > 0) {
     problemas.push({
@@ -564,7 +570,8 @@ export async function repararInquilino(
   const tipoDb = info?.tipo_db || (codigo === "principal" ? "PRINCIPAL" : /^DB_\d+$/.test(codigo) ? "BINDING" : "PREFIJO");
   const presentes = await listarTriggersPresentes(rawDb, dbInq, codigo, envObj);
   const tieneV34 = despuesMig.has("0015_paquete_v3_4");
-  const triggersAReparar = TRIGGERS_INMUTABILIDAD.filter((t) => triggerNecesitaReparacion(t.nombre, presentes.get(t.nombre), tieneV34));
+  const tieneV56 = despuesMig.has("0024_igtf_parcial_y_exenciones_iva");
+  const triggersAReparar = TRIGGERS_INMUTABILIDAD.filter((t) => triggerNecesitaReparacion(t.nombre, presentes.get(t.nombre), tieneV34, tieneV56));
   if (triggersAReparar.length) {
     const pasosTriggers: D1PreparedStatement[] = [];
     for (const t of triggersAReparar) {

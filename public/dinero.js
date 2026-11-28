@@ -44,8 +44,17 @@ export function aCantidadMilli(v) {
 export const cantidadTexto = (milli) => (milli / 1000).toString().replace(".", ",");
 export const tasaTexto = (e8) => (e8 / E8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "").replace(".", ",");
 
-// lineas: [{ cantidad_milli, precio_usd (centavos por unidad), alicuota_cent (% × 100), costo_usd? (centavos por unidad) }]
-// Devuelve montos por renglón, impuestos por alícuota, IGTF opcional y totales, en USD y en Bs (los de Bs son los legales).
+export const TIPOS_EXENCION = ["EXENTA", "EXONERADA", "NO_SUJETA"];
+
+export function normalizarTipoExencion(v) {
+  const s = String(v ?? "").trim().toUpperCase();
+  if (s === "EXONERADA" || s === "NO_SUJETA") return s;
+  return "EXENTA";
+}
+
+// lineas: [{ cantidad_milli, precio_usd (centavos por unidad), alicuota_cent (% × 100), costo_usd? (centavos por unidad), tipo_exencion? ('EXENTA'|'EXONERADA'|'NO_SUJETA') }]
+// opciones: { aplica_igtf?: boolean, igtf_alicuota_cent?: number, igtf_base_usd?: number | null }
+// Devuelve montos por renglón, impuestos por alícuota (con desglose Exento/Exonerado/No Sujeto para 0%), IGTF total o parcial y totales, en USD y en Bs (los de Bs son los legales).
 // Con tasaE8 vacío (borrador sin tasa) los campos en Bs quedan en null.
 export function calcular(lineas, tasaE8, opciones = {}) {
   const conTasa = Number.isInteger(tasaE8) && tasaE8 > 0;
@@ -57,9 +66,32 @@ export function calcular(lineas, tasaE8, opciones = {}) {
     const monto_usd = redondear(l.cantidad_milli, l.precio_usd, 1000);
     const monto_bs = conTasa ? redondear(monto_usd, tasaE8, E8) : null;
     costo = seguro(costo + redondear(l.cantidad_milli, l.costo_usd ?? 0, 1000));
-    const g = grupos.get(l.alicuota_cent) ?? { alicuota_cent: l.alicuota_cent, base_usd: 0, base_bs: 0 };
+    const g = grupos.get(l.alicuota_cent) ?? {
+      alicuota_cent: l.alicuota_cent,
+      base_usd: 0,
+      base_bs: 0,
+      exenta_usd: 0,
+      exenta_bs: 0,
+      exonerada_usd: 0,
+      exonerada_bs: 0,
+      no_sujeta_usd: 0,
+      no_sujeta_bs: 0,
+    };
     g.base_usd = seguro(g.base_usd + monto_usd);
     if (conTasa) g.base_bs = seguro(g.base_bs + monto_bs);
+    if (l.alicuota_cent === 0) {
+      const te = normalizarTipoExencion(l.tipo_exencion);
+      if (te === "EXONERADA") {
+        g.exonerada_usd = seguro(g.exonerada_usd + monto_usd);
+        if (conTasa) g.exonerada_bs = seguro(g.exonerada_bs + monto_bs);
+      } else if (te === "NO_SUJETA") {
+        g.no_sujeta_usd = seguro(g.no_sujeta_usd + monto_usd);
+        if (conTasa) g.no_sujeta_bs = seguro(g.no_sujeta_bs + monto_bs);
+      } else {
+        g.exenta_usd = seguro(g.exenta_usd + monto_usd);
+        if (conTasa) g.exenta_bs = seguro(g.exenta_bs + monto_bs);
+      }
+    }
     grupos.set(l.alicuota_cent, g);
     return { monto_usd, monto_bs };
   });
@@ -67,20 +99,50 @@ export function calcular(lineas, tasaE8, opciones = {}) {
     alicuota_cent: g.alicuota_cent,
     base_usd: g.base_usd, iva_usd: redondear(g.base_usd, g.alicuota_cent, 10000),
     base_bs: conTasa ? g.base_bs : null, iva_bs: conTasa ? redondear(g.base_bs, g.alicuota_cent, 10000) : null,
+    exenta_usd: g.alicuota_cent === 0 ? g.exenta_usd : 0,
+    exonerada_usd: g.alicuota_cent === 0 ? g.exonerada_usd : 0,
+    no_sujeta_usd: g.alicuota_cent === 0 ? g.no_sujeta_usd : 0,
+    exenta_bs: conTasa ? (g.alicuota_cent === 0 ? g.exenta_bs : 0) : null,
+    exonerada_bs: conTasa ? (g.alicuota_cent === 0 ? g.exonerada_bs : 0) : null,
+    no_sujeta_bs: conTasa ? (g.alicuota_cent === 0 ? g.no_sujeta_bs : 0) : null,
   }));
   const suma = (k) => seguro(impuestos.reduce((s, i) => s + (i[k] ?? 0), 0));
   const subtotal_usd = suma("base_usd"), iva_usd = suma("iva_usd");
   const subtotal_bs = conTasa ? suma("base_bs") : null, iva_bs = conTasa ? suma("iva_bs") : null;
-  const base_igtf_usd = seguro(subtotal_usd + iva_usd);
-  const base_igtf_bs = conTasa ? seguro(subtotal_bs + iva_bs) : null;
-  const igtf_usd = aplicaIgtf ? redondear(base_igtf_usd, alicuotaIgtf, 10000) : 0;
-  const igtf_bs = conTasa ? (aplicaIgtf ? redondear(base_igtf_bs, alicuotaIgtf, 10000) : 0) : null;
+  const total_con_iva_usd = seguro(subtotal_usd + iva_usd);
+  const total_con_iva_bs = conTasa ? seguro(subtotal_bs + iva_bs) : null;
+
+  let igtf_base_usd = 0;
+  let igtf_base_bs = conTasa ? 0 : null;
+  if (aplicaIgtf) {
+    const baseEx = opciones?.igtf_base_usd;
+    if (baseEx === undefined || baseEx === null || baseEx === "") {
+      igtf_base_usd = total_con_iva_usd;
+      igtf_base_bs = total_con_iva_bs;
+    } else {
+      if (!Number.isInteger(baseEx) || baseEx < 0) {
+        throw new Error("La base en divisas para IGTF no es válida.");
+      }
+      if (baseEx > total_con_iva_usd) {
+        throw new Error("El monto pagado en divisas para IGTF no puede superar el Subtotal + IVA del documento.");
+      }
+      igtf_base_usd = baseEx;
+      if (conTasa) {
+        igtf_base_bs = igtf_base_usd === total_con_iva_usd
+          ? total_con_iva_bs
+          : Math.min(total_con_iva_bs, redondear(igtf_base_usd, tasaE8, E8));
+      }
+    }
+  }
+  const igtf_usd = aplicaIgtf && igtf_base_usd > 0 ? redondear(igtf_base_usd, alicuotaIgtf, 10000) : 0;
+  const igtf_bs = conTasa ? (aplicaIgtf && igtf_base_bs > 0 ? redondear(igtf_base_bs, alicuotaIgtf, 10000) : 0) : null;
   return {
     renglones, impuestos, costo_total_usd: costo,
-    subtotal_usd, iva_usd, igtf_alicuota_cent: aplicaIgtf ? alicuotaIgtf : 0, igtf_usd,
-    total_usd: seguro(base_igtf_usd + igtf_usd),
-    subtotal_bs, iva_bs, igtf_bs,
-    total_bs: conTasa ? seguro(base_igtf_bs + igtf_bs) : null,
+    subtotal_usd, iva_usd, igtf_alicuota_cent: aplicaIgtf && igtf_base_usd > 0 ? alicuotaIgtf : 0,
+    igtf_base_usd, igtf_usd,
+    total_usd: seguro(total_con_iva_usd + igtf_usd),
+    subtotal_bs, iva_bs, igtf_base_bs, igtf_bs,
+    total_bs: conTasa ? seguro(total_con_iva_bs + igtf_bs) : null,
   };
 }
 

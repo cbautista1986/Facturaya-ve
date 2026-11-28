@@ -2,14 +2,14 @@
 import { $, raiz, esc, bs, usd, fechaLocal, api, aviso, campo, enviar, montarTurnstile, navegacion, activar, fijarPermisos, puede, ERROR } from "./comun.js";
 import { tarjetaRestaurar, vistaRestaurar, pantallaOcupado } from "./restaurar.js";
 import { tarjetaMedio, enlazarMedio } from "./medio.js?v=20261127v542";
-import { estadoSemaforoTasaBcv } from "./dinero.js?v=20261127v541";
+import { estadoSemaforoTasaBcv } from "./dinero.js?v=20261127v561";
 import { pantallaCodigo, vistaRecuperar, vistaCambiarClave, vistaUsuarios, formularioCodigo, enlazarCodigo } from "./usuarios.js";
 import { vistaClientes } from "./clientes.js";
-import { vistaCatalogo } from "./catalogo.js";
-import { vistaFactura } from "./factura.js?v=20261126v540";
-import { vistaPagos } from "./pagos.js?v=20261126v540";
-import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js";
-import { vistaInformes } from "./informes.js?v=20261126v540";
+import { vistaCatalogo } from "./catalogo.js?v=20261127v561";
+import { vistaFactura } from "./factura.js?v=20261127v561";
+import { vistaPagos } from "./pagos.js?v=20261127v561";
+import { vistaCompras, vistaProveedores, vistaExistencias } from "./compras.js?v=20261127v561";
+import { vistaInformes } from "./informes.js?v=20261127v561";
 import { generarQrSvg } from "./qr.js";
 import { renderHistorialCorreoInquilino, vistaPanelCorreosPlataforma } from "./correos.js";
 import { iniciarPwaYConectividad, botonInstalarPwaHtml, enlazarBotonesPwa, puedeMostrarBotonInstalar } from "./pwa.js?v=20261123v502";
@@ -65,9 +65,9 @@ const opcionesRegimenHtml = (actual = "ORDINARIO") => [
   ["ESPECIAL", "⭐ Contribuyente Especial / SPE (Designado SENIAT — IVA + IGTF 3%)"],
 ].map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("");
 
-const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.6.0)</span>
-  <p class="suave">Descarga el paquete completo <b>v5.6.0 — Blindaje Fiscal, Costos RBAC, BCV Oficial, Streaming R2 &amp; Seguridad (.zip compatible con WinRAR, Windows, Android y Mac)</b> con <b>aislamiento total de costos por rol</b>, <b>bloqueo de tasa BCV vencida en Modo Real</b>, <b>BCV oficial + guardia anti-anomalías</b>, <b>rotación circular 100+ empresas</b>, <b>respaldos R2 streaming .json.gz (hmac:v2)</b> y <b>CSRF + PBKDF2 pepper + CI</b>:</p>
-  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.6.0)</button>
+const TARJETA_GITHUB_ZIP = esEntornoPreview ? `<section class="tarjeta" style="margin-top:24px"><span class="etiqueta">📦 DESCARGA PARA GITHUB DESKTOP / CLOUDFLARE (v5.6.1)</span>
+  <p class="suave">Descarga el paquete completo <b>v5.6.1 — IGTF Parcial (SNAT/2022/000013), Separación Fiscal Exento/Exonerado/No Sujeto (Arts. 70 y 72 RLIVA), Blindaje Costos RBAC, BCV Oficial &amp; Streaming R2 (.zip compatible con WinRAR, Windows, Android y Mac)</b>:</p>
+  <button type="button" class="boton verde" data-dl-cf="facturaya-ve-github.zip">⬇️ Descargar todo: facturaya-ve-github.zip (v5.6.1)</button>
   <div class="dos-botones">
     <button type="button" class="boton chico contorno-azul" data-dl-cf="tasa-bcv.ts">⬇️ src/tasa-bcv.ts</button>
     <button type="button" class="boton chico contorno-azul" data-dl-cf="mantenimiento.ts">⬇️ src/mantenimiento.ts</button>

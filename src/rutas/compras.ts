@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import { aCantidadMilli, aCentavos, aTasaE8, calcular } from "../../public/dinero.js";
 import { auditar, comodin, esUnico, falla, fechaCaracas, idParam, leerJson, modoActual, parametrosVigentes, requiereAdmin, requiereSesion, texto, type Env } from "../comun";
 import { veCostos } from "../permisos";
+import { esTipoExencionValido, normalizarTipoExencion, type TipoExencion } from "../reglas-fiscales";
 import { costoPromedio, guardaSaldo, movimiento, saldos } from "../stock";
 
 const compras = new Hono<Env>();
@@ -52,6 +53,7 @@ function sanitizarRenglonesCompraSinCosto(renglonesJson: string | null | undefin
       descripcion: r?.descripcion ?? "",
       cantidad_milli: r?.cantidad_milli ?? 0,
       alicuota_cent: r?.alicuota_cent ?? 0,
+      tipo_exencion: normalizarTipoExencion(r?.tipo_exencion),
     }));
   } catch {
     return [];
@@ -98,7 +100,26 @@ compras.get("/:id", async (c) => {
       impuestos: [],
     });
   }
-  const { results: impuestos } = await c.env.DB.prepare(`SELECT alicuota_cent, base_usd, iva_usd, base_bs, iva_bs FROM compra_impuestos WHERE compra_id = ? ORDER BY alicuota_cent`).bind(f.id).all();
+  const { results: impuestosRaw } = await c.env.DB
+    .prepare(`SELECT alicuota_cent, base_usd, iva_usd, base_bs, iva_bs, exonerada_usd, exonerada_bs, no_sujeta_usd, no_sujeta_bs FROM compra_impuestos WHERE compra_id = ? ORDER BY alicuota_cent`)
+    .bind(f.id)
+    .all<Fila>();
+  const impuestos = impuestosRaw.map((x) => {
+    const exonerada_usd = Number(x.exonerada_usd ?? 0) || 0;
+    const exonerada_bs = Number(x.exonerada_bs ?? 0) || 0;
+    const no_sujeta_usd = Number(x.no_sujeta_usd ?? 0) || 0;
+    const no_sujeta_bs = Number(x.no_sujeta_bs ?? 0) || 0;
+    const esCero = Number(x.alicuota_cent) === 0;
+    return {
+      ...x,
+      exenta_usd: esCero ? Math.max(0, Number(x.base_usd ?? 0) - exonerada_usd - no_sujeta_usd) : 0,
+      exenta_bs: esCero ? Math.max(0, Number(x.base_bs ?? 0) - exonerada_bs - no_sujeta_bs) : 0,
+      exonerada_usd: esCero ? exonerada_usd : 0,
+      exonerada_bs: esCero ? exonerada_bs : 0,
+      no_sujeta_usd: esCero ? no_sujeta_usd : 0,
+      no_sujeta_bs: esCero ? no_sujeta_bs : 0,
+    };
+  });
   return c.json({
     ok: true,
     compra: { ...resto, tipo_compra: clasificarRenglonesCompra(renglones_json) },
@@ -136,7 +157,7 @@ compras.post("/", async (c) => {
     ),
   ];
   const { results: prods } = ids.length
-    ? await db.prepare(`SELECT id, nombre, tipo, activo, alicuota_iva, controla_stock FROM catalogo WHERE id IN (${ids.map(() => "?").join(",")})`).bind(...ids).all<Fila>()
+    ? await db.prepare(`SELECT id, nombre, tipo, activo, alicuota_iva, tipo_exencion, controla_stock FROM catalogo WHERE id IN (${ids.map(() => "?").join(",")})`).bind(...ids).all<Fila>()
     : { results: [] as Fila[] };
   const P = new Map(prods.map((p) => [p.id, p]));
 
@@ -148,10 +169,12 @@ compras.post("/", async (c) => {
     cantidad_milli: number;
     costo_usd: number;
     alicuota_cent: number;
+    tipo_exencion: TipoExencion;
   };
   const ls: LineaCompra[] = [];
   for (const [n, r] of bruto.entries()) {
     const x = (r ?? {}) as Record<string, unknown>, pos = `Renglón ${n + 1}`;
+    const teRaw = texto(x.tipo_exencion, 20).toUpperCase();
     if (esLineaGasto(x)) {
       const desc = texto(x.descripcion, 200);
       if (desc.length < 2) return falla(c, 400, `${pos}: describe el gasto o servicio (ej. Alquiler mensual, Internet, Honorarios).`);
@@ -165,7 +188,9 @@ compras.post("/", async (c) => {
         ? 1600
         : Math.round(Number(x.alicuota_iva) * 100);
       if (!permitidas.includes(alic)) return falla(c, 400, `${pos}: el IVA no es válido.`);
-      ls.push({ tipo: "GASTO", categoria: catRaw, producto_id: null, descripcion: desc, cantidad_milli: cant, costo_usd: costo, alicuota_cent: alic });
+      if (alic === 0 && teRaw && !esTipoExencionValido(teRaw)) return falla(c, 400, `${pos}: la clasificación sin IVA debe ser Exenta, Exonerada o No Sujeta.`);
+      const tipo_exencion: TipoExencion = alic === 0 ? normalizarTipoExencion(teRaw) : "EXENTA";
+      ls.push({ tipo: "GASTO", categoria: catRaw, producto_id: null, descripcion: desc, cantidad_milli: cant, costo_usd: costo, alicuota_cent: alic, tipo_exencion });
     } else {
       const p = P.get(Number(x.producto_id));
       if (!p || p.tipo !== "PRODUCTO") return falla(c, 400, `${pos}: elige un producto del inventario o cambia la línea a gasto/servicio.`);
@@ -175,7 +200,9 @@ compras.post("/", async (c) => {
       if (!costo || Number.isNaN(costo)) return falla(c, 400, `${pos}: escribe el costo por unidad en USD (mayor que 0).`);
       const alic = x.alicuota_iva === undefined || x.alicuota_iva === "" || x.alicuota_iva === null ? p.alicuota_iva * 100 : Math.round(Number(x.alicuota_iva) * 100);
       if (!permitidas.includes(alic)) return falla(c, 400, `${pos}: el IVA no es válido.`);
-      ls.push({ tipo: "PRODUCTO", producto_id: p.id, descripcion: p.nombre, cantidad_milli: cant, costo_usd: costo, alicuota_cent: alic });
+      if (alic === 0 && teRaw && !esTipoExencionValido(teRaw)) return falla(c, 400, `${pos}: la clasificación sin IVA debe ser Exenta, Exonerada o No Sujeta.`);
+      const tipo_exencion: TipoExencion = alic === 0 ? normalizarTipoExencion(teRaw || p.tipo_exencion) : "EXENTA";
+      ls.push({ tipo: "PRODUCTO", producto_id: p.id, descripcion: p.nombre, cantidad_milli: cant, costo_usd: costo, alicuota_cent: alic, tipo_exencion });
     }
   }
   // Tasa BCV de la fecha de la factura del proveedor (la escribe quien registra; si no, la de hoy). Con ella se sacan los montos en Bs del libro de compras.
@@ -183,7 +210,7 @@ compras.post("/", async (c) => {
   const tasa = aTasaE8(dada || String(perfil?.tasa_bcv ?? ""));
   if (!tasa || Number.isNaN(tasa)) return falla(c, 400, dada ? "La tasa BCV no es válida (ejemplo: 36,50)." : "Escribe la tasa BCV de la fecha de la factura (o define la de hoy en Ajustes).");
   let calc;
-  try { calc = calcular(ls.map((l) => ({ cantidad_milli: l.cantidad_milli, precio_usd: l.costo_usd, alicuota_cent: l.alicuota_cent })), tasa); }
+  try { calc = calcular(ls.map((l) => ({ cantidad_milli: l.cantidad_milli, precio_usd: l.costo_usd, alicuota_cent: l.alicuota_cent, tipo_exencion: l.tipo_exencion })), tasa); }
   catch (e) { return falla(c, 400, (e as Error).message); }
   const renglones = ls.map((l, i) => ({ ...l, monto_usd: calc.renglones[i].monto_usd }));
   const entradas = new Map<number, { cant: number; valor: number }>();
@@ -205,9 +232,9 @@ compras.post("/", async (c) => {
     tasa, calc.subtotal_bs, calc.iva_bs, calc.total_bs, texto(b.nota, 300) || null, JSON.stringify(renglones), new Date().toISOString(), u.id)];
   // Base e IVA por alícuota (en USD y en Bs), pegados a la compra recién insertada en este mismo lote
   for (const i of calc.impuestos)
-    pasos.push(db.prepare(`INSERT INTO compra_impuestos (compra_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs)
-      SELECT id, ?, ?, ?, ?, ? FROM compras WHERE proveedor_id = ? AND factura_numero = ? AND estado = 'REGISTRADA'`)
-      .bind(i.alicuota_cent, i.base_usd, i.iva_usd, i.base_bs, i.iva_bs, prov.id, factura));
+    pasos.push(db.prepare(`INSERT INTO compra_impuestos (compra_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs, exonerada_usd, exonerada_bs, no_sujeta_usd, no_sujeta_bs)
+      SELECT id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM compras WHERE proveedor_id = ? AND factura_numero = ? AND estado = 'REGISTRADA'`)
+      .bind(i.alicuota_cent, i.base_usd, i.iva_usd, i.base_bs, i.iva_bs, i.exonerada_usd ?? 0, i.exonerada_bs ?? 0, i.no_sujeta_usd ?? 0, i.no_sujeta_bs ?? 0, prov.id, factura));
   for (const [pid, e] of entradas)
     pasos.push(guardaSaldo(db, pid, sal.get(pid)!),
       movimiento(db, { producto_id: pid, modo, tipo: "COMPRA", cantidad_milli: e.cant, valor_usd: e.valor, compra_ref: [prov.id, factura], fecha, uid: u.id }),

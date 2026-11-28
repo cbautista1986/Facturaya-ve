@@ -473,11 +473,14 @@ test("2. Auditoría Contable Total v5.4.0: Libros de Ventas, Compras, Resumen IV
     assert.ok(adjResumen, "Debe adjuntar Resumen-IVA-Alcaldia CSV");
 
     const txtVentas = Buffer.from(adjVentas.content, "base64").toString("utf8");
-    assert.ok(txtVentas.includes("Base_Exenta_Bs;Base_Gravada_Bs;IVA_Bs;IGTF_Bs;Total_Bs"), "CSV de cierre mensual debe separar Base_Exenta_Bs y Base_Gravada_Bs");
-    // Factura #2: Exenta 2000.00 y Gravada 7500.00 (5000 + 2500)
-    assert.ok(txtVentas.includes("2000.00;7500.00;1000.00;0.00;10500.00"), `CSV Ventas debe reflejar desglose exacto de F2:\n${txtVentas}`);
+    assert.ok(
+      txtVentas.includes("Base_Exenta_Bs;Base_Exonerada_Bs;Base_No_Sujeta_Bs;Base_Gravada_Bs;IVA_Bs;IGTF_Bs;Total_Bs"),
+      "CSV de cierre mensual debe separar Base_Exenta_Bs, Base_Exonerada_Bs, Base_No_Sujeta_Bs y Base_Gravada_Bs"
+    );
+    // Factura #2: Exenta 2000.00, Exonerada 0.00, No Sujeta 0.00 y Gravada 7500.00 (5000 + 2500)
+    assert.ok(txtVentas.includes("2000.00;0.00;0.00;7500.00;1000.00;0.00;10500.00"), `CSV Ventas debe reflejar desglose exacto de F2:\n${txtVentas}`);
     // Nota de Crédito #1: montos negativos numéricos limpios (sin apóstrofe) para que Excel sume correctamente
-    assert.ok(txtVentas.includes("0.00;-2500.00;-400.00;-87.00;-2987.00"), `CSV Ventas debe exportar NC con números negativos limpios para Excel:\n${txtVentas}`);
+    assert.ok(txtVentas.includes("0.00;0.00;0.00;-2500.00;-400.00;-87.00;-2987.00"), `CSV Ventas debe exportar NC con números negativos limpios para Excel:\n${txtVentas}`);
 
     const txtResumen = Buffer.from(adjResumen.content, "base64").toString("utf8");
     assert.ok(txtResumen.includes("13000.00"), `Resumen CSV debe cuadrar Ingresos Brutos = 13000.00:\n${txtResumen}`);

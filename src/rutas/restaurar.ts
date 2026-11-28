@@ -273,9 +273,9 @@ async function reconstruirImpuestosCompras(db: D1Database): Promise<string | nul
   const pasos: D1PreparedStatement[] = [];
   for (const k of results) {
     const lineas = JSON.parse(k.renglones_json) as Fila[];
-    const calc = calcular(lineas.map((l) => ({ cantidad_milli: l.cantidad_milli, precio_usd: l.costo_usd, alicuota_cent: l.alicuota_cent })), k.tasa_e8);
+    const calc = calcular(lineas.map((l) => ({ cantidad_milli: l.cantidad_milli, precio_usd: l.costo_usd, alicuota_cent: l.alicuota_cent, tipo_exencion: l.tipo_exencion })), k.tasa_e8);
     if (calc.total_bs !== k.total_bs) return `La compra ${k.id} no cuadra al reconstruir sus impuestos.`;
-    for (const i of calc.impuestos) pasos.push(db.prepare(`INSERT INTO compra_impuestos (compra_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs) VALUES (?, ?, ?, ?, ?, ?)`).bind(k.id, i.alicuota_cent, i.base_usd, i.iva_usd, i.base_bs, i.iva_bs));
+    for (const i of calc.impuestos) pasos.push(db.prepare(`INSERT INTO compra_impuestos (compra_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs, exonerada_usd, exonerada_bs, no_sujeta_usd, no_sujeta_bs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(k.id, i.alicuota_cent, i.base_usd, i.iva_usd, i.base_bs, i.iva_bs, i.exonerada_usd ?? 0, i.exonerada_bs ?? 0, i.no_sujeta_usd ?? 0, i.no_sujeta_bs ?? 0));
   }
   if (pasos.length) await db.batch(pasos);
   return null;

@@ -11,7 +11,16 @@ import { sha256 } from "../seguridad";
 import { anularFacturaImprentaDigital, solicitarControlImprentaDigital } from "./sistema";
 import { EMAIL, PAGADO, aCentavos, auditar, comodin, falla, fechaCaracas, idParam, leerJson, masDias, modoActual, parametrosVigentes, requiereSesion, texto, type Ctx, type Env } from "../comun";
 import { leerTipoContribuyente, normalizarTipoContribuyente, reglasRegimen } from "../regimen";
-import { evaluarAnulacionDocumento, puedeInvocarImprentaDigital, validarIgtfNotaCredito } from "../reglas-fiscales";
+import {
+  calcularBaseIgtfNcSugerida,
+  esTipoExencionValido,
+  evaluarAnulacionDocumento,
+  normalizarTipoExencion,
+  puedeInvocarImprentaDigital,
+  resolverBaseIgtfFacturaUsd,
+  validarIgtfNotaCredito,
+  type TipoExencion,
+} from "../reglas-fiscales";
 import { PROVEEDOR_TFHKA, leerConfigImprentaCompleta, validarUrlPdfSegura } from "../imprenta-cg";
 import { descargarPdfTfhka } from "../imprenta-tfhka";
 import { validarTasaFiscalVigente } from "../tasa-bcv";
@@ -53,37 +62,74 @@ async function resolverLogoEmisor(db: D1Database, emisorPrevio: Record<string, a
   return perfilActual?.logo_base64 ?? null;
 }
 
-type Linea = { catalogo_id: number | null; tipo: "SERVICIO" | "PRODUCTO"; descripcion: string; cantidad_milli: number; precio_usd: number; costo_usd: number | null; alicuota_cent: number };
+type Linea = {
+  catalogo_id: number | null;
+  tipo: "SERVICIO" | "PRODUCTO";
+  descripcion: string;
+  cantidad_milli: number;
+  precio_usd: number;
+  costo_usd: number | null;
+  alicuota_cent: number;
+  tipo_exencion: TipoExencion;
+};
 type Fila = Record<string, any>;
 
 const COLUMNAS_SIN_COSTO = `id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, factura_afectada_id, motivo_nc, estado, modo, numero, control_interno, control_fiscal, medio,
   presupuesto_id, cliente_id, cliente_rif, cliente_nombre, cliente_direccion, cliente_whatsapp, cliente_email, nota, fecha_emision, emitido_en,
-  tasa_e8, tasa_cargada_en, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd,
-  subtotal_bs, iva_bs, igtf_bs, total_bs, parametros_json, emisor_json, anulado_en, motivo_anulacion, creado_en, condicion, dias_credito, vence_el`;
+  tasa_e8, tasa_cargada_en, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_base_usd, igtf_usd, total_usd,
+  subtotal_bs, iva_bs, igtf_base_bs, igtf_bs, total_bs, parametros_json, emisor_json, anulado_en, motivo_anulacion, creado_en, condicion, dias_credito, vence_el`;
 const COLUMNAS = `${COLUMNAS_SIN_COSTO}, costo_total_usd`;
+
+function leerBaseIgtfOpcional(b: Record<string, unknown>): number | null | "INVALIDA" {
+  const rawCent = b.igtf_base_centavos;
+  if (rawCent !== undefined && rawCent !== null && String(rawCent).trim() !== "") {
+    const n = Number(rawCent);
+    return Number.isSafeInteger(n) && n >= 0 ? n : "INVALIDA";
+  }
+  const rawUsd = b.igtf_base_usd !== undefined ? b.igtf_base_usd : b.monto_divisa_usd;
+  if (rawUsd === undefined || rawUsd === null || String(rawUsd).trim() === "") return null;
+  const c = aCentavos(rawUsd);
+  return c === null || Number.isNaN(c) || c < 0 ? "INVALIDA" : c;
+}
 
 async function cargar(c: Ctx, id: number, incluirCostos = true) {
   const db = c.env.DB;
   const doc = await db.prepare(`SELECT ${incluirCostos ? COLUMNAS : COLUMNAS_SIN_COSTO} FROM documentos WHERE id = ?`).bind(id).first<Fila>();
   if (!doc) return null;
   const colsReng = incluirCostos
-    ? `id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd, monto_bs`
-    : `id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, alicuota_cent, monto_usd, monto_bs`;
+    ? `id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, tipo_exencion, monto_usd, monto_bs`
+    : `id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, alicuota_cent, tipo_exencion, monto_usd, monto_bs`;
   const [l, i] = await db.batch([
     db.prepare(`SELECT ${colsReng} FROM documento_renglones WHERE documento_id = ? ORDER BY orden`).bind(id),
-    db.prepare(`SELECT alicuota_cent, base_usd, iva_usd, base_bs, iva_bs FROM documento_impuestos WHERE documento_id = ? ORDER BY alicuota_cent`).bind(id),
+    db.prepare(`SELECT alicuota_cent, base_usd, iva_usd, base_bs, iva_bs, exonerada_usd, exonerada_bs, no_sujeta_usd, no_sujeta_bs FROM documento_impuestos WHERE documento_id = ? ORDER BY alicuota_cent`).bind(id),
   ]);
-  return { doc, lineas: l.results as Fila[], impuestos: i.results as Fila[] };
+  const impuestos = (i.results as Fila[]).map((x) => {
+    const exonerada_usd = Number(x.exonerada_usd ?? 0) || 0;
+    const exonerada_bs = Number(x.exonerada_bs ?? 0) || 0;
+    const no_sujeta_usd = Number(x.no_sujeta_usd ?? 0) || 0;
+    const no_sujeta_bs = Number(x.no_sujeta_bs ?? 0) || 0;
+    const esCero = Number(x.alicuota_cent) === 0;
+    return {
+      ...x,
+      exenta_usd: esCero ? Math.max(0, Number(x.base_usd ?? 0) - exonerada_usd - no_sujeta_usd) : 0,
+      exenta_bs: esCero && x.base_bs != null ? Math.max(0, Number(x.base_bs ?? 0) - exonerada_bs - no_sujeta_bs) : x.base_bs != null ? 0 : null,
+      exonerada_usd: esCero ? exonerada_usd : 0,
+      exonerada_bs: esCero ? exonerada_bs : 0,
+      no_sujeta_usd: esCero ? no_sujeta_usd : 0,
+      no_sujeta_bs: esCero ? no_sujeta_bs : 0,
+    };
+  });
+  return { doc, lineas: l.results as Fila[], impuestos };
 }
 
 async function normalizarLineas(c: Ctx, bruto: unknown, permitidas: number[], max: number): Promise<Linea[] | string> {
   if (!Array.isArray(bruto) || bruto.length === 0) return "Agrega al menos un renglón.";
   if (bruto.length > max) return `Máximo ${max} renglones por documento: divide la venta en dos documentos.`;
-  type Item = { id: number; nombre: string; tipo: "SERVICIO" | "PRODUCTO"; costo_centavos: number | null; alicuota_iva: number; activo: number };
+  type Item = { id: number; nombre: string; tipo: "SERVICIO" | "PRODUCTO"; costo_centavos: number | null; alicuota_iva: number; tipo_exencion?: string | null; activo: number };
   const ids = [...new Set(bruto.map((r) => Number(((r ?? {}) as Record<string, unknown>).catalogo_id) || 0).filter(Boolean))];
   const items = new Map<number, Item>();
   if (ids.length) {
-    const { results } = await c.env.DB.prepare(`SELECT id, nombre, tipo, costo_centavos, alicuota_iva, activo FROM catalogo WHERE id IN (${ids.map(() => "?").join(",")})`)
+    const { results } = await c.env.DB.prepare(`SELECT id, nombre, tipo, costo_centavos, alicuota_iva, tipo_exencion, activo FROM catalogo WHERE id IN (${ids.map(() => "?").join(",")})`)
       .bind(...ids).all<Item>();
     for (const it of results) items.set(it.id, it);
   }
@@ -95,11 +141,13 @@ async function normalizarLineas(c: Ctx, bruto: unknown, permitidas: number[], ma
     if (precio === null || Number.isNaN(precio)) return `${pos}: escribe el precio en USD (ejemplo: 12,50).`;
     const catId = Number(b.catalogo_id) || 0;
     let tipo: "SERVICIO" | "PRODUCTO" = "SERVICIO", costo: number | null = null, alic: number, desc = texto(b.descripcion, 200);
+    let teCatalogo: string | null = null;
     if (catId) {
       const it = items.get(catId);
       if (!it) return `${pos}: ese producto o servicio ya no existe.`;
       if (!it.activo) return `${pos}: «${it.nombre}» está desactivado en el inventario.`;
       tipo = it.tipo; costo = it.costo_centavos; alic = it.alicuota_iva * 100; desc = desc || it.nombre;
+      teCatalogo = it.tipo_exencion ?? null;
     } else {
       const alVuelo = texto(b.tipo, 10) === "PRODUCTO";
       if (desc.length < 2) return `${pos}: escribe la descripción del ${alVuelo ? "producto" : "servicio"}.`;
@@ -111,7 +159,12 @@ async function normalizarLineas(c: Ctx, bruto: unknown, permitidas: number[], ma
       }
     }
     if (!permitidas.includes(alic)) return `${pos}: el IVA no es válido.`;
-    salida.push({ catalogo_id: catId || null, tipo, descripcion: desc, cantidad_milli: cant, precio_usd: precio, costo_usd: costo, alicuota_cent: alic });
+    const teRaw = texto(b.tipo_exencion, 20).toUpperCase();
+    if (alic === 0 && teRaw && !esTipoExencionValido(teRaw)) {
+      return `${pos}: la clasificación sin IVA debe ser Exenta, Exonerada o No Sujeta.`;
+    }
+    const tipo_exencion: TipoExencion = alic === 0 ? normalizarTipoExencion(teRaw || teCatalogo) : "EXENTA";
+    salida.push({ catalogo_id: catId || null, tipo, descripcion: desc, cantidad_milli: cant, precio_usd: precio, costo_usd: costo, alicuota_cent: alic, tipo_exencion });
   }
   return salida;
 }
@@ -140,10 +193,17 @@ async function validarBorrador(c: Ctx, b: Record<string, unknown>, tipo: string)
   if (aplicaIgtf && !reglasTipo.cobraIgtf) {
     return `Solo los Contribuyentes Especiales (SPE) designados por el SENIAT pueden cobrar IGTF (3%). Tu negocio es Contribuyente ${reglasTipo.etiquetaCorta}.`;
   }
+  let baseIgtfOpt: number | undefined;
+  if (aplicaIgtf) {
+    const parsed = leerBaseIgtfOpcional(b);
+    if (parsed === "INVALIDA") return "El monto pagado en divisas para IGTF no es válido (ejemplo: 40,00).";
+    if (parsed === 0) return "Si aplicas IGTF (3%), el monto pagado en divisas debe ser mayor que 0 (o déjalo vacío para aplicar al 100%).";
+    if (parsed !== null) baseIgtfOpt = parsed;
+  }
   try {
     return {
       clienteId, nota: texto(b.nota, 500) || null, lineas,
-      calculo: calcular(lineas, null, { aplica_igtf: aplicaIgtf === 1, igtf_alicuota_cent: alicuotaIgtf }),
+      calculo: calcular(lineas, null, { aplica_igtf: aplicaIgtf === 1, igtf_alicuota_cent: alicuotaIgtf, igtf_base_usd: baseIgtfOpt }),
       condicion, dias, aplicaIgtf,
     };
   } catch (e) { return (e as Error).message; }
@@ -151,9 +211,9 @@ async function validarBorrador(c: Ctx, b: Record<string, unknown>, tipo: string)
 
 const insertarLineas = (c: Ctx, id: number, lineas: Linea[], montos: { monto_usd: number }[]) =>
   lineas.map((l, i) => c.env.DB.prepare(
-    `INSERT INTO documento_renglones (documento_id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(id, i + 1, l.catalogo_id, l.tipo, l.descripcion, l.cantidad_milli, l.precio_usd, l.costo_usd, l.alicuota_cent, montos[i].monto_usd));
+    `INSERT INTO documento_renglones (documento_id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, tipo_exencion, monto_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(id, i + 1, l.catalogo_id, l.tipo, l.descripcion, l.cantidad_milli, l.precio_usd, l.costo_usd, l.alicuota_cent, l.tipo_exencion, montos[i].monto_usd));
 
 // ---------------------------------------------------------------- consultas (con paginación y filtro por mes/fechas v4.0)
 documentos.get("/", async (c) => {
@@ -241,7 +301,7 @@ documentos.get("/:id", async (c) => {
   const results = resultsRaw;
   const esFacturaBase = r.doc.tipo === "FACTURA" && !r.doc.es_nota_credito && !r.doc.es_nota_debito;
   const { results: notasCredito } = esFacturaBase
-    ? await db.prepare(`SELECT id, numero, control_interno, control_fiscal, fecha_emision, estado, motivo_nc, total_usd, total_bs
+    ? await db.prepare(`SELECT id, numero, control_interno, control_fiscal, fecha_emision, estado, motivo_nc, aplica_igtf, igtf_base_usd, subtotal_usd, iva_usd, igtf_usd, total_usd, total_bs
                         FROM documentos WHERE factura_afectada_id = ? AND es_nota_credito = 1 ORDER BY id`).bind(id).all<Fila>()
     : { results: [] as Fila[] };
   const { results: notasDebito } = esFacturaBase
@@ -297,11 +357,17 @@ documentos.get("/:id", async (c) => {
     .bind(id)
     .first<Fila>()
     .catch(() => null);
+  const baseIgtfOrigUsd = esFacturaBase ? resolverBaseIgtfFacturaUsd(r.doc) : 0;
+  const baseIgtfReversadaUsd = esFacturaBase
+    ? notasCredito.filter((n) => n.estado === "EMITIDO" && n.aplica_igtf).reduce((s, n) => s + resolverBaseIgtfFacturaUsd(n), 0)
+    : 0;
+  const igtfBaseDisponibleUsd = Math.max(0, baseIgtfOrigUsd - baseIgtfReversadaUsd);
   return c.json({
     ok: true, documento: r.doc, lineas: lineasConDev, impuestos: r.impuestos,
     pagos: results, notas_credito: notasCredito, notas_debito: notasDebito, factura_afectada: facturaAfectada,
     imprenta_envio: imprentaEnvio,
     pagado_usd: pagadoTotal, acreditado_nc_usd: acreditadoNc,
+    igtf_base_disponible_usd: igtfBaseDisponibleUsd,
     saldo_usd: r.doc.estado === "BORRADOR" || r.doc.es_nota_credito ? null : Math.max((r.doc.total_usd ?? 0) - pagadoTotal, 0),
     anulacion: {
       permitida: evalAnul.permitida,
@@ -320,9 +386,9 @@ documentos.post("/", async (c) => {
   if (typeof v === "string") return falla(c, 400, v);
   const t = v.calculo, u = c.get("usuario");
   const fila = await c.env.DB.prepare(
-    `INSERT INTO documentos (tipo, estado, modo, cliente_id, nota, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd, costo_total_usd, creado_por, condicion, dias_credito)
-     VALUES (?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
-  ).bind(tipo, await modoActual(c.env.DB), v.clienteId, v.nota, t.subtotal_usd, t.iva_usd, v.aplicaIgtf, t.igtf_alicuota_cent, t.igtf_usd, t.total_usd, t.costo_total_usd, u.id, v.condicion, v.dias).first<{ id: number }>();
+    `INSERT INTO documentos (tipo, estado, modo, cliente_id, nota, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_base_usd, igtf_usd, total_usd, costo_total_usd, creado_por, condicion, dias_credito)
+     VALUES (?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+  ).bind(tipo, await modoActual(c.env.DB), v.clienteId, v.nota, t.subtotal_usd, t.iva_usd, v.aplicaIgtf, t.igtf_alicuota_cent, t.igtf_base_usd, t.igtf_usd, t.total_usd, t.costo_total_usd, u.id, v.condicion, v.dias).first<{ id: number }>();
   await c.env.DB.batch(insertarLineas(c, fila!.id, v.lineas, t.renglones));
   await auditar(c, u.id, "DOC_CREAR", `${tipo} ${fila!.id}`);
   return c.json({ ok: true, id: fila!.id });
@@ -350,8 +416,8 @@ documentos.put("/:id", async (c) => {
   await db.batch([
     db.prepare(`DELETE FROM documento_renglones WHERE documento_id = ?`).bind(id),
     ...insertarLineas(c, id, v.lineas, t.renglones),
-    db.prepare(`UPDATE documentos SET cliente_id = ?, nota = ?, subtotal_usd = ?, iva_usd = ?, aplica_igtf = ?, igtf_alicuota_cent = ?, igtf_usd = ?, total_usd = ?, costo_total_usd = ?, condicion = ?, dias_credito = ?
-                WHERE id = ? AND estado = 'BORRADOR'`).bind(v.clienteId, v.nota, t.subtotal_usd, t.iva_usd, v.aplicaIgtf, t.igtf_alicuota_cent, t.igtf_usd, t.total_usd, t.costo_total_usd, v.condicion, v.dias, id),
+    db.prepare(`UPDATE documentos SET cliente_id = ?, nota = ?, subtotal_usd = ?, iva_usd = ?, aplica_igtf = ?, igtf_alicuota_cent = ?, igtf_base_usd = ?, igtf_usd = ?, total_usd = ?, costo_total_usd = ?, condicion = ?, dias_credito = ?
+                WHERE id = ? AND estado = 'BORRADOR'`).bind(v.clienteId, v.nota, t.subtotal_usd, t.iva_usd, v.aplicaIgtf, t.igtf_alicuota_cent, t.igtf_base_usd, t.igtf_usd, t.total_usd, t.costo_total_usd, v.condicion, v.dias, id),
   ]);
   await auditar(c, c.get("usuario").id, "DOC_EDITAR", String(id));
   return c.json({ ok: true });
@@ -406,8 +472,9 @@ documentos.post("/:id/emitir", async (c) => {
 
   const fecha = fechaCaracas(), params = await parametrosVigentes(db, fecha);
   const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? 300) || 300;
+  const baseIgtfGuardada = doc.aplica_igtf && Number(doc.igtf_base_usd ?? 0) > 0 ? Number(doc.igtf_base_usd) : undefined;
   let calc;
-  try { calc = calcular(lineas as Linea[], tasa, { aplica_igtf: !!doc.aplica_igtf, igtf_alicuota_cent: alicuotaIgtf }); }
+  try { calc = calcular(lineas as Linea[], tasa, { aplica_igtf: !!doc.aplica_igtf, igtf_alicuota_cent: alicuotaIgtf, igtf_base_usd: baseIgtfGuardada }); }
   catch (e) { return falla(c, 400, (e as Error).message); }
 
   const esFactura = doc.tipo === "FACTURA", vence = esFactura ? (doc.condicion === "CREDITO" ? masDias(fecha, Number(doc.dias_credito)) : fecha) : null;
@@ -440,8 +507,8 @@ documentos.post("/:id/emitir", async (c) => {
   calc.renglones.forEach((r: Fila, i: number) => pasos.push(
     db.prepare(`UPDATE documento_renglones SET monto_usd = ?, monto_bs = ? WHERE id = ?`).bind(r.monto_usd, r.monto_bs, lineas[i].id)));
   calc.impuestos.forEach((x: Fila) => pasos.push(
-    db.prepare(`INSERT INTO documento_impuestos (documento_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(id, x.alicuota_cent, x.base_usd, x.iva_usd, x.base_bs, x.iva_bs)));
+    db.prepare(`INSERT INTO documento_impuestos (documento_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs, exonerada_usd, exonerada_bs, no_sujeta_usd, no_sujeta_bs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, x.alicuota_cent, x.base_usd, x.iva_usd, x.base_bs, x.iva_bs, x.exonerada_usd ?? 0, x.exonerada_bs ?? 0, x.no_sujeta_usd ?? 0, x.no_sujeta_bs ?? 0)));
   for (const [pid, sd] of salidas) {
     const saldo = sal.get(pid)!;
     pasos.push(guardaSaldo(db, pid, saldo), movimiento(db, { producto_id: pid, modo: doc.modo, tipo: "VENTA", cantidad_milli: -sd.cant, valor_usd: -valorSalida(saldo, sd.cant), documento_id: id, fecha, uid: u.id }));
@@ -452,14 +519,14 @@ documentos.post("/:id/emitir", async (c) => {
        control_interno = ${esFactura ? "(SELECT valor FROM contadores WHERE clave = ?)" : "NULL"},
        cliente_rif = ?, cliente_nombre = ?, cliente_direccion = ?, cliente_whatsapp = ?, cliente_email = ?,
        fecha_emision = ?, emitido_en = ?, tasa_e8 = ?, tasa_cargada_en = ?,
-       subtotal_usd = ?, iva_usd = ?, igtf_alicuota_cent = ?, igtf_usd = ?, total_usd = ?,
-       subtotal_bs = ?, iva_bs = ?, igtf_bs = ?, total_bs = ?, costo_total_usd = ?,
+       subtotal_usd = ?, iva_usd = ?, igtf_alicuota_cent = ?, igtf_base_usd = ?, igtf_usd = ?, total_usd = ?,
+       subtotal_bs = ?, iva_bs = ?, igtf_base_bs = ?, igtf_bs = ?, total_bs = ?, costo_total_usd = ?,
        parametros_json = ?, emisor_json = ?, vence_el = ?, medio = ?
      WHERE id = ? AND estado = 'BORRADOR'`
   ).bind(...[claveNum, ...(esFactura ? [claveCtl] : []), cli.rif_cedula, cli.nombre_apellido, cli.direccion, cli.whatsapp, cli.email,
     fecha, new Date().toISOString(), tasa, perfil!.tasa_bcv_fecha,
-    calc.subtotal_usd, calc.iva_usd, calc.igtf_alicuota_cent, calc.igtf_usd, calc.total_usd,
-    calc.subtotal_bs, calc.iva_bs, calc.igtf_bs ?? 0, calc.total_bs, calc.costo_total_usd,
+    calc.subtotal_usd, calc.iva_usd, calc.igtf_alicuota_cent, calc.igtf_base_usd ?? 0, calc.igtf_usd, calc.total_usd,
+    calc.subtotal_bs, calc.iva_bs, calc.igtf_base_bs ?? 0, calc.igtf_bs ?? 0, calc.total_bs, calc.costo_total_usd,
     JSON.stringify(reglas), JSON.stringify(emisor), vence, esFactura && perfil!.medio_facturacion !== "SIN_DEFINIR" ? perfil!.medio_facturacion : null, id]));
   if (esFactura && doc.presupuesto_id)
     pasos.push(db.prepare(`UPDATE documentos SET estado = 'FACTURADO' WHERE id = ? AND estado = 'EMITIDO'`).bind(doc.presupuesto_id));
@@ -494,10 +561,12 @@ documentos.post("/:id/emitir", async (c) => {
         nota: doc.nota ?? null,
         subtotal_bs: calc.subtotal_bs,
         iva_bs: calc.iva_bs,
+        igtf_base_bs: calc.igtf_base_bs ?? 0,
         igtf_bs: calc.igtf_bs ?? 0,
         total_bs: calc.total_bs,
         subtotal_usd: calc.subtotal_usd,
         iva_usd: calc.iva_usd,
+        igtf_base_usd: calc.igtf_base_usd ?? 0,
         igtf_usd: calc.igtf_usd ?? 0,
         total_usd: calc.total_usd,
         tasa_e8: tasa,
@@ -574,6 +643,7 @@ documentos.post("/:id/devolver", async (c) => {
       precio_usd: orig.precio_usd,
       costo_usd: orig.costo_usd,
       alicuota_cent: orig.alicuota_cent,
+      tipo_exencion: normalizarTipoExencion(orig.tipo_exencion),
     });
   }
   if (!lineasNc.length) return falla(c, 400, "Indica al menos un renglón con cantidad a devolver mayor que 0.");
@@ -592,13 +662,49 @@ documentos.post("/:id/devolver", async (c) => {
   }
 
   const fecha = fechaCaracas(), params = await parametrosVigentes(db, fecha);
-  const aplicaIgtf = b.aplica_igtf === undefined ? !!F.aplica_igtf : (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on");
-  const validacionIgtf = validarIgtfNotaCredito(aplicaIgtf, Boolean(F.aplica_igtf));
-  if (!validacionIgtf.ok) {
-    return falla(c, 400, validacionIgtf.error);
-  }
+  const aplicaIgtfPedido = b.aplica_igtf === undefined ? !!F.aplica_igtf : (b.aplica_igtf === true || b.aplica_igtf === 1 || b.aplica_igtf === "1" || b.aplica_igtf === "on");
+  const prevIgtfRow = await db.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN nc.aplica_igtf = 1 THEN COALESCE(NULLIF(nc.igtf_base_usd, 0), nc.subtotal_usd + nc.iva_usd) ELSE 0 END), 0) AS rev_usd
+     FROM documentos nc WHERE nc.factura_afectada_id = ? AND nc.es_nota_credito = 1 AND nc.estado = 'EMITIDO'`
+  ).bind(id).first<{ rev_usd: number }>();
+  const baseIgtfOrigUsd = resolverBaseIgtfFacturaUsd(F);
+  const baseIgtfYaRevUsd = Number(prevIgtfRow?.rev_usd ?? 0) || 0;
+  const baseIgtfDisponibleUsd = Math.max(0, baseIgtfOrigUsd - baseIgtfYaRevUsd);
   const alicuotaIgtf = Number(params.igtf_alicuota_cent ?? F.igtf_alicuota_cent ?? 300) || 300;
-  const calc = calcular(lineasNc, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf });
+  const calcPrev = calcular(lineasNc, tasa, { aplica_igtf: false });
+  const totalConIvaNcUsd = calcPrev.subtotal_usd + calcPrev.iva_usd;
+
+  let aplicaIgtf = aplicaIgtfPedido;
+  let baseIgtfNcUsd: number | undefined;
+  if (aplicaIgtf) {
+    const parsedBase = leerBaseIgtfOpcional(b);
+    if (parsedBase === "INVALIDA") return falla(c, 400, "La base en divisas para reversar IGTF no es válida (ejemplo: 40,00).");
+    if (!F.aplica_igtf) {
+      const val0 = validarIgtfNotaCredito(true, false);
+      if (!val0.ok) return falla(c, 400, val0.error);
+    }
+    if (parsedBase !== null) {
+      baseIgtfNcUsd = parsedBase;
+    } else if (baseIgtfDisponibleUsd === 0) {
+      if (b.aplica_igtf === undefined) {
+        aplicaIgtf = false;
+      } else {
+        return falla(c, 400, "El IGTF de la factura original ya fue reversado en su totalidad en notas de crédito anteriores.");
+      }
+    } else {
+      baseIgtfNcUsd = calcularBaseIgtfNcSugerida(totalConIvaNcUsd, (F.subtotal_usd ?? 0) + (F.iva_usd ?? 0), baseIgtfOrigUsd, baseIgtfYaRevUsd);
+    }
+    if (aplicaIgtf) {
+      const validacionIgtf = validarIgtfNotaCredito(true, Boolean(F.aplica_igtf), {
+        baseIgtfNcUsd,
+        baseIgtfDisponibleUsd,
+        totalConIvaNcUsd,
+      });
+      if (!validacionIgtf.ok) return falla(c, 400, validacionIgtf.error);
+      if (baseIgtfNcUsd === 0) aplicaIgtf = false;
+    }
+  }
+  const calc = calcular(lineasNc, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf, igtf_base_usd: aplicaIgtf ? baseIgtfNcUsd : undefined });
 
   const { emisor, stmtLogo } = await prepararEmisorDeduplicado(db, perfil!);
   const reglas = {
@@ -612,10 +718,10 @@ documentos.post("/:id/devolver", async (c) => {
   // Crear borrador temporal de la Nota de Crédito y emitirlo en lote junto con la devolución de existencias
   const borrador = await db.prepare(
     `INSERT INTO documentos (tipo, es_nota_credito, factura_afectada_id, motivo_nc, estado, modo, cliente_id, nota,
-       subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd, costo_total_usd, creado_por, condicion)
-     VALUES ('FACTURA', 1, ?, ?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONTADO') RETURNING id`
+       subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_base_usd, igtf_usd, total_usd, costo_total_usd, creado_por, condicion)
+     VALUES ('FACTURA', 1, ?, ?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONTADO') RETURNING id`
   ).bind(id, motivo, F.modo, F.cliente_id, `Nota de crédito sobre Factura ${String(F.numero).padStart(8, "0")}: ${motivo}`,
-    calc.subtotal_usd, calc.iva_usd, aplicaIgtf ? 1 : 0, calc.igtf_alicuota_cent, calc.igtf_usd, calc.total_usd, calc.costo_total_usd, u.id).first<{ id: number }>();
+    calc.subtotal_usd, calc.iva_usd, aplicaIgtf ? 1 : 0, calc.igtf_alicuota_cent, calc.igtf_base_usd ?? 0, calc.igtf_usd, calc.total_usd, calc.costo_total_usd, u.id).first<{ id: number }>();
   const ncId = borrador!.id;
 
   const idsProd = [...new Set(lineasNc.filter((l) => l.catalogo_id && l.tipo === "PRODUCTO").map((l) => l.catalogo_id as number))];
@@ -647,19 +753,29 @@ documentos.post("/:id/devolver", async (c) => {
       ).bind(id, id, l.orden_origen, l.cantidad_milli, origCant)
     );
   }
+  if (aplicaIgtf && (calc.igtf_base_usd ?? 0) > 0) {
+    pasos.push(
+      db.prepare(
+        `INSERT INTO verificaciones (ok) SELECT 0 WHERE
+           (SELECT COALESCE(SUM(CASE WHEN nc.aplica_igtf = 1 THEN COALESCE(NULLIF(nc.igtf_base_usd, 0), nc.subtotal_usd + nc.iva_usd) ELSE 0 END), 0)
+            FROM documentos nc
+            WHERE nc.factura_afectada_id = ? AND nc.es_nota_credito = 1 AND nc.estado = 'EMITIDO') + ? > ?`
+      ).bind(id, calc.igtf_base_usd ?? 0, baseIgtfOrigUsd)
+    );
+  }
   pasos.push(
     db.prepare(`UPDATE contadores SET valor = valor + 1 WHERE clave = ? AND ${sigueBorrador}`).bind(claveNum, ncId),
     db.prepare(`UPDATE contadores SET valor = valor + 1 WHERE clave = ? AND ${sigueBorrador}`).bind(claveCtl, ncId),
   );
   lineasNc.forEach((l, i) => pasos.push(
     db.prepare(
-      `INSERT INTO documento_renglones (documento_id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd, monto_bs)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(ncId, l.orden_origen, l.catalogo_id, l.tipo, l.descripcion, l.cantidad_milli, l.precio_usd, l.costo_usd, l.alicuota_cent, calc.renglones[i].monto_usd, calc.renglones[i].monto_bs)
+      `INSERT INTO documento_renglones (documento_id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, tipo_exencion, monto_usd, monto_bs)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(ncId, l.orden_origen, l.catalogo_id, l.tipo, l.descripcion, l.cantidad_milli, l.precio_usd, l.costo_usd, l.alicuota_cent, l.tipo_exencion, calc.renglones[i].monto_usd, calc.renglones[i].monto_bs)
   ));
   calc.impuestos.forEach((x: Fila) => pasos.push(
-    db.prepare(`INSERT INTO documento_impuestos (documento_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(ncId, x.alicuota_cent, x.base_usd, x.iva_usd, x.base_bs, x.iva_bs)
+    db.prepare(`INSERT INTO documento_impuestos (documento_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs, exonerada_usd, exonerada_bs, no_sujeta_usd, no_sujeta_bs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(ncId, x.alicuota_cent, x.base_usd, x.iva_usd, x.base_bs, x.iva_bs, x.exonerada_usd ?? 0, x.exonerada_bs ?? 0, x.no_sujeta_usd ?? 0, x.no_sujeta_bs ?? 0)
   ));
   for (const [pid, ent] of entradas) {
     const saldo = sal.get(pid)!;
@@ -680,15 +796,15 @@ documentos.post("/:id/devolver", async (c) => {
        control_interno = (SELECT valor FROM contadores WHERE clave = ?),
        cliente_rif = ?, cliente_nombre = ?, cliente_direccion = ?, cliente_whatsapp = ?, cliente_email = ?,
        fecha_emision = ?, emitido_en = ?, tasa_e8 = ?, tasa_cargada_en = ?,
-       subtotal_usd = ?, iva_usd = ?, igtf_alicuota_cent = ?, igtf_usd = ?, total_usd = ?,
-       subtotal_bs = ?, iva_bs = ?, igtf_bs = ?, total_bs = ?, costo_total_usd = ?,
+       subtotal_usd = ?, iva_usd = ?, igtf_alicuota_cent = ?, igtf_base_usd = ?, igtf_usd = ?, total_usd = ?,
+       subtotal_bs = ?, iva_bs = ?, igtf_base_bs = ?, igtf_bs = ?, total_bs = ?, costo_total_usd = ?,
        parametros_json = ?, emisor_json = ?, vence_el = ?, medio = ?
      WHERE id = ? AND estado = 'BORRADOR'`
   ).bind(
     claveNum, claveCtl, F.cliente_rif, F.cliente_nombre, F.cliente_direccion, F.cliente_whatsapp, F.cliente_email,
     fecha, new Date().toISOString(), tasa, perfil!.tasa_bcv_fecha,
-    calc.subtotal_usd, calc.iva_usd, calc.igtf_alicuota_cent, calc.igtf_usd, calc.total_usd,
-    calc.subtotal_bs, calc.iva_bs, calc.igtf_bs ?? 0, calc.total_bs, calc.costo_total_usd,
+    calc.subtotal_usd, calc.iva_usd, calc.igtf_alicuota_cent, calc.igtf_base_usd ?? 0, calc.igtf_usd, calc.total_usd,
+    calc.subtotal_bs, calc.iva_bs, calc.igtf_base_bs ?? 0, calc.igtf_bs ?? 0, calc.total_bs, calc.costo_total_usd,
     JSON.stringify(reglas), JSON.stringify(emisor), fecha,
     perfil!.medio_facturacion !== "SIN_DEFINIR" ? perfil!.medio_facturacion : F.medio, ncId
   ));
@@ -738,10 +854,12 @@ documentos.post("/:id/devolver", async (c) => {
         es_nc_total: esNcTotal,
         subtotal_bs: calc.subtotal_bs,
         iva_bs: calc.iva_bs,
+        igtf_base_bs: calc.igtf_base_bs ?? 0,
         igtf_bs: calc.igtf_bs ?? 0,
         total_bs: calc.total_bs,
         subtotal_usd: calc.subtotal_usd,
         iva_usd: calc.iva_usd,
+        igtf_base_usd: calc.igtf_base_usd ?? 0,
         igtf_usd: calc.igtf_usd ?? 0,
         total_usd: calc.total_usd,
         tasa_e8: tasa,
@@ -796,6 +914,7 @@ documentos.post("/:id/nota-debito", async (c) => {
         cantidad: b.cantidad ?? "1",
         precio_usd: b.monto_usd ?? b.precio_usd,
         alicuota_iva: b.alicuota_iva ?? (reglasTipo.cobraIva ? 16 : 0),
+        tipo_exencion: b.tipo_exencion,
         tipo: "SERVICIO",
       }];
 
@@ -824,10 +943,17 @@ documentos.post("/:id/nota-debito", async (c) => {
     return falla(c, 400, `Solo los Contribuyentes Especiales (SPE) pueden aplicar IGTF (3%) en Notas de Débito. Tu negocio es Contribuyente ${reglasTipo.etiquetaCorta}.`);
   }
   const alicuotaIgtf = Number(F.igtf_alicuota_cent || params.igtf_alicuota_cent || 300) || 300;
+  let baseIgtfNdOpt: number | undefined;
+  if (aplicaIgtf) {
+    const parsed = leerBaseIgtfOpcional(b);
+    if (parsed === "INVALIDA") return falla(c, 400, "El monto pagado en divisas para IGTF no es válido (ejemplo: 40,00).");
+    if (parsed === 0) return falla(c, 400, "Si aplicas IGTF (3%), el monto pagado en divisas debe ser mayor que 0 (o déjalo vacío para aplicar al 100%).");
+    if (parsed !== null) baseIgtfNdOpt = parsed;
+  }
 
   let calc;
   try {
-    calc = calcular(lineasNd, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf });
+    calc = calcular(lineasNd, tasa, { aplica_igtf: aplicaIgtf, igtf_alicuota_cent: alicuotaIgtf, igtf_base_usd: baseIgtfNdOpt });
   } catch (e) {
     return falla(c, 400, (e as Error).message);
   }
@@ -850,11 +976,11 @@ documentos.post("/:id/nota-debito", async (c) => {
 
   const notaTexto = `Nota de débito sobre Factura N.º ${String(F.numero).padStart(8, "0")} — Motivo: ${motivo}`;
   const borrador = await db.prepare(
-    `INSERT INTO documentos (tipo, es_nota_credito, es_nota_debito, factura_afectada_id, motivo_nc, estado, modo, cliente_id, nota, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd, costo_total_usd, creado_por, condicion, dias_credito)
-     VALUES ('FACTURA', 0, 1, ?, ?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONTADO', NULL) RETURNING id`
+    `INSERT INTO documentos (tipo, es_nota_credito, es_nota_debito, factura_afectada_id, motivo_nc, estado, modo, cliente_id, nota, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_base_usd, igtf_usd, total_usd, costo_total_usd, creado_por, condicion, dias_credito)
+     VALUES ('FACTURA', 0, 1, ?, ?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONTADO', NULL) RETURNING id`
   ).bind(
     id, motivo, F.modo, F.cliente_id, notaTexto,
-    calc.subtotal_usd, calc.iva_usd, aplicaIgtf ? 1 : 0, calc.igtf_alicuota_cent, calc.igtf_usd, calc.total_usd, calc.costo_total_usd, u.id
+    calc.subtotal_usd, calc.iva_usd, aplicaIgtf ? 1 : 0, calc.igtf_alicuota_cent, calc.igtf_base_usd ?? 0, calc.igtf_usd, calc.total_usd, calc.costo_total_usd, u.id
   ).first<{ id: number }>();
 
   const ndId = borrador!.id;
@@ -869,13 +995,13 @@ documentos.post("/:id/nota-debito", async (c) => {
   );
   lineasNd.forEach((l, i) => pasos.push(
     db.prepare(
-      `INSERT INTO documento_renglones (documento_id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, monto_usd, monto_bs)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(ndId, i + 1, l.catalogo_id, l.tipo, l.descripcion, l.cantidad_milli, l.precio_usd, l.costo_usd, l.alicuota_cent, calc.renglones[i].monto_usd, calc.renglones[i].monto_bs)
+      `INSERT INTO documento_renglones (documento_id, orden, catalogo_id, tipo, descripcion, cantidad_milli, precio_usd, costo_usd, alicuota_cent, tipo_exencion, monto_usd, monto_bs)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(ndId, i + 1, l.catalogo_id, l.tipo, l.descripcion, l.cantidad_milli, l.precio_usd, l.costo_usd, l.alicuota_cent, l.tipo_exencion, calc.renglones[i].monto_usd, calc.renglones[i].monto_bs)
   ));
   calc.impuestos.forEach((x: Fila) => pasos.push(
-    db.prepare(`INSERT INTO documento_impuestos (documento_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(ndId, x.alicuota_cent, x.base_usd, x.iva_usd, x.base_bs, x.iva_bs)
+    db.prepare(`INSERT INTO documento_impuestos (documento_id, alicuota_cent, base_usd, iva_usd, base_bs, iva_bs, exonerada_usd, exonerada_bs, no_sujeta_usd, no_sujeta_bs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(ndId, x.alicuota_cent, x.base_usd, x.iva_usd, x.base_bs, x.iva_bs, x.exonerada_usd ?? 0, x.exonerada_bs ?? 0, x.no_sujeta_usd ?? 0, x.no_sujeta_bs ?? 0)
   ));
 
   const posEmision = pasos.length;
@@ -885,15 +1011,15 @@ documentos.post("/:id/nota-debito", async (c) => {
        control_interno = (SELECT valor FROM contadores WHERE clave = ?),
        cliente_rif = ?, cliente_nombre = ?, cliente_direccion = ?, cliente_whatsapp = ?, cliente_email = ?,
        fecha_emision = ?, emitido_en = ?, tasa_e8 = ?, tasa_cargada_en = ?,
-       subtotal_usd = ?, iva_usd = ?, igtf_alicuota_cent = ?, igtf_usd = ?, total_usd = ?,
-       subtotal_bs = ?, iva_bs = ?, igtf_bs = ?, total_bs = ?, costo_total_usd = ?,
+       subtotal_usd = ?, iva_usd = ?, igtf_alicuota_cent = ?, igtf_base_usd = ?, igtf_usd = ?, total_usd = ?,
+       subtotal_bs = ?, iva_bs = ?, igtf_base_bs = ?, igtf_bs = ?, total_bs = ?, costo_total_usd = ?,
        parametros_json = ?, emisor_json = ?, vence_el = ?, medio = ?
      WHERE id = ? AND estado = 'BORRADOR'`
   ).bind(
     claveNum, claveCtl, F.cliente_rif, F.cliente_nombre, F.cliente_direccion, F.cliente_whatsapp, F.cliente_email,
     fecha, new Date().toISOString(), tasa, perfil!.tasa_bcv_fecha,
-    calc.subtotal_usd, calc.iva_usd, calc.igtf_alicuota_cent, calc.igtf_usd, calc.total_usd,
-    calc.subtotal_bs, calc.iva_bs, calc.igtf_bs ?? 0, calc.total_bs, calc.costo_total_usd,
+    calc.subtotal_usd, calc.iva_usd, calc.igtf_alicuota_cent, calc.igtf_base_usd ?? 0, calc.igtf_usd, calc.total_usd,
+    calc.subtotal_bs, calc.iva_bs, calc.igtf_base_bs ?? 0, calc.igtf_bs ?? 0, calc.total_bs, calc.costo_total_usd,
     JSON.stringify(reglas), JSON.stringify(emisor), fecha,
     perfil!.medio_facturacion !== "SIN_DEFINIR" ? perfil!.medio_facturacion : F.medio, ndId
   ));
@@ -934,10 +1060,12 @@ documentos.post("/:id/nota-debito", async (c) => {
         cliente_direccion: F.cliente_direccion ?? null,
         cliente_telefono: F.cliente_whatsapp ?? null,
         motivo_nc: motivo,
+        igtf_base_bs: calc.igtf_base_bs ?? 0,
         igtf_bs: calc.igtf_bs ?? 0,
         total_bs: calc.total_bs,
         subtotal_usd: calc.subtotal_usd,
         iva_usd: calc.iva_usd,
+        igtf_base_usd: calc.igtf_base_usd ?? 0,
         igtf_usd: calc.igtf_usd ?? 0,
         total_usd: calc.total_usd,
         tasa_e8: tasa,
@@ -1072,11 +1200,13 @@ async function clonar(c: Ctx, origenId: number, tipo: "FACTURA" | "PRESUPUESTO",
     precio_usd: l.precio_usd,
     costo_usd: l.costo_usd ?? null,
     alicuota_cent: reglasTipo.cobraIva ? Number(l.alicuota_cent ?? 0) : 0,
+    tipo_exencion: (reglasTipo.cobraIva ? Number(l.alicuota_cent ?? 0) : 0) === 0 ? normalizarTipoExencion(l.tipo_exencion) : "EXENTA",
   }));
-  const calc = calcular(lineasSanitizadas, null, { aplica_igtf: aplicaIgtf === 1, igtf_alicuota_cent: alicuotaIgtf });
+  const baseIgtfClone = aplicaIgtf === 1 && Number(origDoc.igtf_base_usd ?? 0) > 0 ? Number(origDoc.igtf_base_usd) : undefined;
+  const calc = calcular(lineasSanitizadas, null, { aplica_igtf: aplicaIgtf === 1, igtf_alicuota_cent: alicuotaIgtf, igtf_base_usd: baseIgtfClone });
   const nuevo = await db.prepare(
-    `INSERT INTO documentos (tipo, estado, modo, cliente_id, nota, presupuesto_id, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_usd, total_usd, costo_total_usd, creado_por, condicion, dias_credito)
-     VALUES (?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+    `INSERT INTO documentos (tipo, estado, modo, cliente_id, nota, presupuesto_id, subtotal_usd, iva_usd, aplica_igtf, igtf_alicuota_cent, igtf_base_usd, igtf_usd, total_usd, costo_total_usd, creado_por, condicion, dias_credito)
+     VALUES (?, 'BORRADOR', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
   ).bind(
     tipo,
     await modoActual(db),
@@ -1087,6 +1217,7 @@ async function clonar(c: Ctx, origenId: number, tipo: "FACTURA" | "PRESUPUESTO",
     calc.iva_usd,
     aplicaIgtf,
     calc.igtf_alicuota_cent,
+    calc.igtf_base_usd ?? 0,
     calc.igtf_usd,
     calc.total_usd,
     calc.costo_total_usd,
@@ -1107,8 +1238,8 @@ documentos.post("/:id/fiscal", async (c) => {
       `SELECT id, tipo, es_nota_credito, COALESCE(es_nota_debito, 0) AS es_nota_debito, modo, estado, medio, control_fiscal,
               numero, control_interno, fecha_emision, cliente_rif, cliente_nombre, cliente_email, cliente_direccion, cliente_whatsapp,
               nota, motivo_nc,
-              subtotal_bs, iva_bs, COALESCE(igtf_bs, 0) AS igtf_bs, total_bs,
-              subtotal_usd, iva_usd, COALESCE(igtf_usd, 0) AS igtf_usd, total_usd, tasa_e8, factura_afectada_id
+              subtotal_bs, iva_bs, COALESCE(igtf_base_bs, 0) AS igtf_base_bs, COALESCE(igtf_bs, 0) AS igtf_bs, total_bs,
+              subtotal_usd, iva_usd, COALESCE(igtf_base_usd, 0) AS igtf_base_usd, COALESCE(igtf_usd, 0) AS igtf_usd, total_usd, tasa_e8, factura_afectada_id
        FROM documentos WHERE id = ?`
     )
     .bind(id)
@@ -1167,10 +1298,12 @@ documentos.post("/:id/fiscal", async (c) => {
       es_nc_total: esNcTotalRetry,
       subtotal_bs: Number(d.subtotal_bs ?? 0),
       iva_bs: Number(d.iva_bs ?? 0),
+      igtf_base_bs: Number(d.igtf_base_bs ?? 0),
       igtf_bs: Number(d.igtf_bs ?? 0),
       total_bs: Number(d.total_bs ?? 0),
       subtotal_usd: Number(d.subtotal_usd ?? 0),
       iva_usd: Number(d.iva_usd ?? 0),
+      igtf_base_usd: Number(d.igtf_base_usd ?? 0),
       igtf_usd: Number(d.igtf_usd ?? 0),
       total_usd: Number(d.total_usd ?? 0),
       tasa_e8: Number(d.tasa_e8 ?? 0),
@@ -1433,6 +1566,8 @@ documentos.post("/:id/enviar-correo", async (c) => {
     <div style="background:#f8fafd;padding:14px;border-radius:12px;font-size:14px">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Subtotal:</span><b>${fmtBs(doc.subtotal_bs)} (${fmtUsd(doc.subtotal_usd)})</b></div>
       <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>IVA:</span><b>${fmtBs(doc.iva_bs)} (${fmtUsd(doc.iva_usd)})</b></div>
+      ${doc.aplica_igtf && doc.igtf_usd > 0 && Number(doc.igtf_base_usd || 0) > 0 && Number(doc.igtf_base_usd) < (Number(doc.subtotal_usd || 0) + Number(doc.iva_usd || 0))
+        ? `<div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>Base IGTF (divisas):</span><b>${fmtBs(doc.igtf_base_bs)} (${fmtUsd(doc.igtf_base_usd)})</b></div>` : ""}
       ${doc.aplica_igtf && doc.igtf_usd > 0 ? `<div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>IGTF (3%):</span><b>${fmtBs(doc.igtf_bs)} (${fmtUsd(doc.igtf_usd)})</b></div>` : ""}
       <div style="display:flex;justify-content:space-between;margin-top:8px;padding-top:8px;border-top:2px solid #dde3ec;font-size:16px"><span><b>TOTAL:</b></span><b>${fmtBs(doc.total_bs)} (${fmtUsd(doc.total_usd)})</b></div>
     </div>

@@ -1,8 +1,15 @@
 // Módulo COMPRAS (pantallas): facturas de compra, proveedores y existencias de cada producto.
 // Las existencias y el costo promedio los calcula el servidor; aquí solo se muestran y se registran movimientos.
 import { $, raiz, esc, usd, bs, api, aviso, campo, enviar, navegacion, activar, telefono, ERROR } from "./comun.js";
-import { aCantidadMilli, aCentavos, aTasaE8, calcular, cantidadTexto } from "./dinero.js";
-import { fijarFiltro } from "./catalogo.js";
+import { aCantidadMilli, aCentavos, aTasaE8, calcular, cantidadTexto } from "./dinero.js?v=20261127v561";
+import { fijarFiltro } from "./catalogo.js?v=20261127v561";
+
+const OPCIONES_EXENCION = [
+  ["EXENTA", "Exento (Art. 17–19 LIVA)"],
+  ["EXONERADA", "Exonerado (Decreto Ejecutivo)"],
+  ["NO_SUJETA", "No Sujeto (Art. 16 LIVA)"],
+];
+const etiquetaExencion = (t) => (t === "EXONERADA" ? "Exonerado" : t === "NO_SUJETA" ? "No Sujeto" : "Exento");
 
 const fechaDoc = (iso) => (iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "");
 const hoyCaracas = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Caracas" }).format(new Date());
@@ -136,8 +143,9 @@ function nuevaCompra(estado) {
         <div class="reng-fila">
           <label>Cant.<input data-campo="cantidad" value="${esc(l.cantidad)}" inputmode="decimal" aria-label="Cantidad"></label>
           <label>Monto USD<input data-campo="costo" value="${esc(l.costo)}" inputmode="decimal" placeholder="0,00" aria-label="Monto en USD"></label>
-          <label>IVA<select data-campo="alicuota_iva" aria-label="IVA">${[[16, "16%"], [8, "8%"], [0, "Exento"]].map(([n, t]) => `<option value="${n}" ${n === l.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+          <label>IVA<select data-campo="alicuota_iva" aria-label="IVA">${[[16, "16%"], [8, "8%"], [0, "0% Sin IVA"]].map(([n, t]) => `<option value="${n}" ${n === l.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select></label>
         </div>
+        ${l.alicuota_iva === 0 ? `<label>Clasificación IVA 0% (Art. 70 RLIVA)<select data-campo="tipo_exencion" aria-label="Clasificación IVA 0%">${OPCIONES_EXENCION.map(([k, t]) => `<option value="${k}" ${k === (l.tipo_exencion || "EXENTA") ? "selected" : ""}>${t}</option>`).join("")}</select></label>` : ""}
         <small class="suave" data-sub="${i}"></small>
         <small class="suave">💼 Entra al Libro de Compras (Art. 70 RLIVA) e IVA crédito fiscal sin tocar el inventario.</small>
       </div>` : `
@@ -146,8 +154,9 @@ function nuevaCompra(estado) {
         <div class="reng-fila">
           <label>Cant.<input data-campo="cantidad" value="${esc(l.cantidad)}" inputmode="decimal" aria-label="Cantidad"></label>
           <label>Costo USD c/u<input data-campo="costo" value="${esc(l.costo)}" inputmode="decimal" placeholder="0,00" aria-label="Costo por unidad en USD"></label>
-          <label>IVA<select data-campo="alicuota_iva" aria-label="IVA">${[[16, "16%"], [8, "8%"], [0, "Exento"]].map(([n, t]) => `<option value="${n}" ${n === l.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+          <label>IVA<select data-campo="alicuota_iva" aria-label="IVA">${[[16, "16%"], [8, "8%"], [0, "0% Sin IVA"]].map(([n, t]) => `<option value="${n}" ${n === l.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select></label>
         </div>
+        ${l.alicuota_iva === 0 ? `<label>Clasificación IVA 0% (Art. 70 RLIVA)<select data-campo="tipo_exencion" aria-label="Clasificación IVA 0%">${OPCIONES_EXENCION.map(([k, t]) => `<option value="${k}" ${k === (l.tipo_exencion || "EXENTA") ? "selected" : ""}>${t}</option>`).join("")}</select></label>` : ""}
         <small class="suave" data-sub="${i}"></small>
         ${l.controla ? `<small class="suave">Ahora hay ${cantidadTexto(l.stock_milli)} en existencias.</small>` : `<small class="suave">⚠️ Este producto aún no controla existencias: al guardar empezará a controlarlas con esta cantidad.</small>`}
       </div>`).join("") : `<p class="suave">Agrega productos de inventario o gastos/servicios de la factura del proveedor (alquiler, internet, flete, honorarios…).</p>`;
@@ -156,13 +165,21 @@ function nuevaCompra(estado) {
   const editar = (e) => {
     const el = e.target.closest("[data-campo]"); if (!el) return;
     const l = d.lineas[Number(el.closest("[data-i]").dataset.i)], k = el.dataset.campo;
-    l[k] = k === "alicuota_iva" ? Number(el.value) : el.value; refrescar();
+    if (k === "alicuota_iva") {
+      const prev = l.alicuota_iva;
+      l.alicuota_iva = Number(el.value);
+      if (l.alicuota_iva > 0) l.tipo_exencion = "EXENTA";
+      if ((prev === 0) !== (l.alicuota_iva === 0)) { pintarLineas(); return; }
+    } else {
+      l[k] = el.value;
+    }
+    refrescar();
   };
   $("#lineas").addEventListener("input", editar); $("#lineas").addEventListener("change", editar);
   $("#lineas").addEventListener("click", (e) => { const q = e.target.closest("[data-quitar]"); if (q) { d.lineas.splice(Number(q.dataset.quitar), 1); pintarLineas(); } });
   $("#add-gasto").addEventListener("click", () => {
     $("#picker").hidden = true;
-    d.lineas.push({ tipo: "GASTO", categoria: "SERVICIOS", descripcion: "", cantidad: "1", costo: "", alicuota_iva: 16 });
+    d.lineas.push({ tipo: "GASTO", categoria: "SERVICIOS", descripcion: "", cantidad: "1", costo: "", alicuota_iva: 16, tipo_exencion: "EXENTA" });
     pintarLineas();
     const ult = raiz.querySelector(`[data-i="${d.lineas.length - 1}"] [data-campo="descripcion"]`);
     ult?.focus();
@@ -180,7 +197,7 @@ function nuevaCompra(estado) {
           || `<p class="suave">No hay productos. Créalos primero en Inventario o usa «💼 Agregar gasto o servicio».</p>`;
         $("#inv-res").querySelectorAll("[data-it]").forEach((el) => el.addEventListener("click", () => {
           const i = activos.find((x) => String(x.id) === el.dataset.it);
-          d.lineas.push({ tipo: "PRODUCTO", producto_id: i.id, nombre: i.nombre, cantidad: "1", costo: "", alicuota_iva: i.alicuota_iva, controla: !!i.controla_stock, stock_milli: i.stock_milli });
+          d.lineas.push({ tipo: "PRODUCTO", producto_id: i.id, nombre: i.nombre, cantidad: "1", costo: "", alicuota_iva: i.alicuota_iva, tipo_exencion: i.tipo_exencion || "EXENTA", controla: !!i.controla_stock, stock_milli: i.stock_milli });
           p.hidden = true; pintarLineas();
         }));
       } catch (e) { if ($("#inv-res")) $("#inv-res").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
@@ -194,7 +211,7 @@ function nuevaCompra(estado) {
       const cant = aCantidadMilli(l.cantidad), costo = aCentavos(l.costo);
       const descMala = l.tipo === "GASTO" && String(l.descripcion || "").trim().length < 2;
       if (descMala || cant === null || Number.isNaN(cant) || !costo || Number.isNaN(costo)) { malas++; return; }
-      validas.push({ cantidad_milli: cant, precio_usd: costo, alicuota_cent: Math.round(l.alicuota_iva * 100), _i: i });
+      validas.push({ cantidad_milli: cant, precio_usd: costo, alicuota_cent: Math.round(l.alicuota_iva * 100), tipo_exencion: l.alicuota_iva === 0 ? (l.tipo_exencion || "EXENTA") : "EXENTA", _i: i });
     });
     const tasa = aTasaE8($("#tasa_bcv")?.value ?? ""), e8 = tasa && !Number.isNaN(tasa) ? tasa : null;
     try { return { r: calcular(validas, e8), validas, malas, e8 }; } catch (e) { return { error: e.message, validas, malas }; }
@@ -244,8 +261,8 @@ function nuevaCompra(estado) {
         tasa_bcv: $("#tasa_bcv").value,
         nota: $("#nota").value,
         lineas: d.lineas.map((l) => l.tipo === "GASTO"
-          ? { tipo: "GASTO", categoria: l.categoria, descripcion: l.descripcion, cantidad: l.cantidad, costo_usd: l.costo, alicuota_iva: l.alicuota_iva }
-          : { tipo: "PRODUCTO", producto_id: l.producto_id, cantidad: l.cantidad, costo_usd: l.costo, alicuota_iva: l.alicuota_iva }),
+          ? { tipo: "GASTO", categoria: l.categoria, descripcion: l.descripcion, cantidad: l.cantidad, costo_usd: l.costo, alicuota_iva: l.alicuota_iva, tipo_exencion: l.alicuota_iva === 0 ? (l.tipo_exencion || "EXENTA") : "EXENTA" }
+          : { tipo: "PRODUCTO", producto_id: l.producto_id, cantidad: l.cantidad, costo_usd: l.costo, alicuota_iva: l.alicuota_iva, tipo_exencion: l.alicuota_iva === 0 ? (l.tipo_exencion || "EXENTA") : "EXENTA" }),
       });
       aviso("Compra registrada ✅"); location.hash = `#/compras/${r.id}`;
     } catch (e) { err.textContent = e.message; err.hidden = false; } finally { btn.disabled = false; }
@@ -269,13 +286,21 @@ async function verCompra(id) {
       const esGasto = l.tipo === "GASTO" || l.producto_id == null;
       const cat = esGasto && l.categoria ? ` · ${ETIQUETA_CAT_GASTO[l.categoria] || l.categoria}` : "";
       return `<div class="reng-ver"><div><b>${esGasto ? "💼" : "📦"} ${esc(l.descripcion)}</b><br>
-      <small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.costo_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : "Exento"}${esc(cat)}</small></div><b>${usd(l.monto_usd)}</b></div>`;
+      <small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.costo_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : etiquetaExencion(l.tipo_exencion)}${esc(cat)}</small></div><b>${usd(l.monto_usd)}</b></div>`;
     }).join("")}</section>
     <section class="tarjeta"><div class="tot"><span>Subtotal</span><b>${usd(C.subtotal_usd)}</b></div><div class="tot"><span>IVA</span><b>${usd(C.iva_usd)}</b></div>
       <div class="tot grande"><span>TOTAL</span><b>${usd(C.total_usd)}</b></div></section>
     ${C.tasa_e8 ? `<section class="tarjeta"><span class="etiqueta">🇻🇪 EN BOLÍVARES (libro de compras)</span>
       <div class="tot"><span>Tasa BCV usada</span><b>${(C.tasa_e8 / 1e8).toLocaleString("es-VE", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}</b></div>
-      ${impuestos.map((i) => `<div class="tot"><span>${i.alicuota_cent ? "Base " + i.alicuota_cent / 100 + "% · IVA " + bs(i.iva_bs / 100) : "Exento"}</span><b>${bs(i.base_bs / 100)}</b></div>`).join("")}
+      ${impuestos.flatMap((i) => {
+        if (i.alicuota_cent !== 0) return [`<div class="tot"><span>Base ${i.alicuota_cent / 100}% · IVA ${bs(i.iva_bs / 100)}</span><b>${bs(i.base_bs / 100)}</b></div>`];
+        const exo = i.exonerada_bs ?? 0, ns = i.no_sujeta_bs ?? 0, ex = i.exenta_bs ?? (i.base_bs - exo - ns);
+        const filas = [];
+        if (ex) filas.push(`<div class="tot"><span>Exentas</span><b>${bs(ex / 100)}</b></div>`);
+        if (exo) filas.push(`<div class="tot"><span>Exoneradas</span><b>${bs(exo / 100)}</b></div>`);
+        if (ns) filas.push(`<div class="tot"><span>No Sujetas</span><b>${bs(ns / 100)}</b></div>`);
+        return filas.length ? filas : [`<div class="tot"><span>Exentas</span><b>${bs(i.base_bs / 100)}</b></div>`];
+      }).join("")}
       <div class="tot"><span>IVA crédito fiscal</span><b>${bs(C.iva_bs / 100)}</b></div><div class="tot grande"><span>TOTAL Bs</span><b>${bs(C.total_bs / 100)}</b></div></section>`
       : `<section class="tarjeta"><p class="pista">Compra registrada antes de guardar la tasa: no tiene montos en bolívares.</p></section>`}
     ${C.nota ? `<section class="tarjeta"><span class="etiqueta">📝 NOTA</span><p>${esc(C.nota)}</p></section>` : ""}

@@ -695,7 +695,9 @@ export async function enviarCierreMensualInquilino(
     db
       .prepare(
         `SELECT i.documento_id,
-                SUM(CASE WHEN i.alicuota_cent = 0 THEN i.base_bs ELSE 0 END) AS exenta_bs,
+                SUM(CASE WHEN i.alicuota_cent = 0 THEN (i.base_bs - COALESCE(i.exonerada_bs, 0) - COALESCE(i.no_sujeta_bs, 0)) ELSE 0 END) AS exenta_bs,
+                SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.exonerada_bs, 0) ELSE 0 END) AS exonerada_bs,
+                SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.no_sujeta_bs, 0) ELSE 0 END) AS no_sujeta_bs,
                 SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs ELSE 0 END) AS gravada_bs
          FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
          WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO')
@@ -705,8 +707,16 @@ export async function enviarCierreMensualInquilino(
       .bind(modo, desde, hasta)
       .all<Record<string, any>>(),
   ]);
-  const impPorDoc = new Map<number, { exenta_bs: number; gravada_bs: number }>(
-    impVentas.map((x) => [Number(x.documento_id), { exenta_bs: Number(x.exenta_bs || 0), gravada_bs: Number(x.gravada_bs || 0) }])
+  const impPorDoc = new Map<number, { exenta_bs: number; exonerada_bs: number; no_sujeta_bs: number; gravada_bs: number }>(
+    impVentas.map((x) => [
+      Number(x.documento_id),
+      {
+        exenta_bs: Number(x.exenta_bs || 0),
+        exonerada_bs: Number(x.exonerada_bs || 0),
+        no_sujeta_bs: Number(x.no_sujeta_bs || 0),
+        gravada_bs: Number(x.gravada_bs || 0),
+      },
+    ])
   );
 
   let baseVentasBs = 0, debitoIvaBs = 0, igtfVentasBs = 0, totalVentasBs = 0;
@@ -718,6 +728,8 @@ export async function enviarCierreMensualInquilino(
     const signo = anulado ? 0 : d.es_nota_credito ? -1 : 1;
     const impDoc = impPorDoc.get(Number(d.id));
     const exentaBs = signo * (impDoc ? impDoc.exenta_bs : 0);
+    const exoneradaBs = signo * (impDoc ? impDoc.exonerada_bs : 0);
+    const noSujetaBs = signo * (impDoc ? impDoc.no_sujeta_bs : 0);
     const gravadaBs = signo * (impDoc ? impDoc.gravada_bs : Number(d.subtotal_bs || 0));
     const subBs = signo * Number(d.subtotal_bs || 0);
     const ivaBs = signo * Number(d.iva_bs || 0);
@@ -748,6 +760,8 @@ export async function enviarCierreMensualInquilino(
       anulado ? "ANULADO" : d.cliente_rif,
       anulado ? "ANULADO" : d.cliente_nombre,
       fmtDec(exentaBs),
+      fmtDec(exoneradaBs),
+      fmtDec(noSujetaBs),
       fmtDec(gravadaBs),
       fmtDec(ivaBs),
       fmtDec(igtfBs),
@@ -756,17 +770,43 @@ export async function enviarCierreMensualInquilino(
     ]);
   }
 
-  // 2) Compras del mes
-  const { results: docsCompras } = await db
-    .prepare(
-      `SELECT id, fecha, proveedor_rif, proveedor_nombre, factura_numero, control_numero,
-              subtotal_bs, iva_bs, total_bs, subtotal_usd, iva_usd, total_usd
-       FROM compras
-       WHERE modo = ? AND estado = 'REGISTRADA' AND fecha >= ? AND fecha <= ?
-       ORDER BY fecha ASC, id ASC`
-    )
-    .bind(modo, desde, hasta)
-    .all<Record<string, any>>();
+  // 2) Compras del mes (con desglose Exenta / Exonerada / No Sujeta / Gravada)
+  const [{ results: docsCompras }, { results: impCompras }] = await Promise.all([
+    db
+      .prepare(
+        `SELECT id, fecha, proveedor_rif, proveedor_nombre, factura_numero, control_numero,
+                subtotal_bs, iva_bs, total_bs, subtotal_usd, iva_usd, total_usd
+         FROM compras
+         WHERE modo = ? AND estado = 'REGISTRADA' AND fecha >= ? AND fecha <= ?
+         ORDER BY fecha ASC, id ASC`
+      )
+      .bind(modo, desde, hasta)
+      .all<Record<string, any>>(),
+    db
+      .prepare(
+        `SELECT i.compra_id,
+                SUM(CASE WHEN i.alicuota_cent = 0 THEN (i.base_bs - COALESCE(i.exonerada_bs, 0) - COALESCE(i.no_sujeta_bs, 0)) ELSE 0 END) AS exenta_bs,
+                SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.exonerada_bs, 0) ELSE 0 END) AS exonerada_bs,
+                SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.no_sujeta_bs, 0) ELSE 0 END) AS no_sujeta_bs,
+                SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs ELSE 0 END) AS gravada_bs
+         FROM compra_impuestos i JOIN compras c ON c.id = i.compra_id
+         WHERE c.modo = ? AND c.estado = 'REGISTRADA' AND c.fecha >= ? AND c.fecha <= ?
+         GROUP BY i.compra_id`
+      )
+      .bind(modo, desde, hasta)
+      .all<Record<string, any>>(),
+  ]);
+  const impPorCompra = new Map<number, { exenta_bs: number; exonerada_bs: number; no_sujeta_bs: number; gravada_bs: number }>(
+    impCompras.map((x) => [
+      Number(x.compra_id),
+      {
+        exenta_bs: Number(x.exenta_bs || 0),
+        exonerada_bs: Number(x.exonerada_bs || 0),
+        no_sujeta_bs: Number(x.no_sujeta_bs || 0),
+        gravada_bs: Number(x.gravada_bs || 0),
+      },
+    ])
+  );
 
   let baseComprasBs = 0, creditoIvaBs = 0, totalComprasBs = 0;
   const filasCsvCompras: unknown[][] = [];
@@ -774,13 +814,17 @@ export async function enviarCierreMensualInquilino(
     baseComprasBs += Number(c.subtotal_bs || 0);
     creditoIvaBs += Number(c.iva_bs || 0);
     totalComprasBs += Number(c.total_bs || 0);
+    const ic = impPorCompra.get(Number(c.id));
     filasCsvCompras.push([
       c.fecha,
       c.factura_numero,
       c.control_numero,
       c.proveedor_rif,
       c.proveedor_nombre,
-      fmtDec(c.subtotal_bs),
+      fmtDec(ic ? ic.exenta_bs : 0),
+      fmtDec(ic ? ic.exonerada_bs : 0),
+      fmtDec(ic ? ic.no_sujeta_bs : 0),
+      fmtDec(ic ? ic.gravada_bs : Number(c.subtotal_bs || 0)),
       fmtDec(c.iva_bs),
       fmtDec(c.total_bs),
     ]);
@@ -826,11 +870,11 @@ export async function enviarCierreMensualInquilino(
   const excedenteCreditoBs = cuotaNetaIvaBs < 0 ? -cuotaNetaIvaBs : 0;
 
   const csvVentas = armarCsv(
-    ["Fecha", "Tipo", "Numero", "Control", "Factura_Afectada", "RIF_Cliente", "Cliente", "Base_Exenta_Bs", "Base_Gravada_Bs", "IVA_Bs", "IGTF_Bs", "Total_Bs", "Estado"],
+    ["Fecha", "Tipo", "Numero", "Control", "Factura_Afectada", "RIF_Cliente", "Cliente", "Base_Exenta_Bs", "Base_Exonerada_Bs", "Base_No_Sujeta_Bs", "Base_Gravada_Bs", "IVA_Bs", "IGTF_Bs", "Total_Bs", "Estado"],
     filasCsvVentas
   );
   const csvCompras = armarCsv(
-    ["Fecha", "Factura_Proveedor", "Control", "RIF_Proveedor", "Proveedor", "Base_Bs", "IVA_Bs", "Total_Bs"],
+    ["Fecha", "Factura_Proveedor", "Control", "RIF_Proveedor", "Proveedor", "Base_Exenta_Bs", "Base_Exonerada_Bs", "Base_No_Sujeta_Bs", "Base_Gravada_Bs", "IVA_Bs", "Total_Bs"],
     filasCsvCompras
   );
   const mostrarIgtfCorreo = reg.cobraIgtf || igtfVentasBs > 0;

@@ -1,9 +1,25 @@
 // Módulo FACTURA (pantallas): lista, editor de borradores, vista del documento, IGTF por factura, Notas de Crédito (devoluciones SENIAT) y PDF.
 // Toda la matemática del dinero sale de dinero.js (la misma que usa el servidor).
 import { $, raiz, esc, bs, usd, aTexto, api, aviso, campo, enviar, navegacion, activar, descargar, compartir, cargarPdfLib, abrirEnlace, puede, ERROR } from "./comun.js";
-import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js";
-import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261126v540";
-import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261126v540";
+import { aTasaE8, aCantidadMilli, aCentavos, calcular, cantidadTexto, usdABs } from "./dinero.js?v=20261127v561";
+import { construirPdf, nombreArchivo, numeroDoc, numeroRecibo, metodoNombre } from "./pdf.js?v=20261127v561";
+import { mensajeDocumento, enlaceWhatsApp } from "./pagos.js?v=20261127v561";
+
+const OPCIONES_EXENCION = [
+  ["EXENTA", "Exento (E)"],
+  ["EXONERADA", "Exonerado (EX)"],
+  ["NO_SUJETA", "No Sujeto (NS)"],
+];
+const etiquetaExencion = (t) => (t === "EXONERADA" ? "Exonerado" : t === "NO_SUJETA" ? "No Sujeto" : "Exento");
+const filasSinIvaHtml = (i, conBs = false) => {
+  const exoU = i.exonerada_usd ?? 0, nsU = i.no_sujeta_usd ?? 0, exU = i.exenta_usd ?? (i.base_usd - exoU - nsU);
+  const exoB = i.exonerada_bs ?? 0, nsB = i.no_sujeta_bs ?? 0, exB = i.exenta_bs ?? ((i.base_bs ?? 0) - exoB - nsB);
+  const out = [];
+  if (exU || exB) out.push(`<div class="tot"><span>Monto exento</span><b>${usd(exU)}${conBs ? ` · Bs. ${bs(exB / 100)}` : ""}</b></div>`);
+  if (exoU || exoB) out.push(`<div class="tot"><span>Monto exonerado</span><b>${usd(exoU)}${conBs ? ` · Bs. ${bs(exoB / 100)}` : ""}</b></div>`);
+  if (nsU || nsB) out.push(`<div class="tot"><span>Monto no sujeto</span><b>${usd(nsU)}${conBs ? ` · Bs. ${bs(nsB / 100)}` : ""}</b></div>`);
+  return out.length ? out.join("") : `<div class="tot"><span>Monto exento</span><b>${usd(i.base_usd)}${conBs ? ` · Bs. ${bs((i.base_bs ?? 0) / 100)}` : ""}</b></div>`;
+};
 
 const NOMBRE = { FACTURA: "Factura", PRESUPUESTO: "Presupuesto", NOTA_CREDITO: "Nota de crédito", NOTA_DEBITO: "Nota de débito" };
 const nombreDe = (d) => (d.es_nota_credito ? "Nota de crédito" : d.es_nota_debito ? "Nota de débito" : NOMBRE[d.tipo] ?? d.tipo);
@@ -123,12 +139,16 @@ async function cargarBorrador(id) {
   const { documento: D, lineas } = await api(`documentos/${encodeURIComponent(id)}`);
   if (D.estado !== "BORRADOR") throw new Error("Solo se puede editar un borrador.");
   const cliente = D.cliente_id ? (await api(`clientes/${D.cliente_id}`)).cliente : null;
+  const totalConIva = (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0);
+  const esParcial = !!D.aplica_igtf && (D.igtf_base_usd ?? 0) > 0 && D.igtf_base_usd < totalConIva;
   return {
     id: D.id, tipo: D.tipo, cliente, nota: D.nota ?? "", condicion: D.condicion ?? "CONTADO", dias_credito: D.dias_credito ?? "",
     aplica_igtf: !!D.aplica_igtf,
+    igtf_base_usd: esParcial ? aTexto(D.igtf_base_usd) : "",
     lineas: lineas.map((l) => ({
       catalogo_id: l.catalogo_id, tipo: l.tipo, descripcion: l.descripcion, cantidad: cantidadTexto(l.cantidad_milli),
-      precio: aTexto(l.precio_usd), alicuota_iva: l.alicuota_cent / 100, costo_usd: l.costo_usd, costo: l.catalogo_id ? "" : aTexto(l.costo_usd),
+      precio: aTexto(l.precio_usd), alicuota_iva: l.alicuota_cent / 100, tipo_exencion: l.tipo_exencion || "EXENTA",
+      costo_usd: l.costo_usd, costo: l.catalogo_id ? "" : aTexto(l.costo_usd),
     })),
   };
 }
@@ -139,15 +159,16 @@ function editor(estado, existente, tipoNuevo) {
   const esEspecial = tipoContrib === "ESPECIAL";
   const d = existente ?? {
     id: null, tipo: tipoNuevo, cliente: null, nota: "", condicion: "CONTADO", dias_credito: "",
-    aplica_igtf: tipoNuevo === "FACTURA" && esEspecial && !!estado.negocio?.igtf_activo, lineas: [],
+    aplica_igtf: tipoNuevo === "FACTURA" && esEspecial && !!estado.negocio?.igtf_activo, igtf_base_usd: "", lineas: [],
   };
-  if (!esEspecial) d.aplica_igtf = false;
+  if (d.igtf_base_usd == null) d.igtf_base_usd = "";
+  if (!esEspecial) { d.aplica_igtf = false; d.igtf_base_usd = ""; }
   if (esFormal) d.lineas.forEach((l) => { l.alicuota_iva = 0; });
   const tasa = tasaInfo(estado), nombre = NOMBRE[d.tipo];
   raiz.innerHTML = `
     <header class="encabezado"><button class="icono" id="atras" data-ayuda="Volver" aria-label="Volver">←</button><h1>${d.id ? `Editar ${nombre.toLowerCase()}` : d.tipo === "FACTURA" ? "Nueva factura" : "Nuevo presupuesto"}</h1></header>
     ${bannerPractica(estado)}
-    ${esFormal ? `<section class="aviso-control">🩺 <b>Contribuyente Formal (Art. 8 Ley IVA):</b> operaciones exentas de IVA (0%) y sin IGTF. La factura imprimirá la leyenda legal «Sin derecho a crédito fiscal».</section>` : ""}
+    ${esFormal ? `<section class="aviso-control">🩺 <b>Contribuyente Formal (Art. 8 Ley IVA):</b> operaciones sin IVA (0%) y sin IGTF. La factura imprimirá la leyenda legal «Sin derecho a crédito fiscal».</section>` : ""}
     <section class="tarjeta" id="sec-cliente"></section>
     <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span><div id="lineas"></div>
       <div class="dos-botones"><button type="button" class="boton chico morado" id="add-inv">🏷️ Del inventario</button><button type="button" class="boton chico" id="add-srv">🛠️ Servicio al momento</button><button type="button" class="boton chico" id="add-prod">📦 Producto al vuelo</button></div>
@@ -156,12 +177,16 @@ function editor(estado, existente, tipoNuevo) {
       <label for="medio_cobro_igtf">💳 ¿En qué moneda o medio pagará el cliente?</label>
       <select id="medio_cobro_igtf">
         <option value="BS" ${!d.aplica_igtf ? "selected" : ""}>🇻🇪 Bolívares (Pago Móvil / Transferencia Bs / Efectivo Bs) — Sin IGTF (0%)</option>
-        <option value="USD" ${d.aplica_igtf ? "selected" : ""}>💵 Divisas o Cripto (Zelle / Binance / PayPal / Efectivo USD) — Activa IGTF (3%)</option>
+        <option value="USD" ${d.aplica_igtf ? "selected" : ""}>💵 Divisas o Pago Mixto (Zelle / Binance / Efectivo USD) — Activa IGTF (3%)</option>
       </select>
       <label class="conmutador" for="aplica_igtf" style="margin-top:8px">
-        <span class="conmutador-txt"><span>Calcular IGTF (3%) sobre Subtotal + IVA</span><small id="igtf-subtxt">${d.aplica_igtf ? "Aplica 3% por pago en divisas (Zelle, Binance, PayPal o Efectivo USD)." : "Sin IGTF: pago en Bolívares (solo Subtotal + IVA)."}</small></span>
+        <span class="conmutador-txt"><span>Calcular IGTF (3%) sobre monto en divisas</span><small id="igtf-subtxt">${d.aplica_igtf ? "Aplica 3% sobre el monto pagado en divisas (total o parcial en pagos mixtos)." : "Sin IGTF: pago en Bolívares (solo Subtotal + IVA)."}</small></span>
         <span class="switch"><input type="checkbox" role="switch" id="aplica_igtf" aria-checked="${d.aplica_igtf ? "true" : "false"}" ${d.aplica_igtf ? "checked" : ""}><span class="switch-pista" aria-hidden="true"></span></span>
-      </label></section>` : ""}
+      </label>
+      <div id="caja-igtf-base" ${d.aplica_igtf ? "" : "hidden"} style="margin-top:8px">
+        ${campo("igtf_base_usd", "💵 Monto pagado en divisas (USD) — vacío = 100% de la factura", d.igtf_base_usd, "text", 'inputmode="decimal" placeholder="Vacío = 100% (Subtotal + IVA)"')}
+        <p class="pista">Si el cliente paga una parte en divisas y el resto en Bolívares, indica aquí solo la porción en divisas (USD). El 3% de IGTF se calcula únicamente sobre esa base (SNAT/2022/000013).</p>
+      </div></section>` : ""}
     <section class="tarjeta" id="sec-totales"></section>
     ${d.tipo === "FACTURA" ? `<section class="tarjeta"><span class="etiqueta">🗓️ CONDICIÓN DE PAGO</span>
       <label class="opcion"><input type="radio" name="condicion" value="CONTADO" ${d.condicion !== "CREDITO" ? "checked" : ""}> Contado</label>
@@ -218,10 +243,11 @@ function editor(estado, existente, tipoNuevo) {
         <div class="reng-fila">
           <label>Cant.<input data-campo="cantidad" value="${esc(l.cantidad)}" inputmode="decimal" aria-label="Cantidad"></label>
           <label>Precio USD<input data-campo="precio" value="${esc(l.precio)}" inputmode="decimal" placeholder="0,00" aria-label="Precio en USD"></label>
-          <label>IVA${esFormal ? `<span class="iva-fijo">Exento (0%)</span>`
-            : l.catalogo_id ? `<span class="iva-fijo">${l.alicuota_iva ? l.alicuota_iva + "%" : "Exento"}</span>`
-            : `<select data-campo="alicuota_iva" aria-label="IVA">${[[16, "16%"], [8, "8%"], [0, "Exento"]].map(([n, t]) => `<option value="${n}" ${n === l.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select>`}</label>
+          <label>IVA${esFormal ? `<span class="iva-fijo">0% (${etiquetaExencion(l.tipo_exencion)})</span>`
+            : l.catalogo_id ? `<span class="iva-fijo">${l.alicuota_iva ? l.alicuota_iva + "%" : etiquetaExencion(l.tipo_exencion)}</span>`
+            : `<select data-campo="alicuota_iva" aria-label="IVA">${[[16, "16%"], [8, "8%"], [0, "0% Sin IVA"]].map(([n, t]) => `<option value="${n}" ${n === l.alicuota_iva ? "selected" : ""}>${t}</option>`).join("")}</select>`}</label>
         </div>
+        ${l.alicuota_iva === 0 ? `<label>Clasificación IVA 0% (Art. 72 RLIVA)<select data-campo="tipo_exencion" aria-label="Clasificación IVA 0%">${OPCIONES_EXENCION.map(([k, t]) => `<option value="${k}" ${k === (l.tipo_exencion || "EXENTA") ? "selected" : ""}>${t}</option>`).join("")}</select></label>` : ""}
         ${!l.catalogo_id && l.tipo === "PRODUCTO" ? `<label>🔒 Costo USD c/u (solo lo ves tú)<input data-campo="costo" value="${esc(l.costo ?? "")}" inputmode="decimal" placeholder="Opcional" aria-label="Costo en USD"></label>` : ""}
         <small class="suave" data-sub="${i}"></small>
       </div>`).join("") : `<p class="suave">Agrega productos o servicios del inventario, o un servicio al momento.</p>`;
@@ -230,16 +256,24 @@ function editor(estado, existente, tipoNuevo) {
   const editarCampo = (e) => {
     const el = e.target.closest("[data-campo]"); if (!el) return;
     const l = d.lineas[Number(el.closest("[data-i]").dataset.i)], k = el.dataset.campo;
-    l[k] = k === "alicuota_iva" ? (esFormal ? 0 : Number(el.value)) : el.value; refrescar();
+    if (k === "alicuota_iva") {
+      const prev = l.alicuota_iva;
+      l.alicuota_iva = esFormal ? 0 : Number(el.value);
+      if (l.alicuota_iva > 0) l.tipo_exencion = "EXENTA";
+      if ((prev === 0) !== (l.alicuota_iva === 0)) { pintarLineas(); return; }
+    } else {
+      l[k] = el.value;
+    }
+    refrescar();
   };
   $("#lineas").addEventListener("input", editarCampo); $("#lineas").addEventListener("change", editarCampo);
   $("#lineas").addEventListener("click", (e) => { const q = e.target.closest("[data-quitar]"); if (q) { d.lineas.splice(Number(q.dataset.quitar), 1); pintarLineas(); } });
   $("#add-srv").addEventListener("click", () => {
-    d.lineas.push({ catalogo_id: null, tipo: "SERVICIO", descripcion: "", cantidad: "1", precio: "", alicuota_iva: esFormal ? 0 : 16, costo_usd: null });
+    d.lineas.push({ catalogo_id: null, tipo: "SERVICIO", descripcion: "", cantidad: "1", precio: "", alicuota_iva: esFormal ? 0 : 16, tipo_exencion: "EXENTA", costo_usd: null });
     pintarLineas(); raiz.querySelector(`[data-i="${d.lineas.length - 1}"] [data-campo="descripcion"]`).focus();
   });
   $("#add-prod").addEventListener("click", () => {
-    d.lineas.push({ catalogo_id: null, tipo: "PRODUCTO", descripcion: "", cantidad: "1", precio: "", costo: "", alicuota_iva: esFormal ? 0 : 16, costo_usd: null });
+    d.lineas.push({ catalogo_id: null, tipo: "PRODUCTO", descripcion: "", cantidad: "1", precio: "", costo: "", alicuota_iva: esFormal ? 0 : 16, tipo_exencion: "EXENTA", costo_usd: null });
     pintarLineas(); raiz.querySelector(`[data-i="${d.lineas.length - 1}"] [data-campo="descripcion"]`).focus();
   });
   $("#add-inv").addEventListener("click", () => {
@@ -254,7 +288,7 @@ function editor(estado, existente, tipoNuevo) {
           <div class="dato"><strong>${esc(i.nombre)}</strong><small class="suave">${i.precio_centavos == null ? "Precio a definir" : usd(i.precio_centavos)}${i.tipo === "PRODUCTO" && i.controla_stock ? ` · Stock ${cantidadTexto(i.stock_milli)}` : ""}</small></div></article>`).join("") || `<p class="suave">Nada por aquí. Crea productos y servicios en Inventario.</p>`;
         $("#inv-res").querySelectorAll("[data-it]").forEach((el) => el.addEventListener("click", () => {
           const it = activos.find((x) => String(x.id) === el.dataset.it);
-          d.lineas.push({ catalogo_id: it.id, tipo: it.tipo, descripcion: it.nombre, cantidad: "1", precio: aTexto(it.precio_centavos), alicuota_iva: esFormal ? 0 : it.alicuota_iva, costo_usd: it.costo_centavos, controla: it.tipo === "PRODUCTO" && !!it.controla_stock, stock_milli: it.stock_milli });
+          d.lineas.push({ catalogo_id: it.id, tipo: it.tipo, descripcion: it.nombre, cantidad: "1", precio: aTexto(it.precio_centavos), alicuota_iva: esFormal ? 0 : it.alicuota_iva, tipo_exencion: it.tipo_exencion || "EXENTA", costo_usd: it.costo_centavos, controla: it.tipo === "PRODUCTO" && !!it.controla_stock, stock_milli: it.stock_milli });
           p.hidden = true; pintarLineas();
         }));
       } catch (e) { if ($("#inv-res")) $("#inv-res").innerHTML = `<p class="error">${esc(e.message)}</p>`; }
@@ -262,15 +296,23 @@ function editor(estado, existente, tipoNuevo) {
     let espera; $("#inv-q").addEventListener("input", () => { clearTimeout(espera); espera = setTimeout(cargar, 250); }); cargar();
   });
 
-  // ---- totales en vivo (mismo cálculo que el servidor, incluyendo IGTF si está activo)
+  // ---- totales en vivo (mismo cálculo que el servidor, incluyendo IGTF total o parcial)
   const calculoActual = () => {
     const validas = []; let malas = 0;
     d.lineas.forEach((l, i) => {
       const cant = aCantidadMilli(l.cantidad), precio = aCentavos(l.precio);
       if (cant === null || Number.isNaN(cant) || precio === null || Number.isNaN(precio)) { malas++; return; }
-      validas.push({ cantidad_milli: cant, precio_usd: precio, alicuota_cent: Math.round(l.alicuota_iva * 100), costo_usd: l.catalogo_id ? l.costo_usd : costoAlVuelo(l.costo), _i: i });
+      validas.push({ cantidad_milli: cant, precio_usd: precio, alicuota_cent: Math.round(l.alicuota_iva * 100), tipo_exencion: l.alicuota_iva === 0 ? (l.tipo_exencion || "EXENTA") : "EXENTA", costo_usd: l.catalogo_id ? l.costo_usd : costoAlVuelo(l.costo), _i: i });
     });
-    try { return { r: calcular(validas, tasa.e8, { aplica_igtf: d.tipo === "FACTURA" && d.aplica_igtf }), validas, malas }; }
+    const opcIgtf = { aplica_igtf: d.tipo === "FACTURA" && d.aplica_igtf };
+    if (opcIgtf.aplica_igtf && String(d.igtf_base_usd || "").trim() !== "") {
+      const baseDiv = aCentavos(d.igtf_base_usd);
+      if (baseDiv === null || Number.isNaN(baseDiv) || baseDiv <= 0) {
+        return { error: "El monto pagado en divisas (USD) debe ser un número mayor que 0 (o déjalo vacío para 100%).", validas, malas };
+      }
+      opcIgtf.igtf_base_usd = baseDiv;
+    }
+    try { return { r: calcular(validas, tasa.e8, opcIgtf), validas, malas }; }
     catch (e) { return { error: e.message, validas, malas }; }
   };
   function refrescar() {
@@ -279,10 +321,13 @@ function editor(estado, existente, tipoNuevo) {
     c.validas.forEach((v, k) => { const el = raiz.querySelector(`[data-sub="${v._i}"]`); if (el) el.textContent = `Subtotal ${usd(c.r.renglones[k].monto_usd)}${c.r.renglones[k].monto_bs != null ? ` · Bs. ${bs(c.r.renglones[k].monto_bs / 100)}` : ""}${stockPoco(d.lineas[v._i], v.cantidad_milli)}`; });
     d.lineas.forEach((l, i) => { if (!c.validas.some((v) => v._i === i)) { const el = raiz.querySelector(`[data-sub="${i}"]`); if (el) el.textContent = "⚠️ Revisa la cantidad y el precio (ejemplo: 1 y 12,50)"; } });
     const r = c.r, hayCosto = c.validas.some((v) => v.costo_usd != null);
+    const totalConIvaUsd = r.subtotal_usd + r.iva_usd;
+    const esIgtfParcial = d.tipo === "FACTURA" && d.aplica_igtf && r.igtf_base_usd > 0 && r.igtf_base_usd < totalConIvaUsd;
     t.innerHTML = `<span class="etiqueta">💰 TOTALES</span>
-      ${r.impuestos.map((i) => i.alicuota_cent === 0 ? `<div class="tot"><span>Monto exento</span><b>${usd(i.base_usd)}</b></div>`
+      ${r.impuestos.map((i) => i.alicuota_cent === 0 ? filasSinIvaHtml(i, false)
         : `<div class="tot"><span>Base ${i.alicuota_cent / 100}% · IVA</span><b>${usd(i.base_usd)} · ${usd(i.iva_usd)}</b></div>`).join("")}
-      ${d.tipo === "FACTURA" && d.aplica_igtf ? `<div class="tot"><span>Subtotal + IVA</span><b>${usd(r.subtotal_usd + r.iva_usd)}${r.subtotal_bs != null ? ` · Bs. ${bs((r.subtotal_bs + r.iva_bs) / 100)}` : ""}</b></div>
+      ${d.tipo === "FACTURA" && d.aplica_igtf ? `<div class="tot"><span>Subtotal + IVA</span><b>${usd(totalConIvaUsd)}${r.subtotal_bs != null ? ` · Bs. ${bs((r.subtotal_bs + r.iva_bs) / 100)}` : ""}</b></div>
+        ${esIgtfParcial ? `<div class="tot"><span>Base IGTF (divisas)</span><b>${usd(r.igtf_base_usd)}${r.igtf_base_bs != null ? ` · Bs. ${bs(r.igtf_base_bs / 100)}` : ""}</b></div>` : ""}
         <div class="tot"><span>IGTF (3%)</span><b>${usd(r.igtf_usd)}${r.igtf_bs != null ? ` · Bs. ${bs(r.igtf_bs / 100)}` : ""}</b></div>` : ""}
       <div class="tot grande"><span>${d.tipo === "FACTURA" && d.aplica_igtf ? "TOTAL + IGTF (USD)" : "TOTAL USD"}</span><b>${usd(r.total_usd)}</b></div>
       ${r.total_bs != null ? `<div class="tot"><span>Total en Bs.</span><b>Bs. ${bs(r.total_bs / 100)}</b></div>` : ""}
@@ -292,21 +337,24 @@ function editor(estado, existente, tipoNuevo) {
 
   const sincronizarIgtfUI = (activo) => {
     d.aplica_igtf = !!activo;
-    const chk = $("#aplica_igtf"), sel = $("#medio_cobro_igtf"), ins = $("#igtf-insignia"), sub = $("#igtf-subtxt");
+    const chk = $("#aplica_igtf"), sel = $("#medio_cobro_igtf"), ins = $("#igtf-insignia"), sub = $("#igtf-subtxt"), cajaBase = $("#caja-igtf-base");
     if (chk) { chk.checked = d.aplica_igtf; chk.setAttribute("aria-checked", d.aplica_igtf ? "true" : "false"); }
     if (sel) sel.value = d.aplica_igtf ? "USD" : "BS";
     if (ins) { ins.textContent = d.aplica_igtf ? "IGTF 3% Activo (Divisas)" : "Sin IGTF (Bolívares)"; ins.className = `insignia ${d.aplica_igtf ? "verde" : "gris"}`; }
-    if (sub) sub.textContent = d.aplica_igtf ? "Aplica 3% por pago en divisas (Zelle, Binance, PayPal o Efectivo USD)." : "Sin IGTF: pago en Bolívares (solo Subtotal + IVA).";
+    if (sub) sub.textContent = d.aplica_igtf ? "Aplica 3% sobre el monto pagado en divisas (total o parcial en pagos mixtos)." : "Sin IGTF: pago en Bolívares (solo Subtotal + IVA).";
+    if (cajaBase) cajaBase.hidden = !d.aplica_igtf;
     refrescar();
   };
   $("#aplica_igtf")?.addEventListener("change", (e) => sincronizarIgtfUI(e.target.checked));
   $("#medio_cobro_igtf")?.addEventListener("change", (e) => sincronizarIgtfUI(e.target.value === "USD"));
+  $("#igtf_base_usd")?.addEventListener("input", (e) => { d.igtf_base_usd = e.target.value; refrescar(); });
 
   // ---- guardar y emitir
   const cuerpo = () => ({
     tipo: d.tipo, cliente_id: d.cliente?.id ?? null, nota: $("#nota").value, condicion: d.condicion, dias_credito: d.dias_credito,
     aplica_igtf: d.tipo === "FACTURA" && esEspecial && d.aplica_igtf ? 1 : 0,
-    lineas: d.lineas.map((l) => ({ catalogo_id: l.catalogo_id, descripcion: l.descripcion, cantidad: l.cantidad, precio_usd: l.precio, alicuota_iva: esFormal ? 0 : l.alicuota_iva, ...(l.catalogo_id ? {} : { tipo: l.tipo, costo_usd: l.costo ?? "" }) })),
+    igtf_base_usd: d.tipo === "FACTURA" && esEspecial && d.aplica_igtf ? String(d.igtf_base_usd || "").trim() : "",
+    lineas: d.lineas.map((l) => ({ catalogo_id: l.catalogo_id, descripcion: l.descripcion, cantidad: l.cantidad, precio_usd: l.precio, alicuota_iva: esFormal ? 0 : l.alicuota_iva, tipo_exencion: (esFormal || l.alicuota_iva === 0) ? (l.tipo_exencion || "EXENTA") : "EXENTA", ...(l.catalogo_id ? {} : { tipo: l.tipo, costo_usd: l.costo ?? "" }) })),
   });
   const guardar = async () => { if (d.id) await api(`documentos/${d.id}`, "PUT", cuerpo()); else d.id = (await api("documentos", "POST", cuerpo())).id; };
   const ejecutar = async (fn) => {
@@ -363,7 +411,7 @@ const seccionPagos = (D, pagos, notasCredito, notasDebito, pagado, acreditadoNc,
 
 async function ver(estado, id) {
   const datos = await api(`documentos/${encodeURIComponent(id)}`);
-  const { documento: D, lineas, impuestos, pagos = [], notas_credito = [], notas_debito = [], factura_afectada: FA = null, imprenta_envio: impEnv = null, pagado_usd = 0, acreditado_nc_usd = 0, saldo_usd = null } = datos;
+  const { documento: D, lineas, impuestos, pagos = [], notas_credito = [], notas_debito = [], factura_afectada: FA = null, imprenta_envio: impEnv = null, pagado_usd = 0, acreditado_nc_usd = 0, saldo_usd = null, igtf_base_disponible_usd = null } = datos;
   const pdfOficialCg = impEnv?.pdf_url && /^https:\/\/[a-z0-9]/i.test(String(impEnv.pdf_url).trim()) ? String(impEnv.pdf_url).trim() : "";
   const [estTxt, estColor] = ESTADOS[D.estado], emitido = D.estado !== "BORRADOR", esNc = !!D.es_nota_credito, esNd = !!D.es_nota_debito, reglas = JSON.parse(D.parametros_json || "{}");
   const tipoContrib = estado?.negocio?.tipo_contribuyente || "ORDINARIO";
@@ -458,11 +506,12 @@ async function ver(estado, id) {
       ${urlPdfOficialImprenta ? `<div style="margin-top:10px"><a class="boton verde" id="btn-pdf-oficial-imprenta" href="${esc(urlPdfOficialImprenta)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;height:auto;padding:12px 20px;line-height:1.3;border-radius:18px;text-align:center">🏛️ Ver PDF Fiscal Oficial (${esc(provEtiqueta)})</a></div>` : ""}
       <small class="suave" style="display:block;margin-top:6px">${esc(impEnv?.imprenta_autorizacion || "Imprenta Digital Autorizada por el SENIAT · Providencia SNAT/2024/000102")}. Descargar, compartir y enviar por correo entregan exclusivamente este PDF oficial con código QR y pie de imprenta.</small>
     </section>` : ""}
-    <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span>${lineas.map((l) => `<div class="reng-ver"><div><b>${esc(l.descripcion)}</b><br><small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.precio_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : "Exento"}${l.devuelto_milli > 0 ? ` · ↩️ Devuelto: ${cantidadTexto(l.devuelto_milli)}` : ""}</small></div><b>${usd(l.monto_usd)}</b></div>`).join("")}</section>
+    <section class="tarjeta"><span class="etiqueta">🧾 RENGLONES</span>${lineas.map((l) => `<div class="reng-ver"><div><b>${esc(l.descripcion)}</b><br><small class="suave">${cantidadTexto(l.cantidad_milli)} × ${usd(l.precio_usd)} · ${l.alicuota_cent ? "IVA " + l.alicuota_cent / 100 + "%" : etiquetaExencion(l.tipo_exencion)}${l.devuelto_milli > 0 ? ` · ↩️ Devuelto: ${cantidadTexto(l.devuelto_milli)}` : ""}</small></div><b>${usd(l.monto_usd)}</b></div>`).join("")}</section>
     <section class="tarjeta"><span class="etiqueta">💰 TOTALES</span>
-      ${emitido ? impuestos.map((i) => i.alicuota_cent === 0 ? `<div class="tot"><span>Monto exento</span><b>${usd(i.base_usd)} · Bs. ${bs(i.base_bs / 100)}</b></div>`
+      ${emitido ? impuestos.map((i) => i.alicuota_cent === 0 ? filasSinIvaHtml(i, true)
         : `<div class="tot"><span>Base ${i.alicuota_cent / 100}%</span><b>${usd(i.base_usd)} · Bs. ${bs(i.base_bs / 100)}</b></div><div class="tot"><span>IVA ${i.alicuota_cent / 100}%</span><b>${usd(i.iva_usd)} · Bs. ${bs(i.iva_bs / 100)}</b></div>`).join("") : ""}
       ${D.aplica_igtf && D.igtf_usd > 0 ? `<div class="tot"><span>Subtotal + IVA</span><b>${usd((D.subtotal_usd ?? 0) + (D.iva_usd ?? 0))}${emitido ? ` · Bs. ${bs(((D.subtotal_bs ?? 0) + (D.iva_bs ?? 0)) / 100)}` : ""}</b></div>
+        ${(D.igtf_base_usd ?? 0) > 0 && D.igtf_base_usd < (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0) ? `<div class="tot"><span>Base IGTF (divisas)</span><b>${usd(D.igtf_base_usd)}${emitido && D.igtf_base_bs != null ? ` · Bs. ${bs(D.igtf_base_bs / 100)}` : ""}</b></div>` : ""}
         <div class="tot"><span>IGTF (${(D.igtf_alicuota_cent || 300) / 100}%)</span><b>${usd(D.igtf_usd)}${emitido && D.igtf_bs != null ? ` · Bs. ${bs(D.igtf_bs / 100)}` : ""}</b></div>` : ""}
       <div class="tot grande"><span>${D.aplica_igtf && D.igtf_usd > 0 ? "TOTAL + IGTF" : "TOTAL"}</span><b>${usd(D.total_usd)}</b></div>
       ${emitido ? `<div class="tot"><span>Total en Bs.</span><b>Bs. ${bs(D.total_bs / 100)}</b></div>` : `<small class="suave">Los montos en Bs. se fijan al emitir a la tasa BCV vigente.</small>`}
@@ -515,7 +564,11 @@ async function ver(estado, id) {
           </div>`;
         }).join("")}
       </div>
-      ${permitirIgtfNc ? `<label class="opcion"><input type="checkbox" id="dev_igtf" ${D.aplica_igtf ? "checked" : ""}> Incluir reverso de IGTF (3%) en la Nota de Crédito</label>` : ""}
+      ${permitirIgtfNc ? `<label class="opcion"><input type="checkbox" id="dev_igtf" ${D.aplica_igtf ? "checked" : ""}> Incluir reverso de IGTF (3%) en la Nota de Crédito</label>
+        <div id="caja-dev-igtf-base" ${D.aplica_igtf ? "" : "hidden"} style="margin-top:6px">
+          ${campo("dev_igtf_base_usd", "💵 Base en divisas a reversar (USD) — vacío = proporcional automático", "", "text", 'inputmode="decimal" placeholder="Vacío = proporcional automático"')}
+          <p class="pista">Base IGTF disponible en esta factura: <b>${usd(igtf_base_disponible_usd ?? ((D.igtf_base_usd ?? 0) > 0 ? D.igtf_base_usd : ((D.subtotal_usd ?? 0) + (D.iva_usd ?? 0))))}</b>.</p>
+        </div>` : ""}
       <div id="dev-totales" class="tarjeta"></div>
       ${campo("motivo_nc", "Motivo de la devolución / Nota de Crédito (mínimo 5 letras)", "", "text", 'required minlength="5" maxlength="200" placeholder="Ej: Devolución de mercancía por el cliente"')}
       ${ERROR}<button class="boton morado" type="submit">EMITIR NOTA DE CRÉDITO</button>
@@ -528,10 +581,17 @@ async function ver(estado, id) {
       <div class="reng-fila">
         <label>Monto base USD<input id="monto_nd" name="monto_nd" inputmode="decimal" required placeholder="0,00"></label>
         <label>IVA<select id="alicuota_nd" name="alicuota_nd">${esFormal
-          ? `<option value="0" selected>Exento (0% — Formal)</option>`
-          : `<option value="16" selected>16% General</option><option value="8">8% Reducida</option><option value="0">Exento (0%)</option>`}</select></label>
+          ? `<option value="0" selected>Sin IVA (0% — Formal)</option>`
+          : `<option value="16" selected>16% General</option><option value="8">8% Reducida</option><option value="0">0% Sin IVA</option>`}</select></label>
       </div>
-      ${esEspecial ? `<label class="opcion"><input type="checkbox" id="nd_igtf" ${D.aplica_igtf ? "checked" : ""}> Aplicar IGTF (3%) sobre esta Nota de Débito</label>` : ""}
+      <div id="caja-nd-exencion" ${esFormal ? "" : "hidden"}>
+        <label for="tipo_exencion_nd">⚖️ Clasificación IVA 0% (Art. 72 RLIVA)</label>
+        <select id="tipo_exencion_nd" name="tipo_exencion_nd">${OPCIONES_EXENCION.map(([k, t]) => `<option value="${k}">${t}</option>`).join("")}</select>
+      </div>
+      ${esEspecial ? `<label class="opcion"><input type="checkbox" id="nd_igtf" ${D.aplica_igtf ? "checked" : ""}> Aplicar IGTF (3%) sobre esta Nota de Débito</label>
+        <div id="caja-nd-igtf-base" ${D.aplica_igtf ? "" : "hidden"} style="margin-top:6px">
+          ${campo("nd_igtf_base_usd", "💵 Monto en divisas USD (vacío = 100% de la Nota de Débito)", "", "text", 'inputmode="decimal" placeholder="Vacío = 100% (Subtotal + IVA)"')}
+        </div>` : ""}
       <div id="nd-totales" class="tarjeta"></div>
       ${ERROR}<button class="boton" type="submit">EMITIR NOTA DE DÉBITO</button>
     </form>
@@ -550,6 +610,8 @@ async function ver(estado, id) {
   const bytesPdf = async () => await construirPdf(await cargarPdfLib(), { doc: D, lineas, impuestos, factura_afectada: FA, imprenta_envio: impEnv, negocio: estado.negocio, esDemo });
   const blobPdf = async () => new Blob([await bytesPdf()], { type: "application/pdf" });
   const tasaNc = tasaInfo(estado).e8 || D.tasa_e8;
+  const baseIgtfOrigUsd = (D.igtf_base_usd ?? 0) > 0 ? D.igtf_base_usd : ((D.subtotal_usd ?? 0) + (D.iva_usd ?? 0));
+  const baseIgtfDispUsd = igtf_base_disponible_usd ?? baseIgtfOrigUsd;
   const recalcularNc = () => {
     const caja = $("#dev-totales"); if (!caja) return;
     const seleccion = [];
@@ -561,18 +623,48 @@ async function ver(estado, id) {
         caja.innerHTML = `<p class="error">⚠️ Revisa la cantidad en «${esc(orig?.descripcion ?? "")}» (máximo disponible: ${cantidadTexto(orig.cantidad_milli - (orig.devuelto_milli ?? 0))}).</p>`;
         return;
       }
-      seleccion.push({ cantidad_milli: cant, precio_usd: orig.precio_usd, alicuota_cent: orig.alicuota_cent, costo_usd: orig.costo_usd });
+      seleccion.push({ cantidad_milli: cant, precio_usd: orig.precio_usd, alicuota_cent: orig.alicuota_cent, tipo_exencion: orig.tipo_exencion || "EXENTA", costo_usd: orig.costo_usd });
     }
     if (!seleccion.length) {
       caja.innerHTML = `<p class="suave">Indica al menos un renglón con cantidad mayor que 0 para calcular la Nota de Crédito.</p>`;
       return;
     }
     try {
-      const calc = calcular(seleccion, tasaNc, { aplica_igtf: $("#dev_igtf")?.checked });
+      const aplicaIgtfNc = Boolean($("#dev_igtf")?.checked);
+      const opcNc = { aplica_igtf: aplicaIgtfNc };
+      if (aplicaIgtfNc) {
+        const previo = calcular(seleccion, tasaNc, { aplica_igtf: false });
+        const totConIvaNc = previo.subtotal_usd + previo.iva_usd;
+        const totConIvaOrig = (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0);
+        const txtBase = String($("#dev_igtf_base_usd")?.value || "").trim();
+        if (txtBase !== "") {
+          const baseExp = aCentavos(txtBase);
+          if (baseExp === null || Number.isNaN(baseExp) || baseExp <= 0) {
+            caja.innerHTML = `<p class="error">⚠️ La base en divisas a reversar debe ser mayor que 0 (o déjala vacía).</p>`;
+            return;
+          }
+          if (baseExp > baseIgtfDispUsd) {
+            caja.innerHTML = `<p class="error">⚠️ La base IGTF a reversar (${usd(baseExp)}) supera el saldo IGTF disponible de la factura (${usd(baseIgtfDispUsd)}).</p>`;
+            return;
+          }
+          opcNc.igtf_base_usd = baseExp;
+        } else if (totConIvaOrig > 0 && baseIgtfOrigUsd < totConIvaOrig) {
+          const prop = Math.round((totConIvaNc * baseIgtfOrigUsd) / totConIvaOrig);
+          const sug = Math.min(prop, totConIvaNc, baseIgtfDispUsd);
+          if (sug > 0) opcNc.igtf_base_usd = sug;
+          else opcNc.aplica_igtf = false;
+        } else if (baseIgtfDispUsd < totConIvaNc) {
+          if (baseIgtfDispUsd > 0) opcNc.igtf_base_usd = baseIgtfDispUsd;
+          else opcNc.aplica_igtf = false;
+        }
+      }
+      const calc = calcular(seleccion, tasaNc, opcNc);
       const nuevoSaldo = Math.max((saldo_usd ?? 0) - calc.total_usd, 0);
+      const esParcialNc = calc.igtf_usd > 0 && calc.igtf_base_usd < calc.subtotal_usd + calc.iva_usd;
       caja.innerHTML = `<span class="etiqueta">📋 RESUMEN DE LA NOTA DE CRÉDITO</span>
         <div class="tot"><span>Subtotal a reversar</span><b>-${usd(calc.subtotal_usd)}${calc.subtotal_bs != null ? ` · -Bs. ${bs(calc.subtotal_bs / 100)}` : ""}</b></div>
         <div class="tot"><span>IVA a reversar</span><b>-${usd(calc.iva_usd)}${calc.iva_bs != null ? ` · -Bs. ${bs(calc.iva_bs / 100)}` : ""}</b></div>
+        ${esParcialNc ? `<div class="tot"><span>Base IGTF a reversar</span><b>-${usd(calc.igtf_base_usd)}${calc.igtf_base_bs != null ? ` · -Bs. ${bs(calc.igtf_base_bs / 100)}` : ""}</b></div>` : ""}
         ${calc.igtf_usd > 0 ? `<div class="tot"><span>IGTF (3%) a reversar</span><b>-${usd(calc.igtf_usd)}${calc.igtf_bs != null ? ` · -Bs. ${bs(calc.igtf_bs / 100)}` : ""}</b></div>` : ""}
         <div class="tot grande"><span>TOTAL A ACREDITAR</span><b>-${usd(calc.total_usd)}${calc.total_bs != null ? ` (-Bs. ${bs(calc.total_bs / 100)})` : ""}</b></div>
         <div class="tot"><span>Saldo de la factura tras aplicar NC</span><b>${usd(nuevoSaldo)}</b></div>`;
@@ -588,10 +680,22 @@ async function ver(estado, id) {
     }
     try {
       const alic = esFormal ? 0 : Math.round(Number($("#alicuota_nd")?.value ?? 16) * 100);
-      const calc = calcular([{ cantidad_milli: 1000, precio_usd: precio, alicuota_cent: alic, costo_usd: null }], tasaNc, { aplica_igtf: Boolean($("#nd_igtf")?.checked) });
+      const tipoExNd = alic === 0 ? ($("#tipo_exencion_nd")?.value || "EXENTA") : "EXENTA";
+      const opcNd = { aplica_igtf: Boolean($("#nd_igtf")?.checked) };
+      if (opcNd.aplica_igtf && String($("#nd_igtf_base_usd")?.value || "").trim() !== "") {
+        const bNd = aCentavos($("#nd_igtf_base_usd").value);
+        if (bNd === null || Number.isNaN(bNd) || bNd <= 0) {
+          caja.innerHTML = `<p class="error">⚠️ El monto en divisas (USD) debe ser mayor que 0 (o déjalo vacío para 100%).</p>`;
+          return;
+        }
+        opcNd.igtf_base_usd = bNd;
+      }
+      const calc = calcular([{ cantidad_milli: 1000, precio_usd: precio, alicuota_cent: alic, tipo_exencion: tipoExNd, costo_usd: null }], tasaNc, opcNd);
+      const esParcialNd = calc.igtf_usd > 0 && calc.igtf_base_usd < calc.subtotal_usd + calc.iva_usd;
       caja.innerHTML = `<span class="etiqueta">📋 RESUMEN DE LA NOTA DE DÉBITO</span>
-        <div class="tot"><span>Base imponible / Subtotal</span><b>+${usd(calc.subtotal_usd)}${calc.subtotal_bs != null ? ` · +Bs. ${bs(calc.subtotal_bs / 100)}` : ""}</b></div>
+        <div class="tot"><span>${alic === 0 ? `Monto ${etiquetaExencion(tipoExNd).toLowerCase()}` : "Base imponible / Subtotal"}</span><b>+${usd(calc.subtotal_usd)}${calc.subtotal_bs != null ? ` · +Bs. ${bs(calc.subtotal_bs / 100)}` : ""}</b></div>
         ${alic > 0 ? `<div class="tot"><span>IVA (${alic / 100}%)</span><b>+${usd(calc.iva_usd)}${calc.iva_bs != null ? ` · +Bs. ${bs(calc.iva_bs / 100)}` : ""}</b></div>` : ""}
+        ${esParcialNd ? `<div class="tot"><span>Base IGTF (divisas)</span><b>+${usd(calc.igtf_base_usd)}${calc.igtf_base_bs != null ? ` · +Bs. ${bs(calc.igtf_base_bs / 100)}` : ""}</b></div>` : ""}
         ${calc.igtf_usd > 0 ? `<div class="tot"><span>IGTF (3%)</span><b>+${usd(calc.igtf_usd)}${calc.igtf_bs != null ? ` · +Bs. ${bs(calc.igtf_bs / 100)}` : ""}</b></div>` : ""}
         <div class="tot grande"><span>TOTAL A CARGAR (ND)</span><b>+${usd(calc.total_usd)}${calc.total_bs != null ? ` (+Bs. ${bs(calc.total_bs / 100)})` : ""}</b></div>`;
     } catch (e) { caja.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
@@ -642,11 +746,17 @@ async function ver(estado, id) {
         : (emisorDoc.tipo_contribuyente || tipoContrib) === "ESPECIAL"
           ? "Contribuyente Especial (SPE · Agente IGTF)"
           : "Contribuyente Ordinario";
-      const desgloseIva = impuestos.map((i) =>
-        i.alicuota_cent === 0
-          ? `Base Exenta (0%): Bs. ${bs(i.base_bs / 100)} (${usd(i.base_usd)})`
-          : `Base ${i.alicuota_cent / 100}%: Bs. ${bs(i.base_bs / 100)} (${usd(i.base_usd)}) | IVA ${i.alicuota_cent / 100}%: Bs. ${bs(i.iva_bs / 100)} (${usd(i.iva_usd)})`
-      );
+      const desgloseIva = impuestos.flatMap((i) => {
+        if (i.alicuota_cent !== 0) return [`Base ${i.alicuota_cent / 100}%: Bs. ${bs(i.base_bs / 100)} (${usd(i.base_usd)}) | IVA ${i.alicuota_cent / 100}%: Bs. ${bs(i.iva_bs / 100)} (${usd(i.iva_usd)})`];
+        const exoU = i.exonerada_usd ?? 0, nsU = i.no_sujeta_usd ?? 0, exU = i.exenta_usd ?? (i.base_usd - exoU - nsU);
+        const exoB = i.exonerada_bs ?? 0, nsB = i.no_sujeta_bs ?? 0, exB = i.exenta_bs ?? (i.base_bs - exoB - nsB);
+        const out = [];
+        if (exU || exB) out.push(`Base Exenta (0%): Bs. ${bs(exB / 100)} (${usd(exU)})`);
+        if (exoU || exoB) out.push(`Base Exonerada (0%): Bs. ${bs(exoB / 100)} (${usd(exoU)})`);
+        if (nsU || nsB) out.push(`Base No Sujeta (0%): Bs. ${bs(nsB / 100)} (${usd(nsU)})`);
+        return out.length ? out : [`Base Exenta (0%): Bs. ${bs(i.base_bs / 100)} (${usd(i.base_usd)})`];
+      });
+      const esParcialIgtf = D.aplica_igtf && D.igtf_usd > 0 && (D.igtf_base_usd ?? 0) > 0 && D.igtf_base_usd < (D.subtotal_usd ?? 0) + (D.iva_usd ?? 0);
       const resumenSeniat = [
         `DOCUMENTO: ${esNc ? "NOTA DE CRÉDITO" : esNd ? "NOTA DE DÉBITO" : "FACTURA"} N.º ${numeroDoc(D)}`,
         `RÉGIMEN EMISOR: ${regimenEmisor}`,
@@ -658,11 +768,12 @@ async function ver(estado, id) {
         ...(cliente?.email ? [`CORREO: ${cliente.email}`] : []),
         `TASA BCV: Bs. ${bs(D.tasa_e8 / 1e8)}`,
         `--- RENGLONES ---`,
-        ...lineas.map((l, idx) => `${idx + 1}. ${l.descripcion} | Cant: ${cantidadTexto(l.cantidad_milli)} | P.Unit: Bs. ${bs(usdABs(l.precio_usd, D.tasa_e8) / 100)} (${usd(l.precio_usd)}) | IVA: ${l.alicuota_cent / 100}% | Monto: Bs. ${bs(l.monto_bs / 100)} (${usd(l.monto_usd)})`),
+        ...lineas.map((l, idx) => `${idx + 1}. ${l.descripcion} | Cant: ${cantidadTexto(l.cantidad_milli)} | P.Unit: Bs. ${bs(usdABs(l.precio_usd, D.tasa_e8) / 100)} (${usd(l.precio_usd)}) | IVA: ${l.alicuota_cent ? `${l.alicuota_cent / 100}%` : etiquetaExencion(l.tipo_exencion)} | Monto: Bs. ${bs(l.monto_bs / 100)} (${usd(l.monto_usd)})`),
         `--- DESGLOSE FISCAL ---`,
         ...desgloseIva,
         `Subtotal: Bs. ${bs(D.subtotal_bs / 100)} (${usd(D.subtotal_usd)})`,
         `IVA Total: Bs. ${bs(D.iva_bs / 100)} (${usd(D.iva_usd)})`,
+        ...(esParcialIgtf ? [`Base IGTF (divisas): Bs. ${bs((D.igtf_base_bs ?? 0) / 100)} (${usd(D.igtf_base_usd)})`] : []),
         ...(D.aplica_igtf && D.igtf_usd > 0 ? [`IGTF (3%): Bs. ${bs((D.igtf_bs ?? 0) / 100)} (${usd(D.igtf_usd)})`] : []),
         `TOTAL: Bs. ${bs(D.total_bs / 100)} (${usd(D.total_usd)})`,
       ].join("\n");
@@ -687,10 +798,25 @@ async function ver(estado, id) {
   $("#dev-todo")?.addEventListener("click", () => { raiz.querySelectorAll("[data-dev-orden]").forEach((inp) => (inp.value = inp.dataset.max)); recalcularNc(); });
   $("#dev-cero")?.addEventListener("click", () => { raiz.querySelectorAll("[data-dev-orden]").forEach((inp) => (inp.value = "0")); recalcularNc(); });
   $("#devolver-lineas")?.addEventListener("input", recalcularNc);
-  $("#dev_igtf")?.addEventListener("change", recalcularNc);
+  $("#dev_igtf")?.addEventListener("change", () => {
+    const c = $("#caja-dev-igtf-base");
+    if (c) c.hidden = !$("#dev_igtf").checked;
+    recalcularNc();
+  });
+  $("#dev_igtf_base_usd")?.addEventListener("input", recalcularNc);
   $("#monto_nd")?.addEventListener("input", recalcularNd);
-  $("#alicuota_nd")?.addEventListener("change", recalcularNd);
-  $("#nd_igtf")?.addEventListener("change", recalcularNd);
+  $("#alicuota_nd")?.addEventListener("change", () => {
+    const c = $("#caja-nd-exencion");
+    if (c) c.hidden = Number($("#alicuota_nd").value) !== 0;
+    recalcularNd();
+  });
+  $("#tipo_exencion_nd")?.addEventListener("change", recalcularNd);
+  $("#nd_igtf")?.addEventListener("change", () => {
+    const c = $("#caja-nd-igtf-base");
+    if (c) c.hidden = !$("#nd_igtf").checked;
+    recalcularNd();
+  });
+  $("#nd_igtf_base_usd")?.addEventListener("input", recalcularNd);
   $("#reintentar-imprenta")?.addEventListener("click", () => pedir(async () => {
     const r = await api(`documentos/${id}/fiscal`, "POST", { reintentar_imprenta: true });
     aviso(`N.º de Control asignado por Imprenta Digital: ${r.control_fiscal} ✅`);
@@ -728,16 +854,25 @@ async function ver(estado, id) {
   if ($("#devolver-form")) enviar($("#devolver-form"), async (v) => {
     const ls = [...raiz.querySelectorAll("[data-dev-orden]")].map((inp) => ({ orden: Number(inp.dataset.devOrden), cantidad: inp.value }));
     if (!confirm(`¿Emitir Nota de Crédito sobre la Factura ${numeroDoc(D)}?\n\nEsta operación devolverá al inventario las unidades indicadas y reducirá el saldo de la factura.`)) return;
-    const r = await api(`documentos/${id}/devolver`, "POST", { motivo: v.motivo_nc, aplica_igtf: Boolean($("#dev_igtf")?.checked), lineas: ls });
+    const baseDevTxt = $("#dev_igtf")?.checked ? String($("#dev_igtf_base_usd")?.value || "").trim() : "";
+    const r = await api(`documentos/${id}/devolver`, "POST", {
+      motivo: v.motivo_nc,
+      aplica_igtf: Boolean($("#dev_igtf")?.checked),
+      ...(baseDevTxt ? { igtf_base_usd: baseDevTxt } : {}),
+      lineas: ls,
+    });
     aviso(`Nota de Crédito NC-${String(r.numero).padStart(8, "0")} emitida ✅`);
     location.hash = `#/factura/${r.id}`;
   });
   if ($("#nd-form")) enviar($("#nd-form"), async (v) => {
     if (!confirm(`¿Emitir Nota de Débito sobre la Factura ${numeroDoc(D)}?\n\nSe registrará como documento independiente en el Libro de Ventas y Cuentas por Cobrar.`)) return;
+    const alicNd = esFormal ? 0 : Number(v.alicuota_nd);
+    const baseNdTxt = $("#nd_igtf")?.checked ? String($("#nd_igtf_base_usd")?.value || "").trim() : "";
     const r = await api(`documentos/${id}/nota-debito`, "POST", {
       motivo: v.motivo_nd,
       aplica_igtf: Boolean($("#nd_igtf")?.checked),
-      lineas: [{ descripcion: v.descripcion_nd, cantidad: "1", precio_usd: v.monto_nd, alicuota_iva: esFormal ? 0 : Number(v.alicuota_nd) }],
+      ...(baseNdTxt ? { igtf_base_usd: baseNdTxt } : {}),
+      lineas: [{ descripcion: v.descripcion_nd, cantidad: "1", precio_usd: v.monto_nd, alicuota_iva: alicNd, tipo_exencion: alicNd === 0 ? ($("#tipo_exencion_nd")?.value || "EXENTA") : "EXENTA" }],
     });
     aviso(`Nota de Débito ND-${String(r.numero).padStart(8, "0")} emitida ✅`);
     location.hash = `#/factura/${r.id}`;

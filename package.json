@@ -1,23 +1,22 @@
 {
-  "name": "facturaya-ve",
-  "version": "5.6.0",
+  "name": "sistema-facturacion-ve",
+  "version": "5.6.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --local --ip 127.0.0.1 --port 8787",
+    "dev": "tsx server.ts",
     "build": "tsc --noEmit",
-    "deploy": "wrangler deploy",
-    "tipos": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts"
+    "lint": "tsc --noEmit",
+    "start": "tsx server.ts",
+    "tipos": "tsc --noEmit"
   },
   "dependencies": {
-    "hono": "^4.13.13"
+    "@hono/node-server": "^2.1.8",
+    "@types/node": "^26.6.6",
+    "hono": "^4.13.13",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250520.0",
-    "@types/node": "^22.15.0",
-    "tsx": "^4.23.15",
-    "typescript": "^5.8.3",
-    "wrangler": "^4.14.0"
+    "typescript": "^7.0.2"
   }
 }

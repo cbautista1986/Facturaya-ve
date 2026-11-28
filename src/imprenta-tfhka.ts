@@ -407,11 +407,20 @@ export function construirDocumentoElectronicoTfhka(
     ValorTotalImp: formatearCentavosCg(x.iva_usd),
   }));
 
+  const baseIgtfBs =
+    payload.igtf_base_bs !== undefined && Math.round(Number(payload.igtf_base_bs) || 0) > 0
+      ? Math.min(totalConIvaBs, Math.round(Number(payload.igtf_base_bs)))
+      : totalConIvaBs;
+  const baseIgtfUsd =
+    payload.igtf_base_usd !== undefined && Math.round(Number(payload.igtf_base_usd) || 0) > 0
+      ? Math.min(totalConIvaUsd, Math.round(Number(payload.igtf_base_usd)))
+      : totalConIvaUsd;
+
   if (igtfBs > 0) {
     impuestosSubtotalBs.push({
       CodigoTotalImp: "IGTF",
       AlicuotaImp: "3.00",
-      BaseImponibleImp: formatearCentavosCg(totalConIvaBs),
+      BaseImponibleImp: formatearCentavosCg(baseIgtfBs),
       ValorTotalImp: formatearCentavosCg(igtfBs),
     });
   }
@@ -419,7 +428,7 @@ export function construirDocumentoElectronicoTfhka(
     impuestosSubtotalUsd.push({
       CodigoTotalImp: "IGTF",
       AlicuotaImp: "3.00",
-      BaseImponibleImp: formatearCentavosCg(totalConIvaUsd),
+      BaseImponibleImp: formatearCentavosCg(baseIgtfUsd),
       ValorTotalImp: formatearCentavosCg(igtfUsd),
     });
   }
@@ -471,20 +480,46 @@ export function construirDocumentoElectronicoTfhka(
   }
 
   // Formas de pago oficiales TFHKA:
-  // - Con IGTF 3% -> Forma "09" (Divisas), Moneda "USD", TipoCambio tasa BCV
+  // - Con IGTF 3% total -> Forma "09" (Divisas), Moneda "USD", TipoCambio tasa BCV
+  // - Con IGTF 3% parcial (pago mixto SNAT/2022/000013) -> Forma "09" (porción divisas + IGTF) + Forma "02" (remanente VES)
   // - Sin IGTF -> Forma "02" (Bolívares VES), TipoCambio tasa BCV si moneda base es USD o "0.0000" si base es VES
   const tieneIgtf = igtfBs > 0 || igtfUsd > 0;
+  const esIgtfParcial =
+    tieneIgtf && ((baseIgtfUsd > 0 && baseIgtfUsd < totalConIvaUsd) || (baseIgtfBs > 0 && baseIgtfBs < totalConIvaBs));
   const formasPago = tieneIgtf
-    ? [
-        {
-          Descripcion: esCredito ? "Credito Divisas" : "Efectivo Divisas",
-          Fecha: fechaEmision,
-          Forma: "09",
-          Monto: formatearCentavosCg(totalUsd > 0 ? totalUsd : totalBs),
-          Moneda: "USD",
-          TipoCambio: tasaStr,
-        },
-      ]
+    ? esIgtfParcial
+      ? [
+          {
+            Descripcion: esCredito ? "Credito Divisas" : "Efectivo Divisas",
+            Fecha: fechaEmision,
+            Forma: "09",
+            Monto: formatearCentavosCg(totalUsd > 0 ? baseIgtfUsd + igtfUsd : baseIgtfBs + igtfBs),
+            Moneda: "USD",
+            TipoCambio: tasaStr,
+          },
+          ...(totalBs - (baseIgtfBs + igtfBs) > 0
+            ? [
+                {
+                  Descripcion: esCredito ? "Credito Bolivares" : "Contado Bolivares",
+                  Fecha: fechaEmision,
+                  Forma: "02",
+                  Monto: formatearCentavosCg(totalBs - (baseIgtfBs + igtfBs)),
+                  Moneda: "VES",
+                  TipoCambio: esBaseUsd ? tasaStr : "0.0000",
+                },
+              ]
+            : []),
+        ]
+      : [
+          {
+            Descripcion: esCredito ? "Credito Divisas" : "Efectivo Divisas",
+            Fecha: fechaEmision,
+            Forma: "09",
+            Monto: formatearCentavosCg(totalUsd > 0 ? totalUsd : totalBs),
+            Moneda: "USD",
+            TipoCambio: tasaStr,
+          },
+        ]
     : [
         {
           Descripcion: esCredito ? "Credito" : "Contado",

@@ -32,10 +32,10 @@ informes.get("/ventas", async (c) => {
     db.prepare(`SELECT d.id, d.es_nota_credito, COALESCE(d.es_nota_debito, 0) AS es_nota_debito, d.factura_afectada_id,
           (SELECT fa.numero FROM documentos fa WHERE fa.id = d.factura_afectada_id) AS factura_afectada_numero,
           d.numero, d.control_interno, d.control_fiscal, d.medio, d.fecha_emision,
-          d.cliente_rif, d.cliente_nombre, d.estado, d.tasa_e8, d.aplica_igtf, d.igtf_usd, d.igtf_bs, d.total_usd, d.total_bs
+          d.cliente_rif, d.cliente_nombre, d.estado, d.tasa_e8, d.aplica_igtf, d.igtf_base_usd, d.igtf_base_bs, d.igtf_usd, d.igtf_bs, d.total_usd, d.total_bs
         FROM documentos d WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO') AND d.fecha_emision BETWEEN ? AND ? ORDER BY d.fecha_emision, d.id`)
       .bind(modo, r.desde, r.hasta).all<Fila>(),
-    db.prepare(`SELECT i.documento_id, i.alicuota_cent, i.base_bs, i.iva_bs FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
+    db.prepare(`SELECT i.documento_id, i.alicuota_cent, i.base_bs, i.iva_bs, COALESCE(i.exonerada_bs, 0) AS exonerada_bs, COALESCE(i.no_sujeta_bs, 0) AS no_sujeta_bs FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
         WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado IN ('EMITIDO', 'ANULADO') AND d.fecha_emision BETWEEN ? AND ?`)
       .bind(modo, r.desde, r.hasta).all<Fila>(),
     // v4.2.1: una fila por retención recibida en el período (por fecha del pago/comprobante), aunque la factura sea de otro mes.
@@ -68,26 +68,46 @@ informes.get("/ventas", async (c) => {
   const filas: Fila[] = docs.results.map((d) => {
     const signo = d.es_nota_credito ? -1 : 1;
     const rt = retPorDoc.get(d.id);
+    const imps = (porDoc.get(d.id) ?? []).map((i) => {
+      const esCero = Number(i.alicuota_cent) === 0;
+      const exonerada = esCero ? (Number(i.exonerada_bs ?? 0) || 0) : 0;
+      const noSujeta = esCero ? (Number(i.no_sujeta_bs ?? 0) || 0) : 0;
+      const exenta = esCero ? Math.max(0, (Number(i.base_bs ?? 0) || 0) - exonerada - noSujeta) : 0;
+      return {
+        alicuota_cent: i.alicuota_cent,
+        base_bs: i.base_bs * signo,
+        iva_bs: i.iva_bs * signo,
+        ...(esCero ? { exenta_bs: exenta * signo, exonerada_bs: exonerada * signo, no_sujeta_bs: noSujeta * signo } : {}),
+      };
+    });
+    const imp0 = imps.find((x) => x.alicuota_cent === 0);
     return {
       ...d,
       comprobante_retencion: d.estado === "EMITIDO" ? (rt?.comprobante_retencion ?? "") : "",
       iva_retenido_bs: d.estado === "EMITIDO" ? (rt?.iva_retenido_bs ?? 0) : 0,
+      exenta_bs: imp0?.exenta_bs ?? 0,
+      exonerada_bs: imp0?.exonerada_bs ?? 0,
+      no_sujeta_bs: imp0?.no_sujeta_bs ?? 0,
       igtf_bs: (d.igtf_bs ?? 0) * signo,
       igtf_usd: (d.igtf_usd ?? 0) * signo,
       total_bs: (d.total_bs ?? 0) * signo,
       total_usd: (d.total_usd ?? 0) * signo,
-      impuestos: (porDoc.get(d.id) ?? []).map((i) => ({
-        alicuota_cent: i.alicuota_cent,
-        base_bs: i.base_bs * signo,
-        iva_bs: i.iva_bs * signo,
-      })),
+      impuestos: imps,
     };
   });
   // Totales: las anuladas se listan (para que la numeración no tenga saltos) pero NO suman; las Notas de Crédito vigentes restan y las Notas de Débito suman.
-  const vigentes = filas.filter((f) => f.estado === "EMITIDO"), porAlicuota = new Map<number, { base_bs: number; iva_bs: number }>();
+  const vigentes = filas.filter((f) => f.estado === "EMITIDO");
+  const porAlicuota = new Map<number, { base_bs: number; iva_bs: number; exenta_bs?: number; exonerada_bs?: number; no_sujeta_bs?: number }>();
   for (const f of vigentes) for (const i of f.impuestos) {
-    const t = porAlicuota.get(i.alicuota_cent) ?? { base_bs: 0, iva_bs: 0 };
-    porAlicuota.set(i.alicuota_cent, { base_bs: t.base_bs + i.base_bs, iva_bs: t.iva_bs + i.iva_bs });
+    const t = porAlicuota.get(i.alicuota_cent) ?? (i.alicuota_cent === 0 ? { base_bs: 0, iva_bs: 0, exenta_bs: 0, exonerada_bs: 0, no_sujeta_bs: 0 } : { base_bs: 0, iva_bs: 0 });
+    t.base_bs += i.base_bs;
+    t.iva_bs += i.iva_bs;
+    if (i.alicuota_cent === 0) {
+      t.exenta_bs = (t.exenta_bs ?? 0) + (i.exenta_bs ?? 0);
+      t.exonerada_bs = (t.exonerada_bs ?? 0) + (i.exonerada_bs ?? 0);
+      t.no_sujeta_bs = (t.no_sujeta_bs ?? 0) + (i.no_sujeta_bs ?? 0);
+    }
+    porAlicuota.set(i.alicuota_cent, t);
   }
   const alicuotas = [...porAlicuota].sort((a, b) => a[0] - b[0]).map(([alicuota_cent, t]) => ({ alicuota_cent, ...t }));
   const tipo_contribuyente = await leerTipoContribuyente(db);
@@ -98,6 +118,9 @@ informes.get("/ventas", async (c) => {
     n_notas_debito: vigentes.filter((f) => f.es_nota_debito).length,
     n_anuladas: filas.length - vigentes.length,
     n_sin_fiscal: vigentes.filter((f) => f.medio && !f.control_fiscal).length,
+    ventas_exentas_bs: suma(vigentes, "exenta_bs"),
+    ventas_exoneradas_bs: suma(vigentes, "exonerada_bs"),
+    ventas_no_sujetas_bs: suma(vigentes, "no_sujeta_bs"),
     iva_retenido_bs: totalRetenidoPeriodoBs,
     // Retenciones del período cuya factura es de otro mes: no tienen fila en el libro, por eso se listan aparte.
     iva_retenido_otros_periodos_bs: ivaRetenidoOtrosPeriodosBs,
@@ -114,24 +137,53 @@ informes.get("/compras", async (c) => {
   const [docs, imp] = await Promise.all([
     db.prepare(`SELECT id, fecha, proveedor_rif, proveedor_nombre, factura_numero, control_numero, estado, tasa_e8, subtotal_usd, iva_usd, total_usd, subtotal_bs, iva_bs, total_bs, renglones_json
         FROM compras WHERE modo = ? AND fecha BETWEEN ? AND ? ORDER BY fecha, id`).bind(modo, r.desde, r.hasta).all<Fila>(),
-    db.prepare(`SELECT i.compra_id, i.alicuota_cent, i.base_bs, i.iva_bs FROM compra_impuestos i JOIN compras c ON c.id = i.compra_id
+    db.prepare(`SELECT i.compra_id, i.alicuota_cent, i.base_bs, i.iva_bs, COALESCE(i.exonerada_bs, 0) AS exonerada_bs, COALESCE(i.no_sujeta_bs, 0) AS no_sujeta_bs FROM compra_impuestos i JOIN compras c ON c.id = i.compra_id
         WHERE c.modo = ? AND c.fecha BETWEEN ? AND ?`).bind(modo, r.desde, r.hasta).all<Fila>(),
   ]);
   const porCompra = new Map<number, Fila[]>();
   for (const i of imp.results) porCompra.set(i.compra_id, [...(porCompra.get(i.compra_id) ?? []), i]);
-  const filas: Fila[] = docs.results.map(({ renglones_json, ...d }) => ({
-    ...d,
-    tipo_compra: clasificarRenglonesCompra(renglones_json),
-    impuestos: (porCompra.get(d.id) ?? []).map((i) => ({ alicuota_cent: i.alicuota_cent, base_bs: i.base_bs, iva_bs: i.iva_bs })),
-  }));
-  const vigentes = filas.filter((f) => f.estado === "REGISTRADA"), porAlicuota = new Map<number, { base_bs: number; iva_bs: number }>();
+  const filas: Fila[] = docs.results.map(({ renglones_json, ...d }) => {
+    const imps = (porCompra.get(d.id) ?? []).map((i) => {
+      const esCero = Number(i.alicuota_cent) === 0;
+      const exonerada = esCero ? (Number(i.exonerada_bs ?? 0) || 0) : 0;
+      const noSujeta = esCero ? (Number(i.no_sujeta_bs ?? 0) || 0) : 0;
+      const exenta = esCero ? Math.max(0, (Number(i.base_bs ?? 0) || 0) - exonerada - noSujeta) : 0;
+      return {
+        alicuota_cent: i.alicuota_cent,
+        base_bs: i.base_bs,
+        iva_bs: i.iva_bs,
+        ...(esCero ? { exenta_bs: exenta, exonerada_bs: exonerada, no_sujeta_bs: noSujeta } : {}),
+      };
+    });
+    const imp0 = imps.find((x) => x.alicuota_cent === 0);
+    return {
+      ...d,
+      tipo_compra: clasificarRenglonesCompra(renglones_json),
+      exenta_bs: imp0?.exenta_bs ?? 0,
+      exonerada_bs: imp0?.exonerada_bs ?? 0,
+      no_sujeta_bs: imp0?.no_sujeta_bs ?? 0,
+      impuestos: imps,
+    };
+  });
+  const vigentes = filas.filter((f) => f.estado === "REGISTRADA");
+  const porAlicuota = new Map<number, { base_bs: number; iva_bs: number; exenta_bs?: number; exonerada_bs?: number; no_sujeta_bs?: number }>();
   for (const f of vigentes) for (const i of f.impuestos) {
-    const t = porAlicuota.get(i.alicuota_cent) ?? { base_bs: 0, iva_bs: 0 };
-    porAlicuota.set(i.alicuota_cent, { base_bs: t.base_bs + i.base_bs, iva_bs: t.iva_bs + i.iva_bs });
+    const t = porAlicuota.get(i.alicuota_cent) ?? (i.alicuota_cent === 0 ? { base_bs: 0, iva_bs: 0, exenta_bs: 0, exonerada_bs: 0, no_sujeta_bs: 0 } : { base_bs: 0, iva_bs: 0 });
+    t.base_bs += i.base_bs;
+    t.iva_bs += i.iva_bs;
+    if (i.alicuota_cent === 0) {
+      t.exenta_bs = (t.exenta_bs ?? 0) + (i.exenta_bs ?? 0);
+      t.exonerada_bs = (t.exonerada_bs ?? 0) + (i.exonerada_bs ?? 0);
+      t.no_sujeta_bs = (t.no_sujeta_bs ?? 0) + (i.no_sujeta_bs ?? 0);
+    }
+    porAlicuota.set(i.alicuota_cent, t);
   }
   const alicuotas = [...porAlicuota].sort((a, b) => a[0] - b[0]).map(([alicuota_cent, t]) => ({ alicuota_cent, ...t }));
   return c.json({ ok: true, modo, desde: r.desde, hasta: r.hasta, filas, alicuotas, n_vigentes: vigentes.length, n_anuladas: filas.length - vigentes.length,
     n_sin_tasa: vigentes.filter((f) => f.tasa_e8 == null).length,
+    compras_exentas_bs: suma(vigentes, "exenta_bs"),
+    compras_exoneradas_bs: suma(vigentes, "exonerada_bs"),
+    compras_no_sujetas_bs: suma(vigentes, "no_sujeta_bs"),
     subtotal_bs: suma(vigentes, "subtotal_bs"), iva_bs: suma(vigentes, "iva_bs"), total_bs: suma(vigentes, "total_bs"),
     subtotal_usd: suma(vigentes, "subtotal_usd"), iva_usd: suma(vigentes, "iva_usd"), total_usd: suma(vigentes, "total_usd") });
 });
@@ -144,14 +196,21 @@ informes.get("/resumen-iva", async (c) => {
   const [ventas, compras, sinTasa, retenciones] = await Promise.all([
     db.prepare(`SELECT substr(d.fecha_emision, 1, 7) AS mes,
         SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs * ${signo} ELSE 0 END) AS gravadas_bs,
-        SUM(CASE WHEN i.alicuota_cent = 0 THEN i.base_bs * ${signo} ELSE 0 END) AS exentas_bs,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN (i.base_bs - COALESCE(i.exonerada_bs, 0) - COALESCE(i.no_sujeta_bs, 0)) * ${signo} ELSE 0 END) AS exentas_bs,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.exonerada_bs, 0) * ${signo} ELSE 0 END) AS exoneradas_bs,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.no_sujeta_bs, 0) * ${signo} ELSE 0 END) AS no_sujetas_bs,
         SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_usd * ${signo} ELSE 0 END) AS gravadas_usd,
-        SUM(CASE WHEN i.alicuota_cent = 0 THEN i.base_usd * ${signo} ELSE 0 END) AS exentas_usd,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN (i.base_usd - COALESCE(i.exonerada_usd, 0) - COALESCE(i.no_sujeta_usd, 0)) * ${signo} ELSE 0 END) AS exentas_usd,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.exonerada_usd, 0) * ${signo} ELSE 0 END) AS exoneradas_usd,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.no_sujeta_usd, 0) * ${signo} ELSE 0 END) AS no_sujetas_usd,
         SUM(i.iva_bs * ${signo}) AS iva_bs
         FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
         WHERE d.tipo = 'FACTURA' AND d.estado = 'EMITIDO' AND d.modo = ? AND d.fecha_emision BETWEEN ? AND ? GROUP BY mes`).bind(modo, r.desde, r.hasta).all<Fila>(),
     db.prepare(`SELECT substr(c.fecha, 1, 7) AS mes, SUM(CASE WHEN i.alicuota_cent > 0 THEN i.base_bs ELSE 0 END) AS gravadas_bs,
-        SUM(CASE WHEN i.alicuota_cent = 0 THEN i.base_bs ELSE 0 END) AS exentas_bs, SUM(i.iva_bs) AS iva_bs
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN (i.base_bs - COALESCE(i.exonerada_bs, 0) - COALESCE(i.no_sujeta_bs, 0)) ELSE 0 END) AS exentas_bs,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.exonerada_bs, 0) ELSE 0 END) AS exoneradas_bs,
+        SUM(CASE WHEN i.alicuota_cent = 0 THEN COALESCE(i.no_sujeta_bs, 0) ELSE 0 END) AS no_sujetas_bs,
+        SUM(i.iva_bs) AS iva_bs
         FROM compra_impuestos i JOIN compras c ON c.id = i.compra_id
         WHERE c.estado = 'REGISTRADA' AND c.modo = ? AND c.fecha BETWEEN ? AND ? GROUP BY mes`).bind(modo, r.desde, r.hasta).all<Fila>(),
     db.prepare(`SELECT substr(fecha, 1, 7) AS mes, COUNT(*) AS n FROM compras WHERE estado = 'REGISTRADA' AND tasa_e8 IS NULL AND modo = ? AND fecha BETWEEN ? AND ? GROUP BY mes`)
@@ -167,17 +226,30 @@ informes.get("/resumen-iva", async (c) => {
   const meses = [...new Set([...V.keys(), ...C.keys(), ...S.keys(), ...R.keys()])].sort();
   const filas = meses.map((mes) => {
     const v = V.get(mes) ?? {}, k = C.get(mes) ?? {}, debito_bs = v.iva_bs ?? 0, credito_bs = k.iva_bs ?? 0, retenciones_bs = R.get(mes) ?? 0;
-    const ventas_gravadas_bs = v.gravadas_bs ?? 0, ventas_exentas_bs = v.exentas_bs ?? 0;
-    const ventas_gravadas_usd = v.gravadas_usd ?? 0, ventas_exentas_usd = v.exentas_usd ?? 0;
+    const ventas_gravadas_bs = v.gravadas_bs ?? 0;
+    const ventas_exentas_bs = v.exentas_bs ?? 0;
+    const ventas_exoneradas_bs = v.exoneradas_bs ?? 0;
+    const ventas_no_sujetas_bs = v.no_sujetas_bs ?? 0;
+    const ventas_sin_iva_bs = ventas_exentas_bs + ventas_exoneradas_bs + ventas_no_sujetas_bs;
+    const ventas_gravadas_usd = v.gravadas_usd ?? 0;
+    const ventas_exentas_usd = v.exentas_usd ?? 0;
+    const ventas_exoneradas_usd = v.exoneradas_usd ?? 0;
+    const ventas_no_sujetas_usd = v.no_sujetas_usd ?? 0;
+    const ventas_sin_iva_usd = ventas_exentas_usd + ventas_exoneradas_usd + ventas_no_sujetas_usd;
+    const compras_gravadas_bs = k.gravadas_bs ?? 0;
+    const compras_exentas_bs = k.exentas_bs ?? 0;
+    const compras_exoneradas_bs = k.exoneradas_bs ?? 0;
+    const compras_no_sujetas_bs = k.no_sujetas_bs ?? 0;
+    const compras_sin_iva_bs = compras_exentas_bs + compras_exoneradas_bs + compras_no_sujetas_bs;
     const diferencia_bs = debito_bs - credito_bs;
     const cuota_tributaria_bs = diferencia_bs - retenciones_bs;
     return {
-      mes, ventas_gravadas_bs, ventas_exentas_bs, debito_bs,
-      compras_gravadas_bs: k.gravadas_bs ?? 0, compras_exentas_bs: k.exentas_bs ?? 0,
+      mes, ventas_gravadas_bs, ventas_exentas_bs, ventas_exoneradas_bs, ventas_no_sujetas_bs, ventas_sin_iva_bs, debito_bs,
+      compras_gravadas_bs, compras_exentas_bs, compras_exoneradas_bs, compras_no_sujetas_bs, compras_sin_iva_bs,
       credito_bs, diferencia_bs, retenciones_bs, cuota_tributaria_bs,
-      ingresos_brutos_bs: ventas_gravadas_bs + ventas_exentas_bs,
-      ingresos_brutos_usd: ventas_gravadas_usd + ventas_exentas_usd,
-      ventas_gravadas_usd, ventas_exentas_usd,
+      ingresos_brutos_bs: ventas_gravadas_bs + ventas_sin_iva_bs,
+      ingresos_brutos_usd: ventas_gravadas_usd + ventas_sin_iva_usd,
+      ventas_gravadas_usd, ventas_exentas_usd, ventas_exoneradas_usd, ventas_no_sujetas_usd, ventas_sin_iva_usd,
       compras_sin_tasa: S.get(mes) ?? 0,
     };
   });
@@ -186,17 +258,31 @@ informes.get("/resumen-iva", async (c) => {
   return c.json({
     ok: true, modo, tipo_contribuyente, desde: r.desde, hasta: r.hasta, filas,
     total: {
-      ventas_gravadas_bs: t("ventas_gravadas_bs"), ventas_exentas_bs: t("ventas_exentas_bs"), debito_bs: t("debito_bs"),
-      compras_gravadas_bs: t("compras_gravadas_bs"), compras_exentas_bs: t("compras_exentas_bs"), credito_bs: t("credito_bs"),
+      ventas_gravadas_bs: t("ventas_gravadas_bs"),
+      ventas_exentas_bs: t("ventas_exentas_bs"),
+      ventas_exoneradas_bs: t("ventas_exoneradas_bs"),
+      ventas_no_sujetas_bs: t("ventas_no_sujetas_bs"),
+      ventas_sin_iva_bs: t("ventas_sin_iva_bs"),
+      debito_bs: t("debito_bs"),
+      compras_gravadas_bs: t("compras_gravadas_bs"),
+      compras_exentas_bs: t("compras_exentas_bs"),
+      compras_exoneradas_bs: t("compras_exoneradas_bs"),
+      compras_no_sujetas_bs: t("compras_no_sujetas_bs"),
+      compras_sin_iva_bs: t("compras_sin_iva_bs"),
+      credito_bs: t("credito_bs"),
       diferencia_bs: t("diferencia_bs"), retenciones_bs: t("retenciones_bs"), cuota_tributaria_bs: t("cuota_tributaria_bs"),
       ingresos_brutos_bs: t("ingresos_brutos_bs"), ingresos_brutos_usd: t("ingresos_brutos_usd"),
-      ventas_gravadas_usd: t("ventas_gravadas_usd"), ventas_exentas_usd: t("ventas_exentas_usd"),
+      ventas_gravadas_usd: t("ventas_gravadas_usd"),
+      ventas_exentas_usd: t("ventas_exentas_usd"),
+      ventas_exoneradas_usd: t("ventas_exoneradas_usd"),
+      ventas_no_sujetas_usd: t("ventas_no_sujetas_usd"),
+      ventas_sin_iva_usd: t("ventas_sin_iva_usd"),
       compras_sin_tasa: t("compras_sin_tasa"),
     },
   });
 });
 
-// ---------------------------------------------------------------- declaración de IGTF (3% SNAT/2022/000013)
+// ---------------------------------------------------------------- declaración de IGTF (3% SNAT/2022/000013 — soporta base parcial en divisas)
 informes.get("/igtf", async (c) => {
   const r = rango(c); if (typeof r === "string") return falla(c, 400, r);
   const modo = await modoActual(c.env.DB), db = c.env.DB;
@@ -206,7 +292,7 @@ informes.get("/igtf", async (c) => {
             d.numero, d.control_interno, d.control_fiscal, d.medio, d.fecha_emision,
             d.cliente_rif, d.cliente_nombre, d.estado, d.tasa_e8,
             d.subtotal_usd, d.iva_usd, d.subtotal_bs, d.iva_bs,
-            d.igtf_alicuota_cent, d.igtf_usd, d.igtf_bs, d.total_usd, d.total_bs
+            d.igtf_alicuota_cent, d.igtf_base_usd, d.igtf_base_bs, d.igtf_usd, d.igtf_bs, d.total_usd, d.total_bs
      FROM documentos d
      WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.aplica_igtf = 1 AND d.igtf_bs > 0
        AND d.estado IN ('EMITIDO', 'ANULADO') AND d.fecha_emision BETWEEN ? AND ?
@@ -214,10 +300,15 @@ informes.get("/igtf", async (c) => {
   ).bind(modo, r.desde, r.hasta).all<Fila>();
   const filas: Fila[] = results.map((d) => {
     const signo = d.es_nota_credito ? -1 : 1;
-    const base_divisas_usd = ((d.subtotal_usd ?? 0) + (d.iva_usd ?? 0)) * signo;
-    const base_divisas_bs = ((d.subtotal_bs ?? 0) + (d.iva_bs ?? 0)) * signo;
+    const totalConIvaUsd = (d.subtotal_usd ?? 0) + (d.iva_usd ?? 0);
+    const totalConIvaBs = (d.subtotal_bs ?? 0) + (d.iva_bs ?? 0);
+    const baseOrigUsd = Number(d.igtf_base_usd ?? 0) > 0 ? Number(d.igtf_base_usd) : totalConIvaUsd;
+    const baseOrigBs = Number(d.igtf_base_bs ?? 0) > 0 ? Number(d.igtf_base_bs) : totalConIvaBs;
+    const base_divisas_usd = baseOrigUsd * signo;
+    const base_divisas_bs = baseOrigBs * signo;
     return {
       ...d,
+      es_igtf_parcial: baseOrigUsd > 0 && baseOrigUsd < totalConIvaUsd,
       base_divisas_usd,
       base_divisas_bs,
       base_igtf_usd: base_divisas_usd,
@@ -265,7 +356,10 @@ informes.get("/cierre-caja", async (c) => {
               SUM(CASE WHEN d.es_nota_credito = 1 THEN -i.base_bs ELSE i.base_bs END) AS base_bs,
               SUM(CASE WHEN d.es_nota_credito = 1 THEN -i.iva_bs ELSE i.iva_bs END) AS iva_bs,
               SUM(CASE WHEN d.es_nota_credito = 1 THEN -i.base_usd ELSE i.base_usd END) AS base_usd,
-              SUM(CASE WHEN d.es_nota_credito = 1 THEN -i.iva_usd ELSE i.iva_usd END) AS iva_usd
+              SUM(CASE WHEN d.es_nota_credito = 1 THEN -i.iva_usd ELSE i.iva_usd END) AS iva_usd,
+              SUM(CASE WHEN i.alicuota_cent = 0 THEN (CASE WHEN d.es_nota_credito = 1 THEN -(i.base_bs - COALESCE(i.exonerada_bs, 0) - COALESCE(i.no_sujeta_bs, 0)) ELSE (i.base_bs - COALESCE(i.exonerada_bs, 0) - COALESCE(i.no_sujeta_bs, 0)) END) ELSE 0 END) AS exenta_bs,
+              SUM(CASE WHEN i.alicuota_cent = 0 THEN (CASE WHEN d.es_nota_credito = 1 THEN -COALESCE(i.exonerada_bs, 0) ELSE COALESCE(i.exonerada_bs, 0) END) ELSE 0 END) AS exonerada_bs,
+              SUM(CASE WHEN i.alicuota_cent = 0 THEN (CASE WHEN d.es_nota_credito = 1 THEN -COALESCE(i.no_sujeta_bs, 0) ELSE COALESCE(i.no_sujeta_bs, 0) END) ELSE 0 END) AS no_sujeta_bs
        FROM documento_impuestos i JOIN documentos d ON d.id = i.documento_id
        WHERE d.tipo = 'FACTURA' AND d.modo = ? AND d.estado = 'EMITIDO' AND d.fecha_emision BETWEEN ? AND ?
        GROUP BY i.alicuota_cent ORDER BY i.alicuota_cent`

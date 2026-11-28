@@ -100,15 +100,91 @@ export function puedeInvocarImprentaDigital(medio: string | null | undefined, mo
   return String(medio ?? "").toUpperCase() === "IMPRENTA_DIGITAL" && String(modo ?? "").toUpperCase() === "REAL";
 }
 
+export type TipoExencion = "EXENTA" | "EXONERADA" | "NO_SUJETA";
+export const TIPOS_EXENCION: readonly TipoExencion[] = ["EXENTA", "EXONERADA", "NO_SUJETA"];
+
+export function esTipoExencionValido(v: unknown): boolean {
+  const s = String(v ?? "").trim().toUpperCase();
+  return s === "EXENTA" || s === "EXONERADA" || s === "NO_SUJETA";
+}
+
+export function normalizarTipoExencion(v: unknown): TipoExencion {
+  const s = String(v ?? "").trim().toUpperCase();
+  if (s === "EXONERADA" || s === "NO_SUJETA") return s;
+  return "EXENTA";
+}
+
+export function resolverBaseIgtfFacturaUsd(doc: {
+  aplica_igtf?: number | boolean | null;
+  igtf_base_usd?: number | null;
+  subtotal_usd?: number | null;
+  iva_usd?: number | null;
+}): number {
+  if (!doc.aplica_igtf) return 0;
+  const explicita = Number(doc.igtf_base_usd ?? 0);
+  if (Number.isInteger(explicita) && explicita > 0) return explicita;
+  return Math.max(0, Number(doc.subtotal_usd ?? 0) + Number(doc.iva_usd ?? 0));
+}
+
+export function resolverBaseIgtfFacturaBs(doc: {
+  aplica_igtf?: number | boolean | null;
+  igtf_base_bs?: number | null;
+  subtotal_bs?: number | null;
+  iva_bs?: number | null;
+}): number {
+  if (!doc.aplica_igtf) return 0;
+  const explicita = Number(doc.igtf_base_bs ?? 0);
+  if (Number.isInteger(explicita) && explicita > 0) return explicita;
+  return Math.max(0, Number(doc.subtotal_bs ?? 0) + Number(doc.iva_bs ?? 0));
+}
+
+export function calcularBaseIgtfNcSugerida(
+  totalConIvaNcUsd: number,
+  totalConIvaFacturaUsd: number,
+  baseIgtfFacturaUsd: number,
+  baseIgtfYaReversadaUsd = 0
+): number {
+  const disponible = Math.max(0, Math.trunc(baseIgtfFacturaUsd) - Math.trunc(baseIgtfYaReversadaUsd));
+  if (disponible <= 0 || totalConIvaNcUsd <= 0) return 0;
+  if (totalConIvaFacturaUsd <= 0 || baseIgtfFacturaUsd >= totalConIvaFacturaUsd) {
+    return Math.min(totalConIvaNcUsd, disponible);
+  }
+  if (totalConIvaNcUsd >= totalConIvaFacturaUsd) {
+    return Math.min(totalConIvaNcUsd, disponible);
+  }
+  const proporcional = Number(
+    (BigInt(totalConIvaNcUsd) * BigInt(baseIgtfFacturaUsd) + BigInt(totalConIvaFacturaUsd) / 2n) / BigInt(totalConIvaFacturaUsd)
+  );
+  return Math.min(disponible, totalConIvaNcUsd, proporcional);
+}
+
 export function validarIgtfNotaCredito(
   aplicaIgtfNc: boolean,
-  facturaOriginalAplicaIgtf: boolean
+  facturaOriginalAplicaIgtf: boolean,
+  ctx?: { baseIgtfNcUsd?: number; baseIgtfDisponibleUsd?: number; totalConIvaNcUsd?: number }
 ): { ok: true } | { ok: false; error: string } {
   if (aplicaIgtfNc && !facturaOriginalAplicaIgtf) {
     return {
       ok: false,
       error: "No se puede reversar IGTF (3%) en la Nota de Crédito porque la factura original no incluyó IGTF.",
     };
+  }
+  if (aplicaIgtfNc && ctx && ctx.baseIgtfNcUsd !== undefined) {
+    if (!Number.isInteger(ctx.baseIgtfNcUsd) || ctx.baseIgtfNcUsd < 0) {
+      return { ok: false, error: "La base en divisas para reversar IGTF no es válida." };
+    }
+    if (ctx.totalConIvaNcUsd !== undefined && ctx.baseIgtfNcUsd > ctx.totalConIvaNcUsd) {
+      return {
+        ok: false,
+        error: "La base IGTF a reversar en la Nota de Crédito no puede superar el Subtotal + IVA de la devolución.",
+      };
+    }
+    if (ctx.baseIgtfDisponibleUsd !== undefined && ctx.baseIgtfNcUsd > ctx.baseIgtfDisponibleUsd) {
+      return {
+        ok: false,
+        error: "La base IGTF a reversar supera el monto en divisas disponible de la factura original.",
+      };
+    }
   }
   return { ok: true };
 }

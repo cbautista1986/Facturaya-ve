@@ -4,13 +4,14 @@ import { aCantidadMilli } from "../../public/dinero.js";
 import { aCentavos, auditar, comodin, esForanea, esUnico, falla, idParam, leerJson, requiereSesion, texto, type Env } from "../comun";
 import { veCostos } from "../permisos";
 import { leerTipoContribuyente, type TipoContribuyente } from "../regimen";
+import { esTipoExencionValido, normalizarTipoExencion, type TipoExencion } from "../reglas-fiscales";
 
 const catalogo = new Hono<Env>();
 catalogo.use("*", requiereSesion);
 
-const COLUMNAS_CON_COSTO = "id, codigo, nombre, tipo, costo_centavos, precio_centavos, alicuota_iva, activo, controla_stock, stock_minimo_milli, " +
+const COLUMNAS_CON_COSTO = "id, codigo, nombre, tipo, costo_centavos, precio_centavos, alicuota_iva, tipo_exencion, activo, controla_stock, stock_minimo_milli, " +
   "(SELECT COALESCE(SUM(m.cantidad_milli), 0) FROM movimientos_stock m WHERE m.producto_id = catalogo.id) AS stock_milli";
-const COLUMNAS_SIN_COSTO = "id, codigo, nombre, tipo, precio_centavos, alicuota_iva, activo, controla_stock, stock_minimo_milli, " +
+const COLUMNAS_SIN_COSTO = "id, codigo, nombre, tipo, precio_centavos, alicuota_iva, tipo_exencion, activo, controla_stock, stock_minimo_milli, " +
   "(SELECT COALESCE(SUM(m.cantidad_milli), 0) FROM movimientos_stock m WHERE m.producto_id = catalogo.id) AS stock_milli";
 const TIPOS = ["SERVICIO", "PRODUCTO"], IVAS = [0, 8, 16];
 
@@ -29,11 +30,16 @@ function validar(b: Record<string, unknown>, regimen: TipoContribuyente) {
   if (regimen === "FORMAL" && iva !== 0) {
     return "Como Contribuyente Formal (Art. 8 Ley del IVA), los servicios y productos deben ser Exentos de IVA (0%).";
   }
+  const teRaw = texto(b.tipo_exencion, 20).toUpperCase();
+  if (iva === 0 && teRaw && !esTipoExencionValido(teRaw)) {
+    return "La clasificación sin IVA debe ser Exenta (EXENTA), Exonerada (EXONERADA) o No Sujeta (NO_SUJETA).";
+  }
+  const tipo_exencion: TipoExencion = iva === 0 ? normalizarTipoExencion(teRaw) : "EXENTA";
   // Existencias: solo los productos las controlan. Si no se dice nada: al crear queda sin control; al editar se conserva lo que había.
   const cs = b.controla_stock, minimo = aCantidadMilli(b.stock_minimo);
   if (Number.isNaN(minimo)) return "El mínimo de existencias no es válido (ejemplo: 5).";
   const controla = tipo !== "PRODUCTO" ? 0 : cs === undefined ? undefined : String(cs) === "0" || cs === false ? 0 : 1;
-  return { nombre, tipo, codigo, costo, precio, iva, activo, controla, minimo: tipo === "PRODUCTO" ? minimo : null }; // precio vacío en un servicio = "se define al facturar"
+  return { nombre, tipo, codigo, costo, precio, iva, tipo_exencion, activo, controla, minimo: tipo === "PRODUCTO" ? minimo : null }; // precio vacío en un servicio = "se define al facturar"
 }
 
 catalogo.get("/", async (c) => {
@@ -63,8 +69,8 @@ catalogo.post("/", async (c) => {
   if (typeof v === "string") return falla(c, 400, v);
   try {
     const r = await c.env.DB.prepare(
-      `INSERT INTO catalogo (codigo, nombre, tipo, costo_centavos, precio_centavos, alicuota_iva, activo, controla_stock, stock_minimo_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(v.codigo, v.nombre, v.tipo, puedeVerCostos ? v.costo : null, v.precio, v.iva, v.activo, v.controla ?? 0, v.minimo).run();
+      `INSERT INTO catalogo (codigo, nombre, tipo, costo_centavos, precio_centavos, alicuota_iva, tipo_exencion, activo, controla_stock, stock_minimo_milli) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(v.codigo, v.nombre, v.tipo, puedeVerCostos ? v.costo : null, v.precio, v.iva, v.tipo_exencion, v.activo, v.controla ?? 0, v.minimo).run();
     await auditar(c, u.id, "CATALOGO_CREAR", v.nombre);
     return c.json({ ok: true, id: r.meta.last_row_id });
   } catch (e) {
@@ -83,13 +89,13 @@ catalogo.put("/:id", async (c) => {
   try {
     const r = puedeVerCostos
       ? await c.env.DB.prepare(
-          `UPDATE catalogo SET codigo = ?, nombre = ?, tipo = ?, costo_centavos = ?, precio_centavos = ?, alicuota_iva = ?, activo = ?,
+          `UPDATE catalogo SET codigo = ?, nombre = ?, tipo = ?, costo_centavos = ?, precio_centavos = ?, alicuota_iva = ?, tipo_exencion = ?, activo = ?,
              controla_stock = COALESCE(?, controla_stock), stock_minimo_milli = ? WHERE id = ?`
-        ).bind(v.codigo, v.nombre, v.tipo, v.costo, v.precio, v.iva, v.activo, v.controla ?? null, v.minimo, id).run()
+        ).bind(v.codigo, v.nombre, v.tipo, v.costo, v.precio, v.iva, v.tipo_exencion, v.activo, v.controla ?? null, v.minimo, id).run()
       : await c.env.DB.prepare(
-          `UPDATE catalogo SET codigo = ?, nombre = ?, tipo = ?, precio_centavos = ?, alicuota_iva = ?, activo = ?,
+          `UPDATE catalogo SET codigo = ?, nombre = ?, tipo = ?, precio_centavos = ?, alicuota_iva = ?, tipo_exencion = ?, activo = ?,
              controla_stock = COALESCE(?, controla_stock), stock_minimo_milli = ? WHERE id = ?`
-        ).bind(v.codigo, v.nombre, v.tipo, v.precio, v.iva, v.activo, v.controla ?? null, v.minimo, id).run();
+        ).bind(v.codigo, v.nombre, v.tipo, v.precio, v.iva, v.tipo_exencion, v.activo, v.controla ?? null, v.minimo, id).run();
     if (!r.meta.changes) return falla(c, 404, "No encontrado.");
     await auditar(c, u.id, "CATALOGO_EDITAR", `${id} ${v.nombre}`);
     return c.json({ ok: true });
